@@ -272,6 +272,47 @@
     }
   }
 
+  // xterm.js (through at least 5.5.0) silently drops wheel events that its
+  // line accumulator rounds down to zero: small/high-resolution wheel and
+  // trackpad deltas, and any wheel event while Shift is held.  For a
+  // full-screen application that requested mouse tracking (pi, btop, ...) this
+  // turns scrolling off entirely, because it only receives wheel input as SGR
+  // mouse reports.  Forward those events to the application ourselves; xterm
+  // emits exactly one mouse report per wheel event, so this matches its
+  // behavior for ordinary wheel ticks.
+  function forwardWheelToApp(term, event) {
+    const core = term._core;
+    const modes = term.modes;
+    if (!core || !modes || !modes.mouseTrackingMode || modes.mouseTrackingMode === "none") {
+      return false;
+    }
+    const mouseService = core._mouseService;
+    const coreMouseService = core.coreMouseService;
+    if (
+      !core.screenElement ||
+      !mouseService ||
+      typeof mouseService.getMouseReportCoords !== "function" ||
+      !coreMouseService ||
+      typeof coreMouseService.triggerMouseEvent !== "function"
+    ) {
+      return false;
+    }
+    const coords = mouseService.getMouseReportCoords(event, core.screenElement);
+    if (!coords) return false;
+    coreMouseService.triggerMouseEvent({
+      col: coords.col,
+      row: coords.row,
+      x: coords.x,
+      y: coords.y,
+      button: 4, // wheel
+      action: event.deltaY < 0 ? 0 : 1, // 0 = up, 1 = down
+      ctrl: event.ctrlKey,
+      alt: event.altKey,
+      shift: event.shiftKey,
+    });
+    return true;
+  }
+
   function ensureTerminal(session) {
     if (terminals.has(session.id)) return terminals.get(session.id);
 
@@ -328,6 +369,19 @@
     term.onData((data) => send({ type: "input", session_id: session.id, data }));
     term.onResize(({ cols, rows }) =>
       send({ type: "resize", session_id: session.id, cols, rows })
+    );
+
+    // Capture phase, so the event never reaches xterm's lossy wheel handler
+    // when we have already turned it into a mouse report.
+    wrapper.addEventListener(
+      "wheel",
+      (event) => {
+        if (event.deltaY === 0) return;
+        if (!forwardWheelToApp(term, event)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      },
+      { capture: true, passive: false }
     );
 
     const entry = { term, wrapper };

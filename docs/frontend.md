@@ -137,6 +137,23 @@ unmeasurable right after creation:
   also trigger a refit for *all* sessions, keeping background PTYs correctly
   sized.
 
+### Wheel and mouse input
+
+xterm.js (through at least 5.5.0) drops wheel events that its line
+accumulator rounds down to zero: small/high-resolution wheel and trackpad
+deltas, and any wheel event while `Shift` is held. For a full-screen
+application that requested mouse tracking (pi, btop, ...) this disables
+scrolling entirely, because those apps receive wheel input only as SGR mouse
+reports. To work around it, each terminal wrapper installs a capture-phase
+`wheel` listener. When the application has mouse tracking active
+(`term.modes.mouseTrackingMode`), the handler builds a mouse report via
+xterm's own mouse service and stops the event before xterm's lossy handler
+sees it; when tracking is off it does nothing and lets xterm scroll the
+scrollback. This uses xterm internals (`term._core._mouseService`,
+`coreMouseService.triggerMouseEvent`), guarded so a future xterm that changes
+them falls back to stock behavior. Populated by `forwardWheelToApp()` in
+`ensureTerminal()`.
+
 ### Launchers
 
 Launchers render as a horizontally scrollable pill row. The leading `+` pill
