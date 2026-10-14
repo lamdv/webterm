@@ -9,14 +9,14 @@ close the tab, switch machines, or refresh and your shell is still exactly where
 you left it — including full scrollback.
 
 ```
-┌──────────────────────────────────────────────┐
-│  webterm                          [+ new]     │
-├───────────┬──────────────────────────────────┤
-│  shell 1  │                                  │
-│  shell 2  │   $ npm run dev                  │
-│  logs     │   ...                            │
-│           │                                  │
-└───────────┴──────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│  webterm[+ new] │                                  │
+├─────────────────┬──────────────────────────────────┤
+│  shell 1        │                                  │
+│  shell 2        │   $ npm run dev                  │
+│  logs           │   ...                            │
+│                 │                                  │
+└─────────────────┴──────────────────────────────────┘
 ```
 
 ## Features
