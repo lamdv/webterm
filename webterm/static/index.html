@@ -17,7 +17,17 @@
       <aside id="sidebar">
         <header id="sidebar-header">
           <span class="brand">webterm</span>
-          <button id="new-session" title="New session (Ctrl+Shift+N)">+ new</button>
+          <div id="sidebar-actions">
+            <button id="new-session" title="New session (Ctrl+Shift+N)">+ new</button>
+            <button
+              id="sidebar-collapse"
+              title="Collapse sidebar (Ctrl+Shift+B)"
+              aria-label="Collapse sidebar"
+              aria-expanded="true"
+            >
+              ‹
+            </button>
+          </div>
         </header>
         <div id="launchers"></div>
         <ul id="sessions"></ul>
@@ -26,7 +36,24 @@
           <span id="status-text">connecting…</span>
         </footer>
       </aside>
+      <div
+        id="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+        tabindex="0"
+        title="Drag to resize · double-click to reset"
+      ></div>
       <main id="main">
+        <button
+          id="sidebar-expand"
+          title="Expand sidebar (Ctrl+Shift+B)"
+          aria-label="Expand sidebar"
+          aria-expanded="false"
+          hidden
+        >
+          ›
+        </button>
         <div id="terminal-area"></div>
         <div id="empty-state" hidden>
           <p>No sessions running.</p>

@@ -36,21 +36,43 @@ body {
 /* ---------------------------------------------------------------- sidebar */
 
 #sidebar {
-  width: 220px;
-  flex: 0 0 220px;
+  --sidebar-width: 220px;
+  width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
   display: flex;
   flex-direction: column;
   background: var(--bg-alt);
   border-right: 1px solid var(--border);
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  transition: width 0.15s ease, flex-basis 0.15s ease;
+}
+
+#app.sidebar-collapsed #sidebar {
+  width: 0;
+  flex-basis: 0;
+  border-right-color: transparent;
+}
+
+#app.sidebar-resizing #sidebar {
+  transition: none;
 }
 
 #sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
   padding: 12px 12px;
   border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+#sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .brand {
@@ -77,6 +99,72 @@ body {
 
 #new-session:hover {
   background: var(--accent);
+}
+
+#sidebar-collapse {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#sidebar-collapse:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+#sidebar-resizer {
+  flex: 0 0 5px;
+  margin-left: -3px;
+  margin-right: -2px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 5;
+  touch-action: none;
+}
+
+#sidebar-resizer:hover,
+#sidebar-resizer:focus-visible,
+#app.sidebar-resizing #sidebar-resizer {
+  background: var(--accent-dim);
+  outline: none;
+}
+
+#app.sidebar-collapsed #sidebar-resizer {
+  display: none;
+}
+
+#sidebar-expand {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 6;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#sidebar-expand:hover {
+  border-color: var(--accent);
+  color: #eaf2ff;
+}
+
+#sidebar-expand[hidden] {
+  display: none;
 }
 
 #launchers {

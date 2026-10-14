@@ -55,6 +55,114 @@
   const FONT_FAMILY = CONFIG.fontFamily || DEFAULT_FONT_FAMILY;
   const FONT_SIZE = CONFIG.fontSize || 13;
 
+  // ---------------------------------------------------------------- sidebar
+
+  const appEl = document.getElementById("app");
+  const sidebarEl = document.getElementById("sidebar");
+  const resizerEl = document.getElementById("sidebar-resizer");
+  const collapseBtn = document.getElementById("sidebar-collapse");
+  const expandBtn = document.getElementById("sidebar-expand");
+
+  const DEFAULT_SIDEBAR_WIDTH = 220;
+  const MIN_SIDEBAR_WIDTH = 150;
+  const MAX_SIDEBAR_WIDTH = 640;
+  let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+
+  function maxSidebarWidth() {
+    return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 200));
+  }
+
+  function clampSidebarWidth(width) {
+    return Math.min(maxSidebarWidth(), Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)));
+  }
+
+  function currentSidebarWidth() {
+    return sidebarEl.getBoundingClientRect().width;
+  }
+
+  function setSidebarWidth(width, persist) {
+    const clamped = clampSidebarWidth(width);
+    sidebarWidth = clamped;
+    sidebarEl.style.setProperty("--sidebar-width", clamped + "px");
+    if (persist !== false) {
+      try {
+        localStorage.setItem("webterm.sidebarWidth", String(clamped));
+      } catch (e) {
+        /* storage may be unavailable */
+      }
+    }
+    return clamped;
+  }
+
+  function loadSidebarWidth() {
+    const stored = parseInt(localStorage.getItem("webterm.sidebarWidth"), 10);
+    return Number.isFinite(stored) ? clampSidebarWidth(stored) : DEFAULT_SIDEBAR_WIDTH;
+  }
+
+  function setSidebarCollapsed(collapsed) {
+    appEl.classList.toggle("sidebar-collapsed", collapsed);
+    collapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    expandBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    expandBtn.hidden = !collapsed;
+    try {
+      localStorage.setItem("webterm.sidebarCollapsed", collapsed ? "1" : "0");
+    } catch (e) {
+      /* storage may be unavailable */
+    }
+  }
+
+  function isSidebarCollapsed() {
+    return appEl.classList.contains("sidebar-collapsed");
+  }
+
+  collapseBtn.addEventListener("click", () => setSidebarCollapsed(true));
+  expandBtn.addEventListener("click", () => setSidebarCollapsed(false));
+
+  // Drag the divider to resize the sidebar.
+  let dragStartX = 0;
+  let dragStartWidth = 0;
+  resizerEl.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || isSidebarCollapsed()) return;
+    dragStartX = event.clientX;
+    dragStartWidth = currentSidebarWidth();
+    appEl.classList.add("sidebar-resizing");
+    resizerEl.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  resizerEl.addEventListener("pointermove", (event) => {
+    if (!resizerEl.hasPointerCapture(event.pointerId)) return;
+    setSidebarWidth(dragStartWidth + (event.clientX - dragStartX));
+  });
+  function endResize(event) {
+    if (!resizerEl.hasPointerCapture(event.pointerId)) return;
+    resizerEl.releasePointerCapture(event.pointerId);
+    appEl.classList.remove("sidebar-resizing");
+  }
+  resizerEl.addEventListener("pointerup", endResize);
+  resizerEl.addEventListener("pointercancel", endResize);
+  resizerEl.addEventListener("dblclick", () => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH));
+
+  // Keyboard resizing for the focusable separator.
+  resizerEl.addEventListener("keydown", (event) => {
+    const step = event.shiftKey ? 40 : 10;
+    if (event.key === "ArrowLeft") {
+      setSidebarWidth(currentSidebarWidth() - step);
+    } else if (event.key === "ArrowRight") {
+      setSidebarWidth(currentSidebarWidth() + step);
+    } else if (event.key === "Home") {
+      setSidebarWidth(DEFAULT_SIDEBAR_WIDTH);
+    } else {
+      return;
+    }
+    event.preventDefault();
+  });
+
+  setSidebarWidth(loadSidebarWidth(), false);
+  setSidebarCollapsed(localStorage.getItem("webterm.sidebarCollapsed") === "1");
+
+  // Keep a restored width within bounds when the window shrinks.
+  window.addEventListener("resize", () => setSidebarWidth(sidebarWidth, false));
+
   // ------------------------------------------------------------------ socket
 
   function setStatus(state, text) {
@@ -634,6 +742,9 @@
     if (event.ctrlKey && event.shiftKey && (event.key === "N" || event.key === "n")) {
       event.preventDefault();
       createSession();
+    } else if (event.ctrlKey && event.shiftKey && (event.key === "B" || event.key === "b")) {
+      event.preventDefault();
+      setSidebarCollapsed(!isSidebarCollapsed());
     }
   });
 

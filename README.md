@@ -22,7 +22,8 @@ you left it — including full scrollback.
 ## Features
 
 - Server-side PTY sessions that survive browser refreshes and disconnects
-- Multiple sessions (tabs) managed from a sidebar
+- Multiple sessions (tabs) managed from a sidebar that can be resized and
+  collapsed
 - Reattach with scrollback replay
 - Multiple browsers can attach to the same session simultaneously
 - Full terminal emulation via [xterm.js](https://xtermjs.org/): colors,
@@ -84,6 +85,11 @@ uv run webterm --host 0.0.0.0 --port 8765
   agent** button starts `pi`. Add your own with e.g.
   `--launcher "btop=btop" --launcher "logs=journalctl -f"`.
 - **Switch session** — click a tab in the sidebar.
+- **Resize sidebar** — drag the divider between the sidebar and the terminal
+  (or focus it and use `←`/`→`, `Home` to reset).
+- **Collapse sidebar** — click the `‹` button, press `Ctrl` `Shift` `B`, or
+  double-click the divider to reset its width. The sidebar width and collapsed
+  state are remembered in `localStorage`.
 - **Close session** — click the `×` on a tab; this kills the shell.
 - **Rename** — double-click a tab title.
 - **Reconnect** — just reload the page; sessions stay alive until the server
