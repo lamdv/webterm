@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>webterm</title>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css"
+      integrity="sha384-8Xk9wy/gzEDUKrXtrmCFa2bBuK3BpjpDuL/p0SeKQX19Khl/M+lHOgD/CyYf7efP"
+      crossorigin="anonymous"
+    />
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <header id="sidebar-header">
+          <span class="brand">webterm</span>
+          <button id="new-session" title="New session (Ctrl+Shift+N)">+ new</button>
+        </header>
+        <div id="launchers"></div>
+        <ul id="sessions"></ul>
+        <footer id="status">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text">connecting…</span>
+        </footer>
+      </aside>
+      <main id="main">
+        <div id="terminal-area"></div>
+        <div id="empty-state" hidden>
+          <p>No sessions running.</p>
+          <button id="empty-new">Start a shell</button>
+        </div>
+      </main>
+    </div>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"
+      integrity="sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/"
+      crossorigin="anonymous"
+    ></script>
+    <script src="/config.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,332 @@
+:root {
+  --bg: #0f1117;
+  --bg-alt: #161a22;
+  --bg-elevated: #1c212c;
+  --border: #262c38;
+  --text: #c9d1d9;
+  --text-dim: #7d8799;
+  --accent: #4f9cf9;
+  --accent-dim: #2b5c99;
+  --danger: #e5534b;
+  --ok: #3fb950;
+  --warn: #d29922;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ---------------------------------------------------------------- sidebar */
+
+#sidebar {
+  width: 220px;
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  min-height: 0;
+}
+
+#sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.brand::before {
+  content: "▚";
+  color: var(--accent);
+  margin-right: 6px;
+}
+
+#new-session {
+  background: var(--accent-dim);
+  color: #eaf2ff;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#new-session:hover {
+  background: var(--accent);
+}
+
+#launchers {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #333b4a transparent;
+}
+
+#launchers::-webkit-scrollbar {
+  height: 6px;
+}
+
+#launchers::-webkit-scrollbar-thumb {
+  background: #333b4a;
+  border-radius: 3px;
+}
+
+.launcher {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.launcher:hover {
+  border-color: var(--accent);
+  color: #eaf2ff;
+  background: var(--bg-elevated);
+}
+
+.launcher-remove {
+  margin-left: 4px;
+  padding: 0 3px;
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.launcher-remove:hover {
+  color: #fff;
+  background: var(--danger);
+}
+
+.launcher-add {
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+  border-color: var(--accent-dim);
+  padding: 4px 9px;
+}
+
+.launcher-add:hover {
+  border-color: var(--accent);
+  color: #eaf2ff;
+}
+
+#sessions {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-dim);
+  user-select: none;
+  margin-bottom: 2px;
+}
+
+.tab:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tab-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.tab-close {
+  opacity: 0;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 3px;
+  border-radius: 4px;
+}
+
+.tab:hover .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  color: #fff;
+  background: var(--danger);
+}
+
+#status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex: 0 0 auto;
+}
+
+.dot.connected {
+  background: var(--ok);
+}
+
+.dot.disconnected {
+  background: var(--danger);
+}
+
+/* ------------------------------------------------------------------- main */
+
+#main {
+  flex: 1 1 auto;
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+#terminal-area {
+  position: absolute;
+  inset: 0;
+}
+
+.term-wrapper {
+  position: absolute;
+  inset: 0;
+  padding: 6px 4px 6px 8px;
+  visibility: hidden;
+}
+
+.term-wrapper.active {
+  visibility: visible;
+}
+
+.term-wrapper .xterm {
+  width: 100%;
+  height: 100%;
+}
+
+/* We force xterm to use its DOM character measurement (by hiding
+   OffscreenCanvas), which creates a <span> containing "WWWW...".  The trimmed
+   vendor stylesheet is missing the rule that hides it, so it leaked into the
+   terminal.  This is the standard xterm rule for that element. */
+.term-wrapper .xterm .xterm-char-measure-element {
+  display: inline-block;
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: -9999em;
+  line-height: normal;
+}
+
+#empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-dim);
+}
+
+#empty-state[hidden] {
+  display: none;
+}
+
+.term-error {
+  padding: 16px;
+  color: var(--danger);
+  font-family: monospace;
+}
+
+#empty-new {
+  background: var(--accent-dim);
+  color: #eaf2ff;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+#empty-new:hover {
+  background: var(--accent);
+}
+
+/* --------------------------------------------------------------- scrollbar */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #333b4a;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #444e60;
+}
