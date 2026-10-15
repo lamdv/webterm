@@ -670,20 +670,42 @@
   }
 
   function configuredLaunchers() {
-    return (CONFIG.launchers || []).filter(
-      (l) => l && Array.isArray(l.command) && l.command.length
+    return (CONFIG.launchers || []).filter((l) => l && isValidCommand(l.command));
+  }
+
+  // A launcher command may be an argv array (config launchers) or a plain
+  // shell command string (user launchers), which is typed verbatim so shell
+  // syntax such as ``&&`` and pipes keeps working.
+  function isValidCommand(command) {
+    if (typeof command === "string") return command.trim().length > 0;
+    return (
+      Array.isArray(command) &&
+      command.length > 0 &&
+      command.every((arg) => typeof arg === "string")
     );
   }
 
+  function commandText(command) {
+    return typeof command === "string" ? command : command.join(" ");
+  }
+
+  function commandLabel(launcher) {
+    if (launcher.label) return launcher.label;
+    if (typeof launcher.command === "string") {
+      return launcher.command.trim().split(/\s+/)[0] || launcher.command;
+    }
+    return launcher.command[0];
+  }
+
   function appendLauncher(launcher, removable) {
-    if (!launcher || !Array.isArray(launcher.command) || !launcher.command.length) return;
+    if (!launcher || !isValidCommand(launcher.command)) return;
     const pill = document.createElement("button");
     pill.className = removable ? "launcher launcher-user" : "launcher";
-    pill.title = launcher.command.join(" ");
+    pill.title = commandText(launcher.command);
 
     const label = document.createElement("span");
     label.className = "launcher-label";
-    label.textContent = launcher.label || launcher.command[0];
+    label.textContent = commandLabel(launcher);
     pill.appendChild(label);
     pill.addEventListener("click", () => createSession(launcher.command, launcher.title));
 
@@ -709,7 +731,7 @@
   function removeLauncher(launcher) {
     const index = userLaunchers.indexOf(launcher);
     if (index === -1) return;
-    if (!window.confirm('Remove "' + (launcher.label || launcher.command[0]) + '"?')) return;
+    if (!window.confirm('Remove "' + commandLabel(launcher) + '"?')) return;
     userLaunchers.splice(index, 1);
     saveUserLaunchers();
     renderLaunchers();
@@ -770,48 +792,15 @@
   function promptForCommand() {
     const input = window.prompt("Command to run in a new session:");
     if (!input || !input.trim()) return;
-    const command = splitCommand(input.trim());
-    if (!command.length) return;
-    const name = window.prompt("Pill name (optional):", command[0]);
-    const label = (name && name.trim()) || command[0];
+    const command = input.trim();
+    const first = command.split(/\s+/)[0];
+    const name = window.prompt("Pill name (optional):", first);
+    const label = (name && name.trim()) || first;
     userLaunchers.push({ label: label, command: command });
     saveUserLaunchers();
     renderLaunchers();
     createSession(command, label);
     launchersEl.scrollLeft = 0;
-  }
-
-  // Split a command line into argv, honoring single/double quotes and \ escapes.
-  function splitCommand(input) {
-    const tokens = [];
-    let current = "";
-    let quote = null;
-    let started = false;
-    for (let i = 0; i < input.length; i++) {
-      const ch = input[i];
-      if (quote) {
-        if (ch === quote) quote = null;
-        else if (ch === "\\" && quote === '"' && i + 1 < input.length) current += input[++i];
-        else current += ch;
-      } else if (ch === "'" || ch === '"') {
-        quote = ch;
-        started = true;
-      } else if (ch === "\\" && i + 1 < input.length) {
-        current += input[++i];
-        started = true;
-      } else if (/\s/.test(ch)) {
-        if (started || current) {
-          tokens.push(current);
-          current = "";
-          started = false;
-        }
-      } else {
-        current += ch;
-        started = true;
-      }
-    }
-    if (started || current) tokens.push(current);
-    return tokens;
   }
 
   function saveUserLaunchers() {
@@ -826,13 +815,7 @@
     try {
       const stored = JSON.parse(localStorage.getItem("webterm.launchers") || "[]");
       if (Array.isArray(stored)) {
-        return stored.filter(
-          (l) =>
-            l &&
-            Array.isArray(l.command) &&
-            l.command.length &&
-            l.command.every((arg) => typeof arg === "string")
-        );
+        return stored.filter((l) => l && isValidCommand(l.command));
       }
     } catch (e) {
       /* ignore malformed storage */
@@ -846,7 +829,8 @@
     const rows = entry ? entry.term.rows : 24;
     activateNext = true;
     const message = { type: "create", cols, rows };
-    if (Array.isArray(command) && command.length) message.command = command;
+    if (typeof command === "string" && command.trim()) message.command = command;
+    else if (Array.isArray(command) && command.length) message.command = command;
     if (title) message.title = title;
     send(message);
   }

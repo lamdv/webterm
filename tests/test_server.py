@@ -190,6 +190,21 @@ class SessionProtocolTests(ServerFixture):
         output = await self.client.recv_until_contains(b"AGENT_MARKER")
         self.assertIn(b"AGENT_MARKER", output)
 
+    async def test_create_with_shell_command_string_runs_it(self) -> None:
+        await self.client.send_json(
+            {"type": "create", "command": "cd /tmp && echo CHAIN_MARKER"}
+        )
+        sessions = await self.client.recv_json_until(
+            lambda m: m["type"] == "sessions" and m["sessions"]
+        )
+        session = sessions["sessions"][0]
+        self.assertEqual(session["title"], "cd")
+        session_id = session["id"]
+        await self.client.send_json({"type": "subscribe", "session_id": session_id})
+        await self.client.recv_json_until(lambda m: m["type"] == "attached")
+        output = await self.client.recv_until_contains(b"CHAIN_MARKER")
+        self.assertIn(b"CHAIN_MARKER", output)
+
     async def test_resize_is_accepted(self) -> None:
         await self.client.send_json({"type": "create"})
         sessions = await self.client.recv_json_until(

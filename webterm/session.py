@@ -25,6 +25,16 @@ READ_SIZE = 65_536
 log = logging.getLogger("webterm")
 
 
+def _command_title(command: list[str] | str | None) -> str | None:
+    """Derive a session title from an argv list or a shell command string."""
+    if not command:
+        return None
+    if isinstance(command, str):
+        parts = command.split()
+        return os.path.basename(parts[0]) if parts else None
+    return os.path.basename(command[0]) if command else None
+
+
 @runtime_checkable
 class Subscriber(Protocol):
     """Receives output from a session it is attached to."""
@@ -295,14 +305,14 @@ class SessionManager:
         cols: int = 80,
         rows: int = 24,
         title: str | None = None,
-        command: list[str] | None = None,
+        command: list[str] | str | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> Session:
         loop = loop or asyncio.get_running_loop()
         self._install_reaper(loop)
         self._counter += 1
         if title is None:
-            title = os.path.basename(command[0]) if command else f"shell {self._counter}"
+            title = _command_title(command) or f"shell {self._counter}"
 
         pid, fd = pty.fork()
         if pid == 0:  # pragma: no cover - runs in the child process
@@ -326,8 +336,10 @@ class SessionManager:
         if command:
             # Type the command into the interactive shell so it behaves exactly
             # as if the user entered it: errors are reported by the shell and
-            # control returns to the prompt when it finishes.
-            line = shlex.join(command) + "\n"
+            # control returns to the prompt when it finishes.  A string command
+            # is sent verbatim so shell syntax (``&&``, pipes, globs, ...)
+            # keeps working; an argv list is quoted argument by argument.
+            line = (command if isinstance(command, str) else shlex.join(command)) + "\n"
             loop.call_later(0.2, session.write, line.encode())
         self.notify()
         return session

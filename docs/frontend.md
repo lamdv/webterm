@@ -169,8 +169,9 @@ back to stock behavior. Populated by `handleWheel()` in `ensureTerminal()`.
 ### Launchers
 
 Launchers render as a horizontally scrollable pill row. The leading `+` pill
-prompts for a command (parsed by `splitCommand`, which honors quotes and
-backslash escapes) and an optional name, saves it, and starts it.
+prompts for a shell command and an optional name, saves it, and starts it. User
+launchers store the raw command string (so `&&`, pipes and globs work when it is
+typed into the shell), while config launchers use an argv list.
 
 - Config launchers come from `CONFIG.launchers` (`{label, command[]}`) and are
   not removable.

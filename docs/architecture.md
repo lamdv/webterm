@@ -70,7 +70,8 @@ replayed on reattach.
 
 ### Spawning a session
 
-1. Browser sends `{"type":"create", ...}` (optionally with a `command` argv).
+1. Browser sends `{"type":"create", ...}` (optionally with a `command` argv
+   list or a shell command string).
 2. `ClientConnection._create` validates and calls `SessionManager.create`.
 3. `SessionManager` does `pty.fork()`. The child resets signals, sets `TERM`,
    `chdir`s to the configured cwd, and `exec`s the shell.
@@ -191,7 +192,6 @@ cacheable.
   `app.js` as `window.WEBTERM_CONFIG`.
 - **Protocol** — new control message types can be added without breaking
   existing clients; the binary output framing is the stable core.
-- Candidate agent-oriented work is described in [pi-integration.md](pi-integration.md).
 
 ## Testing architecture
 

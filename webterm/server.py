@@ -346,7 +346,9 @@ class ClientConnection:
     def _create(self, message: dict) -> None:
         command = message.get("command")
         if command is not None:
-            if (
+            if isinstance(command, str):
+                command = command if command.strip() else None
+            elif (
                 not isinstance(command, list)
                 or not command
                 or not all(isinstance(arg, str) for arg in command)

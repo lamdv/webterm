@@ -17,6 +17,9 @@ htmlcov/
 # Agent instructions (local only)
 AGENTS.md
 
+# Parked proposals / feature requests (local only)
+Proposal/
+
 # Editors / OS
 .DS_Store
 .idea/

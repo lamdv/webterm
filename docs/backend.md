@@ -134,7 +134,7 @@ fan-out to the async socket:
 |---|---|---|
 | `subscribe` | `session_id` | Attach and send replayed scrollback + `attached`. Unknown id triggers a fresh `sessions` list. |
 | `unsubscribe` | `session_id` | Detach. |
-| `create` | `cols`, `rows`, `title?`, `command?` | Spawn a session. `command` must be a non-empty list of strings. |
+| `create` | `cols`, `rows`, `title?`, `command?` | Spawn a session. `command` may be a non-empty string (a shell command line) or a non-empty list of strings (argv). |
 | `kill` | `session_id` | Terminate the session. |
 | `rename` | `session_id`, `title` | Set the title (capped at 200 chars) and broadcast. |
 | `input` | `session_id`, `data` | Write UTF-8 bytes to the PTY. |
@@ -200,9 +200,10 @@ Owns one PTY master fd and its child process.
   mask, resets signal dispositions (so Node/TUI children behave), sets `TERM`
   and `COLORTERM`, `chdir`s to `cwd`, and `execvpe`s the shell.
 - Session ids are `"{counter}-{pid}"`. Treat them as opaque.
-- If a `command` is supplied, it is `shlex.join`ed and typed into the shell
-  after a 0.2 s delay, so it behaves exactly like user input and control returns
-  to the prompt afterward.
+- If a `command` is supplied, it is typed into the shell after a 0.2 s delay,
+  so it behaves exactly like user input and control returns to the prompt
+  afterward. A list is `shlex.join`ed first, while a string is sent verbatim
+  (preserving `&&`, pipes and globs).
 - `_install_reaper` registers a `SIGCHLD` handler once. `_reap_children` loops
   `os.waitpid(-1, WNOHANG)`, maps pid → session via `_by_pid`, and reports the
   exit code.
