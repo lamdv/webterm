@@ -220,6 +220,7 @@ class SessionManager:
         self._listeners: list[Callable[[], None]] = []
         self._by_pid: dict[int, Session] = {}
         self._reaper_installed = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _install_reaper(self, loop: asyncio.AbstractEventLoop) -> None:
         """Reap child processes via SIGCHLD (asyncio removed child watchers)."""
@@ -229,7 +230,29 @@ class SessionManager:
             loop.add_signal_handler(signal.SIGCHLD, self._reap_children)
         except (NotImplementedError, RuntimeError, ValueError):
             return
+        self._loop = loop
         self._reaper_installed = True
+
+    def _remove_reaper(self) -> None:
+        """Uninstall the SIGCHLD handler before the event loop closes.
+
+        The loop's signal wakeup fd is closed on shutdown; leaving the handler
+        installed lets a late SIGCHLD write to the closed fd, which Python
+        reports as an ignored ``OSError: [Errno 9] Bad file descriptor``.
+        """
+        if not self._reaper_installed:
+            return
+        self._reaper_installed = False
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.remove_signal_handler(signal.SIGCHLD)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
+        # Collect any children that already exited while the handler was
+        # installed, so they do not linger as zombies until process exit.
+        self._reap_children()
 
     def _reap_children(self) -> None:
         while True:
@@ -355,3 +378,4 @@ class SessionManager:
     def close_all(self) -> None:
         for session in list(self.sessions.values()):
             session.close()
+        self._remove_reaper()

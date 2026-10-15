@@ -7,6 +7,7 @@ import base64
 import contextlib
 import os
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -379,6 +380,18 @@ class TlsTests(unittest.IsolatedAsyncioTestCase):
                 server_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await server_task
+
+
+class ReaperShutdownTests(unittest.IsolatedAsyncioTestCase):
+    async def test_close_all_uninstalls_sigchld_handler(self) -> None:
+        """The reaper must be removed before the loop's wakeup fd closes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = SessionManager(shell="/bin/sh", cwd=tmp)
+            manager.create(cols=80, rows=24)
+            self.assertTrue(manager._reaper_installed)
+            manager.close_all()
+            self.assertFalse(manager._reaper_installed)
+            self.assertIs(signal.getsignal(signal.SIGCHLD), signal.SIG_DFL)
 
 
 if __name__ == "__main__":
