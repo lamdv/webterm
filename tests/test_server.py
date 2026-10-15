@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import os
+import shutil
+import socket
+import ssl
+import subprocess
+import tempfile
 import unittest
 
-from webterm.server import handle_client
+from webterm.__main__ import build_ssl_context
+from webterm.server import handle_client, serve
 from webterm.session import SessionManager
 
 from .wsclient import WSClient
 
 
 class ServerFixture(unittest.IsolatedAsyncioTestCase):
+    token: str | None = None
+
     async def asyncSetUp(self) -> None:
         self.connections: set = set()
         self.manager = SessionManager(shell="/bin/sh", cwd="/tmp", scrollback=100_000)
@@ -24,7 +34,7 @@ class ServerFixture(unittest.IsolatedAsyncioTestCase):
         self.manager.add_listener(on_change)
 
         self.server = await asyncio.start_server(
-            lambda r, w: handle_client(r, w, self.manager, self.connections),
+            lambda r, w: handle_client(r, w, self.manager, self.connections, token=self.token),
             "127.0.0.1",
             0,
         )
@@ -78,6 +88,61 @@ class StaticFileTests(ServerFixture):
     async def test_path_traversal_is_blocked(self) -> None:
         status, _ = await self._get("/../pyproject.toml")
         self.assertIn("404", status)
+
+
+class AuthTests(ServerFixture):
+    token = "s3cret-token"
+
+    @staticmethod
+    def _basic(username: str, password: str) -> str:
+        raw = base64.b64encode(f"{username}:{password}".encode()).decode()
+        return f"Basic {raw}"
+
+    async def _get(self, path: str, authorization: str | None = None) -> tuple[str, bytes]:
+        reader, writer = await asyncio.open_connection(self.host, self.port)
+        request = f"GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+        if authorization:
+            request += f"Authorization: {authorization}\r\n"
+        request += "\r\n"
+        writer.write(request.encode())
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        head, _, body = raw.partition(b"\r\n\r\n")
+        return head.split(b"\r\n")[0].decode(), body
+
+    async def test_missing_credentials_are_rejected(self) -> None:
+        status, _ = await self._get("/")
+        self.assertIn("401", status)
+
+    async def test_wrong_credentials_are_rejected(self) -> None:
+        status, _ = await self._get("/", self._basic("user", "wrong"))
+        self.assertIn("401", status)
+
+    async def test_token_as_password_is_accepted(self) -> None:
+        status, body = await self._get("/", self._basic("user", self.token))
+        self.assertIn("200", status)
+        self.assertIn(b"webterm", body)
+
+    async def test_token_as_username_is_accepted(self) -> None:
+        status, _ = await self._get("/config.js", self._basic(self.token, ""))
+        self.assertIn("200", status)
+
+    async def test_websocket_requires_credentials(self) -> None:
+        with self.assertRaises(AssertionError):
+            await WSClient.connect(self.host, self.port)
+
+    async def test_websocket_accepts_credentials(self) -> None:
+        client = await WSClient.connect(
+            self.host,
+            self.port,
+            headers={"Authorization": self._basic("user", self.token)},
+        )
+        try:
+            hello = await client.recv_json()
+            self.assertEqual(hello["type"], "sessions")
+        finally:
+            await client.close()
 
 
 class SessionProtocolTests(ServerFixture):
@@ -184,6 +249,136 @@ class SessionProtocolTests(ServerFixture):
         raw = await reader.read()
         writer.close()
         self.assertNotIn(b"101", raw.split(b"\r\n")[0])
+
+
+class RestartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_restart_notifies_client_and_returns_true(self) -> None:
+        manager = SessionManager(shell="/bin/sh", cwd="/tmp")
+
+        # Pick a free port, then let serve() claim it.
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+
+        server_task = asyncio.create_task(serve("127.0.0.1", port, manager))
+        client = None
+        try:
+            for _ in range(100):
+                try:
+                    client = await WSClient.connect("127.0.0.1", port)
+                    break
+                except OSError:
+                    await asyncio.sleep(0.02)
+            self.assertIsNotNone(client, "server did not start")
+
+            await client.recv_json_until(lambda m: m["type"] == "sessions")
+            await client.send_json({"type": "restart"})
+            message = await client.recv_json_until(lambda m: m["type"] == "restarting")
+            self.assertEqual(message, {"type": "restarting"})
+
+            self.assertTrue(await asyncio.wait_for(server_task, timeout=5))
+        finally:
+            if client is not None:
+                await client.close()
+            if not server_task.done():
+                server_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await server_task
+
+
+@unittest.skipUnless(shutil.which("openssl"), "openssl not available")
+class TlsTests(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmpdir = tempfile.mkdtemp(prefix="webterm-tls-")
+        cls.cert = os.path.join(cls.tmpdir, "cert.pem")
+        cls.key = os.path.join(cls.tmpdir, "key.pem")
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                cls.key,
+                "-out",
+                cls.cert,
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        shutil.rmtree(cls.tmpdir, ignore_errors=True)
+
+    async def test_build_ssl_context_loads_cert(self) -> None:
+        context = build_ssl_context(self.cert, self.key)
+        self.assertIsInstance(context, ssl.SSLContext)
+
+    async def test_https_static_and_wss_protocol(self) -> None:
+        manager = SessionManager(shell="/bin/sh", cwd="/tmp")
+        server_ctx = build_ssl_context(self.cert, self.key)
+        client_ctx = ssl.create_default_context(cafile=self.cert)
+
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+
+        server_task = asyncio.create_task(
+            serve("127.0.0.1", port, manager, token="tls-token", ssl_context=server_ctx)
+        )
+        client = None
+        try:
+            auth = "Basic " + base64.b64encode(b"user:tls-token").decode()
+            for _ in range(100):
+                try:
+                    client = await WSClient.connect(
+                        "127.0.0.1",
+                        port,
+                        headers={"Authorization": auth},
+                        ssl=client_ctx,
+                        server_hostname="localhost",
+                    )
+                    break
+                except (OSError, ssl.SSLError):
+                    await asyncio.sleep(0.02)
+            self.assertIsNotNone(client, "TLS server did not start")
+            hello = await client.recv_json()
+            self.assertEqual(hello["type"], "sessions")
+
+            reader, writer = await asyncio.open_connection(
+                "127.0.0.1", port, ssl=client_ctx, server_hostname="localhost"
+            )
+            writer.write(
+                (
+                    "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n"
+                    f"Authorization: {auth}\r\n\r\n"
+                ).encode()
+            )
+            await writer.drain()
+            raw = await reader.read()
+            writer.close()
+            self.assertIn(b"200 OK", raw.split(b"\r\n", 1)[0])
+            self.assertIn(b"webterm", raw)
+        finally:
+            if client is not None:
+                await client.close()
+            manager.close_all()
+            if not server_task.done():
+                server_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await server_task
 
 
 if __name__ == "__main__":

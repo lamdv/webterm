@@ -64,7 +64,7 @@ sections:
 - `CONFIG = window.WEBTERM_CONFIG || {}` — `fontFamily`, `fontSize`,
   `launchers`.
 - Reconnect state: `socket`, `reconnectDelay`, `everConnected`,
-  `closedByPage`, `activateNext`.
+  `closedByPage`, `activateNext`, `restarting`.
 
 `DEFAULT_FONT_FAMILY` is a Nerd Font aware stack; `CONFIG.fontFamily` overrides
 it and `CONFIG.fontSize` defaults to 13.
@@ -79,13 +79,16 @@ it and `CONFIG.fontSize` defaults to 13.
 - on message, dispatches strings to `handleControl` and binary payloads to
   `handleOutput`.
 - on close, retries with exponential backoff capped at 8 s, unless the page is
-  unloading (`closedByPage`).
+  unloading (`closedByPage`). If `restarting` is set, it keeps showing
+  "restarting…" instead of the disconnected status.
 
 `send()` is a no-op unless the socket is `OPEN`.
 
 ### Control plane
 
-`handleControl` handles `sessions`, `attached`, and `exit`.
+`handleControl` handles `sessions`, `attached`, `exit`, and `restarting`. The
+latter sets `restarting` and the status text; the flag is cleared on the next
+`socket.onopen`.
 
 `reconcileSessions(sessions)` is the core reconciler:
 
@@ -141,18 +144,27 @@ unmeasurable right after creation:
 
 xterm.js (through at least 5.5.0) drops wheel events that its line
 accumulator rounds down to zero: small/high-resolution wheel and trackpad
-deltas, and any wheel event while `Shift` is held. For a full-screen
-application that requested mouse tracking (pi, btop, ...) this disables
-scrolling entirely, because those apps receive wheel input only as SGR mouse
-reports. To work around it, each terminal wrapper installs a capture-phase
-`wheel` listener. When the application has mouse tracking active
-(`term.modes.mouseTrackingMode`), the handler builds a mouse report via
-xterm's own mouse service and stops the event before xterm's lossy handler
-sees it; when tracking is off it does nothing and lets xterm scroll the
-scrollback. This uses xterm internals (`term._core._mouseService`,
-`coreMouseService.triggerMouseEvent`), guarded so a future xterm that changes
-them falls back to stock behavior. Populated by `forwardWheelToApp()` in
-`ensureTerminal()`.
+deltas, and any wheel event while `Shift` is held. Two behaviours depend on
+those events:
+
+- Full-screen applications that requested mouse tracking (pi, btop, ...)
+  receive scrolling only as SGR mouse reports, so the drops disable scrolling
+  entirely.
+- Full-screen applications without mouse tracking expect *alternate scroll*:
+  xterm translates the wheel into cursor up/down keys, but the same zero-line
+  early return skips that, so the event escapes to the browser and scrolls the
+  page instead of reaching the PTY.
+
+To work around it, each terminal wrapper installs a capture-phase `wheel`
+listener. `handleWheel()` sends the application an SGR mouse report when mouse
+tracking is active (`forwardMouseWheel()`, using xterm's own mouse service so
+the active encoding is honoured) and otherwise sends cursor up/down keys when
+the alternate buffer is active (honouring `applicationCursorKeysMode`; rounded-
+to-zero deltas accumulate rather than escaping to the browser). In the normal
+buffer it does nothing and lets xterm scroll the scrollback. This uses xterm
+internals (`term._core._mouseService`, `coreMouseService.triggerMouseEvent`,
+`viewport.getLinesScrolled`), guarded so a future xterm that changes them falls
+back to stock behavior. Populated by `handleWheel()` in `ensureTerminal()`.
 
 ### Launchers
 
@@ -167,6 +179,11 @@ backslash escapes) and an optional name, saves it, and starts it.
 
 `createSession(command, title)` sizes the new session to the active terminal's
 grid and sends `{"type":"create", ...}`.
+
+The `⟳` button in the sidebar header asks for confirmation (restarting closes
+all sessions), then sends `{"type":"restart"}`. The server acks with
+`restarting`, the socket drops, and the normal reconnect loop attaches to the
+freshly exec'd process.
 
 ### Keyboard
 
@@ -183,8 +200,11 @@ after first paint).
 ## WebSocket protocol handling
 
 Client to server (text JSON): `list`, `subscribe`, `unsubscribe`, `create`,
-`kill`, `rename`, `input`, `resize`. Server to client (text JSON): `sessions`,
-`attached`, `exit`. Server to client (binary): `[len(id)][id][output]`. See
+`kill`, `rename`, `input`, `resize`, `restart`. Server to client (text JSON):
+`sessions`, `attached`, `exit`, `restarting`. Server to client (binary):
+`[len(id)][id][output]`. The socket URL is derived from `location` — `wss://`
+when the page is served over HTTPS (the server was started with
+`--tls-cert`), otherwise `ws://` — so enabling TLS needs no frontend change. See
 [architecture.md](architecture.md#wire-protocol) and
 [backend.md](backend.md#protocol) for the canonical description.
 

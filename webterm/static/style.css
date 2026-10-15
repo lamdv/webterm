@@ -101,6 +101,11 @@ body {
   background: var(--accent);
 }
 
+#restart-server {
+  margin-left: auto;
+}
+
+#restart-server,
 #sidebar-collapse {
   background: transparent;
   color: var(--text-dim);
@@ -114,6 +119,7 @@ body {
   cursor: pointer;
 }
 
+#restart-server:hover,
 #sidebar-collapse:hover {
   color: var(--text);
   border-color: var(--accent);
@@ -323,6 +329,17 @@ body {
 
 .dot.disconnected {
   background: var(--danger);
+}
+
+.dot.restarting {
+  background: var(--warn);
+  animation: dot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes dot-pulse {
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* ------------------------------------------------------------------- main */

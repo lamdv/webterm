@@ -30,6 +30,25 @@ class LauncherParsingTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("expected LABEL=COMMAND", errors[0])
 
+    def test_parser_accepts_token(self) -> None:
+        args = build_parser().parse_args(["--token", "s3cret"])
+        self.assertEqual(args.token, "s3cret")
+
+    def test_parser_accepts_tls_options(self) -> None:
+        args = build_parser().parse_args(["--tls-cert", "c.pem", "--tls-key", "k.pem"])
+        self.assertEqual(args.tls_cert, "c.pem")
+        self.assertEqual(args.tls_key, "k.pem")
+
+    def test_main_rejects_tls_key_without_cert(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            main(["--tls-key", "k.pem"])
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_main_reports_missing_certificate(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            main(["--tls-cert", "/nonexistent/webterm-cert.pem"])
+        self.assertEqual(caught.exception.code, 2)
+
     def test_parser_accepts_repeated_launcher(self) -> None:
         args = build_parser().parse_args(["--launcher", "a=a", "--launcher", "b=b c"])
         self.assertEqual(args.launcher, ["a=a", "b=b c"])

@@ -68,9 +68,41 @@ By default it binds to `127.0.0.1`. To expose it on your network:
 uv run webterm --host 0.0.0.0 --port 8765
 ```
 
-> ⚠️ webterm gives whoever can reach it a shell on your machine. There is no
-> authentication yet. Only bind to `0.0.0.0` on trusted networks, or put it
-> behind a reverse proxy that handles auth/TLS.
+> ⚠️ webterm gives whoever can reach it a shell on your machine. Don't expose it
+> on an untrusted network without TLS and a token. Pass `--token` (or set
+> `$WEBTERM_TOKEN`, which keeps the secret out of the process list) to require
+> HTTP Basic auth on every request and WebSocket upgrade: the browser prompts
+> for the token, which you enter as the password (the username is ignored).
+> Add `--tls-cert`/`--tls-key` — or a reverse proxy that terminates TLS — so the
+> token and terminal traffic are encrypted and the server is authenticated.
+>
+> Without TLS, `--token` is only base64 on the wire and does not stop a
+> man-in-the-middle. See [TLS](#tls).
+
+## TLS
+
+webterm can terminate TLS itself. Pass a PEM certificate and private key:
+
+```bash
+uv run webterm --host 0.0.0.0 --token "$WEBTERM_TOKEN" \
+  --tls-cert cert.pem --tls-key key.pem
+```
+
+The client is then served over `https://` and its WebSocket automatically uses
+`wss://`. `--tls-key` may be omitted when the private key is included in the
+certificate file. TLS 1.2 is the minimum; older protocol versions are refused.
+
+For a quick self-signed certificate (browsers warn until you trust it):
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout key.pem -out cert.pem \
+  -subj '/CN=webterm.local' -addext 'subjectAltName=DNS:webterm.local'
+```
+
+TLS encrypts the token and the terminal stream and authenticates the server, so
+it closes the man-in-the-middle gap that `--token` alone leaves open. Running
+behind a reverse proxy that already handles TLS works just as well.
 
 ## Usage
 
@@ -94,6 +126,9 @@ uv run webterm --host 0.0.0.0 --port 8765
 - **Rename** — double-click a tab title.
 - **Reconnect** — just reload the page; sessions stay alive until the server
   exits or you close them.
+- **Restart the server** — the `⟳` button in the sidebar (or `SIGHUP` sent to
+  the server process) re-execs webterm in place so edited code takes effect.
+  All sessions are closed by design; the browser reconnects automatically.
 
 ## Configuration
 
@@ -101,6 +136,9 @@ uv run webterm --host 0.0.0.0 --port 8765
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | Interface to bind |
 | `--port` | `8765` | Port to listen on |
+| `--tls-cert` | none | PEM certificate (or chain); enables HTTPS/WSS |
+| `--tls-key` | none | PEM private key for `--tls-cert` (omit if in the cert file) |
+| `--token` | `$WEBTERM_TOKEN`, else none | Shared secret required via HTTP Basic auth when set |
 | `--shell` | `$SHELL` or `/bin/bash` | Shell to launch |
 | `--font` | Nerd Font aware stack | CSS `font-family` for the browser terminal |
 | `--launcher` | `pi agent` (if `pi` is installed) | Add a button that starts a session running `LABEL=COMMAND` (repeatable) |

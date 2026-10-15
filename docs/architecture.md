@@ -112,11 +112,18 @@ manager then broadcasts the updated session list.
 One WebSocket per browser, carrying two frame types:
 
 - **Text frames** — JSON control messages. Browser → server: `subscribe`,
-  `unsubscribe`, `create`, `kill`, `rename`, `input`, `resize`, `list`.
-  Server → browser: `sessions`, `attached`, `exit`.
+  `unsubscribe`, `create`, `kill`, `rename`, `input`, `resize`, `list`,
+  `restart`. Server → browser: `sessions`, `attached`, `exit`, `restarting`.
 - **Binary frames** — terminal output. Layout:
   `[1 byte id length][id bytes (UTF-8)][raw terminal output]`.
   The per-frame session id lets one socket carry many sessions.
+
+A `restart` command (or `SIGHUP` sent to the server process) asks the process to
+re-exec itself in place. Every session is closed, each browser is sent
+`restarting` and disconnected, and the client reconnects to the fresh process.
+Because the process image is replaced with `os.execv`, the PID and listening
+port are preserved and no external supervisor is needed. This is deliberate: a
+restart always drops all sessions and scrollback.
 
 Terminal bytes are never interpreted by the server (except that future features
 may parse escape sequences for metadata such as titles); they are passed through
@@ -142,8 +149,10 @@ See [backend.md](backend.md#protocol) for message-by-message detail and
 All state is in memory in the server process. There is no database or session
 file. `--scrollback` bounds the per-session replay buffer; the manager removes
 dead sessions from its map. Restarting the server destroys all sessions and
-history. Launcher definitions and UI preferences that survive reload live in the
-browser's `localStorage`, not on the server.
+history — that is the point of the sidebar `⟳` button (or `SIGHUP`), which
+re-execs the process so edited code takes effect; the browser reconnects to the
+new process. Launcher definitions and UI preferences that survive reload live in
+the browser's `localStorage`, not on the server.
 
 ## Configuration
 
@@ -155,10 +164,23 @@ cacheable.
 
 ## Security model
 
-- Default bind is `127.0.0.1`. Anyone who can reach the server gets a shell;
-  there is no authentication.
-- Exposing it on `0.0.0.0` requires understanding that risk; the README warns
-  about it and recommends a reverse proxy for auth/TLS.
+- Default bind is `127.0.0.1`. Anyone who can reach the server gets a shell
+  when no token is configured.
+- `--token` (or `$WEBTERM_TOKEN`) enables a lightweight shared-secret guard:
+  `check_auth()` runs before every HTTP request and WebSocket upgrade and
+  requires matching HTTP Basic credentials, so static files, `/config.js`, the
+  WebSocket, and terminal I/O are all covered by one check. The secret is
+  compared with `hmac.compare_digest`.
+- `--tls-cert`/`--tls-key` wrap the single `asyncio.start_server` call in an
+  `ssl.SSLContext`, so the same socket speaks HTTPS and WSS. This is what makes
+  the token meaningful off localhost: TLS encrypts the secret and the terminal
+  stream and authenticates the server, closing the man-in-the-middle gap that
+  Basic-over-plain-HTTP cannot. The client already selects `wss:` from
+  `location.protocol`, so no frontend change is needed.
+- Exposing it on `0.0.0.0` requires understanding the risk; the README warns
+  about it, and `__main__.py` logs a warning when binding a non-loopback host
+  without TLS or without a token. Without TLS, Basic auth is only base64 and the
+  token travels on every request.
 - Static serving resolves paths under `static/` and rejects traversal.
 
 ## Extensibility points

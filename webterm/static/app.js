@@ -43,6 +43,7 @@
   let everConnected = false;
   let closedByPage = false;
   let activateNext = false;
+  let restarting = false;
   const userLaunchers = loadUserLaunchers();
 
   const CONFIG = window.WEBTERM_CONFIG || {};
@@ -177,6 +178,7 @@
 
     socket.onopen = () => {
       reconnectDelay = 500;
+      restarting = false;
       setStatus("connected", "connected");
       subscribed.clear();
       if (everConnected) {
@@ -198,7 +200,11 @@
 
     socket.onclose = () => {
       if (closedByPage) return;
-      setStatus("disconnected", "disconnected — retrying…");
+      if (restarting) {
+        setStatus("restarting", "restarting…");
+      } else {
+        setStatus("disconnected", "disconnected — retrying…");
+      }
       subscribed.clear();
       setTimeout(connect, reconnectDelay);
       reconnectDelay = Math.min(reconnectDelay * 2, 8000);
@@ -224,6 +230,11 @@
         break;
       case "exit":
         handleExit(message.session_id);
+        break;
+      case "restarting":
+        // Broadcast to every client when the server is about to re-exec.
+        restarting = true;
+        setStatus("restarting", "restarting…");
         break;
       default:
         break;
@@ -274,13 +285,46 @@
 
   // xterm.js (through at least 5.5.0) silently drops wheel events that its
   // line accumulator rounds down to zero: small/high-resolution wheel and
-  // trackpad deltas, and any wheel event while Shift is held.  For a
-  // full-screen application that requested mouse tracking (pi, btop, ...) this
-  // turns scrolling off entirely, because it only receives wheel input as SGR
-  // mouse reports.  Forward those events to the application ourselves; xterm
-  // emits exactly one mouse report per wheel event, so this matches its
+  // trackpad deltas, and any wheel event while Shift is held.  Two behaviours
+  // depend on those events:
+  //
+  //   * Full-screen applications that requested mouse tracking (pi, btop, ...)
+  //     receive scrolling only as SGR mouse reports, so the drops disable
+  //     scrolling entirely.
+  //   * Full-screen applications without mouse tracking expect "alternate
+  //     scroll": xterm translates the wheel into cursor up/down keys, but the
+  //     same zero-line early return skips that, so the event escapes to the
+  //     browser and scrolls the page instead of reaching the PTY.
+  //
+  // Handle both from a capture-phase listener.  Returns true when the event was
+  // consumed and the DOM default must be suppressed (even if a rounded-to-zero
+  // alternate-scroll tick produced no keys yet).
+  function handleWheel(term, event, sessionId) {
+    if (event.deltaY === 0) return false;
+    if (forwardMouseWheel(term, event)) return true;
+
+    // Normal buffer: leave the event to xterm so its scrollback scrolls.
+    const buffer = term.buffer && term.buffer.active;
+    if (!buffer || buffer.type !== "alternate") return false;
+
+    // Alternate buffer: consume the event so the page never scrolls, and send
+    // the cursor-up/down keys xterm would have sent, honouring application
+    // cursor keys mode (DECCKM).  getLinesScrolled() accumulates
+    // high-resolution deltas across events, so a rounded-to-zero tick simply
+    // contributes to the next one instead of escaping to the browser.
+    const lines = wheelScrollLines(term, event);
+    if (lines > 0) {
+      const app = term.modes && term.modes.applicationCursorKeysMode;
+      const key = "\x1b" + (app ? "O" : "[") + (event.deltaY < 0 ? "A" : "B");
+      send({ type: "input", session_id: sessionId, data: key.repeat(lines) });
+    }
+    return true;
+  }
+
+  // Mouse-tracking applications receive wheel input as SGR mouse reports.
+  // xterm emits exactly one report per wheel event, so this matches its
   // behavior for ordinary wheel ticks.
-  function forwardWheelToApp(term, event) {
+  function forwardMouseWheel(term, event) {
     const core = term._core;
     const modes = term.modes;
     if (!core || !modes || !modes.mouseTrackingMode || modes.mouseTrackingMode === "none") {
@@ -311,6 +355,16 @@
       shift: event.shiftKey,
     });
     return true;
+  }
+
+  // Reuse xterm's line-per-wheel accounting so alternate-scroll feels the same
+  // as stock xterm (including its high-resolution delta accumulation).
+  function wheelScrollLines(term, event) {
+    const viewport = term._core && term._core.viewport;
+    if (viewport && typeof viewport.getLinesScrolled === "function") {
+      return Math.abs(viewport.getLinesScrolled(event));
+    }
+    return 1;
   }
 
   function ensureTerminal(session) {
@@ -372,12 +426,11 @@
     );
 
     // Capture phase, so the event never reaches xterm's lossy wheel handler
-    // when we have already turned it into a mouse report.
+    // when we have already turned it into input for the application.
     wrapper.addEventListener(
       "wheel",
       (event) => {
-        if (event.deltaY === 0) return;
-        if (!forwardWheelToApp(term, event)) return;
+        if (!handleWheel(term, event, session.id)) return;
         event.preventDefault();
         event.stopImmediatePropagation();
       },
@@ -594,6 +647,12 @@
 
   document.getElementById("new-session").addEventListener("click", () => createSession());
   document.getElementById("empty-new").addEventListener("click", () => createSession());
+  document.getElementById("restart-server").addEventListener("click", () => {
+    if (!window.confirm("Restart the server? All sessions will be closed.")) return;
+    restarting = true;
+    setStatus("restarting", "restarting…");
+    send({ type: "restart" });
+  });
 
   function renderLaunchers() {
     if (!launchersEl) return;

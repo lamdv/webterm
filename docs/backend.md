@@ -27,6 +27,9 @@ All modules use `from __future__ import annotations` and are linted by `ruff`
 |---|---|---|
 | `--host` | `127.0.0.1` | Bind interface. Do not change the default without a reason. |
 | `--port` | `8765` | Bind port. |
+| `--tls-cert` | none | PEM certificate (or chain); enables HTTPS/WSS. |
+| `--tls-key` | none | PEM private key for `--tls-cert`. |
+| `--token` | `$WEBTERM_TOKEN`, else none | Require HTTP Basic auth with this shared secret. |
 | `--shell` | `$SHELL` or a detected shell | Shell to launch. |
 | `--font` | Nerd Font aware stack | CSS `font-family` passed to the client. |
 | `--launcher LABEL=COMMAND` | `pi agent` if `pi` is installed | Sidebar launcher button (repeatable). |
@@ -45,6 +48,15 @@ using `shlex.split`. When no `--launcher` is given, it probes for `pi` with
 
 The config dict currently supports `fontFamily` and `launchers`; it is served as
 `window.WEBTERM_CONFIG` by `/config.js`.
+
+`build_ssl_context(certfile, keyfile)` constructs the server `SSLContext`
+(TLS 1.2 minimum) from the `--tls-cert`/`--tls-key` files and passes it to
+`serve()`. Bad or missing PEM files are reported through `parser.error`.
+
+When `serve()` returns `True` (a client asked to restart, or the process got
+`SIGHUP`), `main()` re-execs the interpreter with `python -m webterm` and the
+original arguments. Using `-m webterm` rather than `sys.argv[0]` keeps working
+whether webterm was started from the console script or as a module.
 
 ## `websocket.py` — the WebSocket layer
 
@@ -83,10 +95,21 @@ dropped), `ConnectionClosed` when the peer disappears.
 - `serve_config` generates `/config.js` as
   `window.WEBTERM_CONFIG = {...};` with `Cache-Control: no-store`.
 
-`handle_client` ties it together: parse the request, route a WebSocket upgrade
-on `/ws` (path exact match) to `WebSocket.handshake`, route `/config.js` to
-`serve_config`, and otherwise fall back to static serving. The connection is
-always closed in `finally`.
+When a TLS context is supplied, `serve` passes it as `ssl=` to
+`asyncio.start_server`, so HTTP and the WebSocket upgrade share one TLS
+listener; `handle_client` is unaware of the transport. The startup log line
+switches from `http://` to `https://` accordingly.
+
+`check_auth(headers, token)` gates every request when a token is configured.
+It accepts HTTP Basic credentials when either the username or the password
+equals the secret and does a constant-time comparison; otherwise
+`handle_client` answers `401 Unauthorized` with a `WWW-Authenticate: Basic`
+challenge before routing anything.
+
+`handle_client` ties it together: parse the request, enforce auth, route a
+WebSocket upgrade on `/ws` (path exact match) to `WebSocket.handshake`, route
+`/config.js` to `serve_config`, and otherwise fall back to static serving. The
+connection is always closed in `finally`.
 
 ### `ClientConnection`
 
@@ -117,6 +140,7 @@ fan-out to the async socket:
 | `input` | `session_id`, `data` | Write UTF-8 bytes to the PTY. |
 | `resize` | `session_id`, `cols`, `rows` | `TIOCSWINSZ` on the PTY. |
 | `list` | | Re-send the session list. |
+| `restart` | | Ask the process to re-exec itself. Broadcasts `restarting`, then shuts down. |
 
 Unknown types are logged at debug level. Binary frames from the client are
 ignored.
@@ -128,6 +152,7 @@ ignored.
 | `sessions` | `sessions` | Full list of session info dicts. Sent on connect, on `list`, and whenever the manager changes. |
 | `attached` | `session` | Acknowledge a subscribe, with that session's info. |
 | `exit` | `session_id` | The child process exited. |
+| `restarting` | | The server is about to re-exec; reconnect once the socket drops. |
 
 Binary frames carry terminal output as described in
 [architecture.md](architecture.md#wire-protocol).
@@ -135,10 +160,16 @@ Binary frames carry terminal output as described in
 ### Server lifecycle
 
 `serve()` installs a manager listener that pushes updated session lists to all
-connections, starts the TCP server, and installs `SIGINT`/`SIGTERM` handlers.
+connections, starts the TCP server, and installs signal handlers. A shared
+`ServerControl` carries process-lifecycle requests: `SIGINT`/`SIGTERM` request a
+plain stop, `SIGHUP` and the `restart` command request a restart. Both set the
+same shutdown event; `restart_requested` distinguishes them.
+
 Shutdown stops accepting, asks every connection to close, closes all sessions,
-cancels client tasks, and waits (bounded) for `server.wait_closed()`. The
-comment in the code explains why: from Python 3.12, `wait_closed()` waits for
+cancels client tasks, and waits (bounded) for `server.wait_closed()`. If a
+restart was requested, it first broadcasts `restarting` to every connection, and
+`serve()` returns `True` so `__main__.main()` can re-exec. The comment in the
+code explains why `wait_closed()` is bounded: from Python 3.12 it waits for
 active connections, so an open browser WebSocket would otherwise hang Ctrl+C.
 
 ## `session.py` — PTYs, scrollback, and reaping

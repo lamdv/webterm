@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import os
+import ssl
 import struct
 
 OP_TEXT = 0x1
@@ -34,8 +35,19 @@ class WSClient:
         self.writer = writer
 
     @classmethod
-    async def connect(cls, host: str, port: int, path: str = "/ws") -> "WSClient":
-        reader, writer = await asyncio.open_connection(host, port)
+    async def connect(
+        cls,
+        host: str,
+        port: int,
+        path: str = "/ws",
+        headers: dict[str, str] | None = None,
+        *,
+        ssl: ssl.SSLContext | None = None,
+        server_hostname: str | None = None,
+    ) -> "WSClient":
+        reader, writer = await asyncio.open_connection(
+            host, port, ssl=ssl, server_hostname=server_hostname
+        )
         key = base64.b64encode(os.urandom(16)).decode("ascii")
         request = (
             f"GET {path} HTTP/1.1\r\n"
@@ -44,8 +56,10 @@ class WSClient:
             "Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {key}\r\n"
             "Sec-WebSocket-Version: 13\r\n"
-            "\r\n"
         )
+        for name, value in (headers or {}).items():
+            request += f"{name}: {value}\r\n"
+        request += "\r\n"
         writer.write(request.encode("ascii"))
         await writer.drain()
         header = await reader.readuntil(b"\r\n\r\n")

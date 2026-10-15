@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hmac
 import json
 import logging
 import signal
+import ssl
 from pathlib import Path
 
 from .session import SessionManager
@@ -38,6 +41,27 @@ CONTENT_TYPES = {
 
 def _content_type(path: Path) -> str:
     return CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def check_auth(headers: dict[str, str], token: str | None) -> bool:
+    """Return True when a request is allowed to proceed.
+
+    With no configured token every request is allowed, preserving webterm's
+    historical localhost-only behaviour.  With a token set, HTTP Basic
+    credentials must match: the username is ignored and either the username or
+    the password field may carry the secret.  Comparison is constant-time.
+    """
+    if token is None:
+        return True
+    scheme, _, encoded = headers.get("authorization", "").partition(" ")
+    if scheme.lower() != "basic" or not encoded:
+        return False
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    username, _, password = decoded.partition(":")
+    return hmac.compare_digest(username, token) or hmac.compare_digest(password, token)
 
 
 async def read_http_request(
@@ -129,12 +153,35 @@ async def serve_config(writer: asyncio.StreamWriter, config: dict) -> None:
     await writer.drain()
 
 
+class ServerControl:
+    """Process-lifecycle requests raised by clients or signals.
+
+    A single instance is shared by every connection.  ``shutdown`` is set for
+    both a plain stop and a restart; ``restart_requested`` distinguishes the
+    two so the entry point can re-exec the process instead of exiting.
+    """
+
+    def __init__(self) -> None:
+        self.shutdown = asyncio.Event()
+        self.restart_requested = False
+
+    def request_stop(self) -> None:
+        self.shutdown.set()
+
+    def request_restart(self) -> None:
+        self.restart_requested = True
+        self.shutdown.set()
+
+
 class ClientConnection:
     """One browser connection: fans session output to it and handles commands."""
 
-    def __init__(self, ws: WebSocket, manager: SessionManager) -> None:
+    def __init__(
+        self, ws: WebSocket, manager: SessionManager, control: ServerControl | None = None
+    ) -> None:
         self.ws = ws
         self.manager = manager
+        self.control = control
         self.out_queue: asyncio.Queue[tuple[str, bytes | None]] = asyncio.Queue(maxsize=2048)
         self.subscriptions = set()
         self.closed = False
@@ -201,6 +248,15 @@ class ClientConnection:
         except (ConnectionClosed, WebSocketError):
             self._closed_event.set()
 
+    async def send_restarting(self) -> None:
+        """Tell the browser the server is about to restart and reconnect."""
+        if self.closed:
+            return
+        try:
+            await self.ws.send_json({"type": "restarting"})
+        except (ConnectionClosed, WebSocketError):
+            self._closed_event.set()
+
     async def _send_loop(self) -> None:
         while True:
             session_id, payload = await self.out_queue.get()
@@ -249,8 +305,17 @@ class ClientConnection:
             self._resize(message)
         elif kind == "list":
             await self.send_sessions()
+        elif kind == "restart":
+            self._restart()
         else:
             log.debug("unknown message type %r", kind)
+
+    def _restart(self) -> None:
+        if self.control is None:
+            log.debug("restart requested but server control is unavailable")
+            return
+        log.info("restart requested by client")
+        self.control.request_restart()
 
     async def _subscribe(self, session_id: str) -> None:
         session = self.manager.get(session_id)
@@ -326,11 +391,25 @@ async def handle_client(
     manager: SessionManager,
     connections: set[ClientConnection],
     config: dict | None = None,
+    control: ServerControl | None = None,
+    token: str | None = None,
 ) -> None:
     try:
         try:
             method, path, headers = await read_http_request(reader)
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, WebSocketError, asyncio.LimitOverrunError):
+            return
+
+        if not check_auth(headers, token):
+            writer.write(
+                _http_response(
+                    "401 Unauthorized",
+                    b"Authentication required\n",
+                    extra_headers='WWW-Authenticate: Basic realm="webterm"\r\n',
+                )
+            )
+            with contextlib.suppress(Exception):
+                await writer.drain()
             return
 
         is_upgrade = headers.get("upgrade", "").lower() == "websocket"
@@ -342,7 +421,7 @@ async def handle_client(
                 with contextlib.suppress(Exception):
                     await writer.drain()
                 return
-            connection = ClientConnection(ws, manager)
+            connection = ClientConnection(ws, manager, control)
             connections.add(connection)
             try:
                 await connection.run()
@@ -368,9 +447,14 @@ async def serve(
     port: int,
     manager: SessionManager,
     config: dict | None = None,
-) -> None:
+    *,
+    token: str | None = None,
+    ssl_context: ssl.SSLContext | None = None,
+) -> bool:
+    """Run the server until stopped.  Returns True if a restart was requested."""
     connections: set[ClientConnection] = set()
     client_tasks: set[asyncio.Task] = set()
+    control = ServerControl()
 
     def on_sessions_changed() -> None:
         for connection in list(connections):
@@ -383,27 +467,39 @@ async def serve(
 
     def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = loop.create_task(
-            handle_client(reader, writer, manager, connections, config)
+            handle_client(reader, writer, manager, connections, config, control, token)
         )
         client_tasks.add(task)
         task.add_done_callback(client_tasks.discard)
 
-    server = await asyncio.start_server(on_client, host, port)
+    server = await asyncio.start_server(on_client, host, port, ssl=ssl_context)
     addresses = ", ".join(
         f"{sock.getsockname()[0]}:{sock.getsockname()[1]}"
         for sock in server.sockets or ()
     )
-    log.info("webterm listening on http://%s", addresses)
+    scheme = "https" if ssl_context is not None else "http"
+    log.info("webterm listening on %s://%s", scheme, addresses)
 
-    stop = asyncio.Event()
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    for sig, request in (
+        (signal.SIGINT, control.request_stop),
+        (signal.SIGTERM, control.request_stop),
+        (signal.SIGHUP, control.request_restart),
+    ):
         with contextlib.suppress(NotImplementedError):
-            loop.add_signal_handler(sig, stop.set)
+            loop.add_signal_handler(sig, request)
 
     try:
-        await stop.wait()
+        await control.shutdown.wait()
     finally:
-        log.info("shutting down")
+        log.info("restarting" if control.restart_requested else "shutting down")
+        if control.restart_requested:
+            # Let every browser know this is a deliberate restart, not a crash,
+            # so it can show the right status while it reconnects.
+            pending = [
+                asyncio.create_task(connection.send_restarting())
+                for connection in list(connections)
+            ]
+            await asyncio.gather(*pending, return_exceptions=True)
         # Stop accepting, then disconnect clients.  As of Python 3.12
         # Server.wait_closed() waits for every active connection, so an open
         # browser WebSocket would otherwise make Ctrl+C hang forever.
@@ -417,3 +513,4 @@ async def serve(
             await asyncio.gather(*client_tasks, return_exceptions=True)
         with contextlib.suppress(Exception, asyncio.TimeoutError):
             await asyncio.wait_for(server.wait_closed(), timeout=2)
+    return control.restart_requested
