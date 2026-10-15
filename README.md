@@ -110,6 +110,7 @@ behind a reverse proxy that already handles TLS works just as well.
 The recommended way to reach webterm from other machines is to keep it on
 localhost and put an authenticated, TLS-terminating proxy in front of it. That
 way webterm is never bound to the LAN and the token is never sent in the clear.
+See [docs/remote-access.md](docs/remote-access.md) for full setup guides.
 
 ### Tailscale (private tailnet)
 
