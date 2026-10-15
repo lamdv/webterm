@@ -40,7 +40,6 @@
   let sessionsMeta = [];
   let socket = null;
   let reconnectDelay = 500;
-  let everConnected = false;
   let closedByPage = false;
   let activateNext = false;
   let restarting = false;
@@ -181,12 +180,6 @@
       restarting = false;
       setStatus("connected", "connected");
       subscribed.clear();
-      if (everConnected) {
-        // A fresh connection replays full history; clear stale scrollback so
-        // it is not duplicated.
-        for (const { term } of terminals.values()) term.reset();
-      }
-      everConnected = true;
       socket.send(JSON.stringify({ type: "list" }));
     };
 
@@ -248,10 +241,13 @@
 
     for (const session of sessions) {
       seen.add(session.id);
-      ensureTerminal(session);
+      const entry = ensureTerminal(session);
       if (!subscribed.has(session.id)) {
         subscribed.add(session.id);
-        send({ type: "subscribe", session_id: session.id });
+        // Resume where this terminal left off.  The server replays only the
+        // bytes after that offset, so a reconnect never disturbs terminal
+        // state (alternate buffer, mouse tracking, scrollback).
+        send({ type: "subscribe", session_id: session.id, since: entry.offset });
       }
     }
 
@@ -437,7 +433,7 @@
       { capture: true, passive: false }
     );
 
-    const entry = { term, wrapper };
+    const entry = { term, wrapper, offset: 0 };
     terminals.set(session.id, entry);
     return entry;
   }
@@ -446,11 +442,31 @@
     const view = new Uint8Array(buffer);
     if (view.length < 1) return;
     const idLength = view[0];
-    if (view.length < 1 + idLength) return;
+    const header = 1 + idLength + 8;
+    if (view.length < header) return;
     const id = new TextDecoder().decode(view.subarray(1, 1 + idLength));
-    const payload = view.subarray(1 + idLength);
     const entry = terminals.get(id);
-    if (entry) entry.term.write(payload);
+    if (!entry) return;
+    const offset = Number(new DataView(buffer).getBigUint64(1 + idLength));
+    applyOutput(entry, offset, view.subarray(header));
+  }
+
+  // Write a chunk at its absolute position in the session's output stream,
+  // tolerating replay overlap and gaps.  A forward jump means the bytes the
+  // terminal missed were evicted from the server's scrollback while it was
+  // disconnected, so start over from the retained tail; otherwise the chunk
+  // continues exactly where the terminal left off.
+  function applyOutput(entry, offset, payload) {
+    if (offset > entry.offset) {
+      entry.term.reset();
+      entry.offset = offset;
+    } else if (offset < entry.offset) {
+      const skip = entry.offset - offset;
+      if (skip >= payload.length) return;
+      payload = payload.subarray(skip);
+    }
+    entry.offset += payload.length;
+    entry.term.write(payload);
   }
 
   function handleExit(sessionId) {

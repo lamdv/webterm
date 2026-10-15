@@ -39,7 +39,7 @@ def _command_title(command: list[str] | str | None) -> str | None:
 class Subscriber(Protocol):
     """Receives output from a session it is attached to."""
 
-    def offer_output(self, session: Session, data: bytes) -> None: ...
+    def offer_output(self, session: Session, data: bytes, offset: int) -> None: ...
 
     def offer_exit(self, session: Session) -> None: ...
 
@@ -72,6 +72,11 @@ class Session:
         self._loop = loop
         self._scrollback = max(scrollback, 0)
         self._buffer = bytearray()
+        # Absolute number of PTY bytes emitted since the session was created.
+        # ``_buffer`` holds the tail ``[buffer_start, _total)`` of that stream;
+        # offsets let a client resume after a reconnect without replaying (or
+        # losing) what it has already rendered.
+        self._total = 0
         self._out = bytearray()
         self._subscribers: set[Subscriber] = set()
         self._on_exit = on_exit
@@ -86,6 +91,28 @@ class Session:
     def buffer(self) -> bytes:
         """Snapshot of the scrollback for replay."""
         return bytes(self._buffer)
+
+    @property
+    def total(self) -> int:
+        """Absolute offset one past the last emitted PTY byte."""
+        return self._total
+
+    @property
+    def buffer_start(self) -> int:
+        """Absolute offset of the first byte still retained in ``buffer``."""
+        return self._total - len(self._buffer)
+
+    def replay_since(self, offset: int) -> tuple[int, bytes]:
+        """Return ``(start, data)`` for a client that has consumed ``offset``.
+
+        ``start`` is the absolute offset of the first returned byte and is
+        never earlier than :attr:`buffer_start`, so a client whose ``offset``
+        has fallen out of the retained window is told where the stream now
+        begins and can detect the gap.  ``data`` may be empty when the client
+        is already caught up.
+        """
+        start = max(min(int(offset), self._total), self.buffer_start)
+        return start, bytes(self._buffer[start - self.buffer_start :])
 
     @property
     def subscribers(self) -> set[Subscriber]:
@@ -122,9 +149,10 @@ class Session:
             if not data:
                 self._mark_dead()
                 return
+            offset = self._total
             self._append(data)
             for subscriber in list(self._subscribers):
-                subscriber.offer_output(self, data)
+                subscriber.offer_output(self, data, offset)
 
     def _on_child_exit(self, returncode: int) -> None:
         self.exit_code = returncode
@@ -132,6 +160,7 @@ class Session:
 
     def _append(self, data: bytes) -> None:
         self._buffer.extend(data)
+        self._total += len(data)
         overflow = len(self._buffer) - self._scrollback
         if overflow <= 0:
             return

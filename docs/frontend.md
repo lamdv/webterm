@@ -63,8 +63,9 @@ sections:
 - `userLaunchers` — user-defined launcher pills, persisted.
 - `CONFIG = window.WEBTERM_CONFIG || {}` — `fontFamily`, `fontSize`,
   `launchers`.
-- Reconnect state: `socket`, `reconnectDelay`, `everConnected`,
-  `closedByPage`, `activateNext`, `restarting`.
+- Reconnect state: `socket`, `reconnectDelay`, `closedByPage`,
+  `activateNext`, `restarting`. Each terminal entry also tracks `offset`, the
+  number of output bytes it has rendered.
 
 `DEFAULT_FONT_FAMILY` is a Nerd Font aware stack; `CONFIG.fontFamily` overrides
 it and `CONFIG.fontSize` defaults to 13.
@@ -73,9 +74,10 @@ it and `CONFIG.fontSize` defaults to 13.
 
 `connect()` opens `ws(s)://<host>/ws`, sets `binaryType = "arraybuffer"`, and:
 
-- on open, resets backoff, clears `subscribed`, and (after a reconnect) resets
-  every terminal so replayed history is not duplicated, then sends
-  `{"type":"list"}`.
+- on open, resets backoff, clears `subscribed`, and sends
+  `{"type":"list"}`. Terminals are **not** reset: reconnect resumption is
+  offset-based (see below), so alternate-buffer and mouse-tracking state
+  survives a dropped socket.
 - on message, dispatches strings to `handleControl` and binary payloads to
   `handleOutput`.
 - on close, retries with exponential backoff capped at 8 s, unless the page is
@@ -92,8 +94,9 @@ latter sets `restarting` and the status text; the flag is cleared on the next
 
 `reconcileSessions(sessions)` is the core reconciler:
 
-1. For each server session, `ensureTerminal` and subscribe if not already
-   subscribed.
+1. For each server session, `ensureTerminal` and, if not already subscribed,
+   subscribe with `since: entry.offset` so the server replays only the bytes
+   this terminal has not seen.
 2. Dispose terminals and wrappers for sessions the server no longer reports.
 3. Re-render tabs.
 4. Choose the active session: if a create just happened (`activateNext`), switch
@@ -110,8 +113,18 @@ lacking `TextMetrics.fontBoundingBoxAscent/Descent`; without this the terminal
 can get stuck at 80 columns.
 
 `handleOutput` parses the binary frame: first byte is the session-id length,
-the next bytes are the UTF-8 id, the rest is terminal output written to that
-session's `term`. Unknown ids are ignored.
+the next bytes are the UTF-8 id, then an 8-byte big-endian absolute offset, then
+the terminal output. `applyOutput` writes the chunk at that offset into the
+session's `term` and advances `entry.offset`:
+
+- `offset === entry.offset` — the normal path (live output or an exact resume);
+  write and advance.
+- `offset < entry.offset` — overlapping replay; skip the already-seen prefix.
+- `offset > entry.offset` — the missed bytes were evicted from the server's
+  scrollback while disconnected, so `term.reset()` first and continue from the
+  retained tail. (This is the only path that clears terminal state.)
+
+Unknown ids are ignored.
 
 `handleExit` writes a dim "[process exited]" line and unsubscribes.
 
@@ -203,7 +216,7 @@ after first paint).
 Client to server (text JSON): `list`, `subscribe`, `unsubscribe`, `create`,
 `kill`, `rename`, `input`, `resize`, `restart`. Server to client (text JSON):
 `sessions`, `attached`, `exit`, `restarting`. Server to client (binary):
-`[len(id)][id][output]`. The socket URL is derived from `location` — `wss://`
+`[len(id)][id][offset:8][output]`. The socket URL is derived from `location` — `wss://`
 when the page is served over HTTPS (the server was started with
 `--tls-cert`), otherwise `ws://` — so enabling TLS needs no frontend change. See
 [architecture.md](architecture.md#wire-protocol) and

@@ -194,8 +194,10 @@ Each `Session` owns a PTY master fd and a child process. The event loop reads
 the PTY and fans output out to every attached WebSocket while appending to a
 bounded scrollback buffer. When a browser attaches, the buffer is replayed
 first. Terminal output is sent as binary frames prefixed with a one-byte
-session-id length so a single socket can carry several sessions at once;
-control messages (create, kill, rename, resize, ...) are JSON text frames.
+session-id length and an 8-byte absolute stream offset, so a single socket can
+carry several sessions at once and a reconnecting client can resume exactly
+where it left off; control messages (create, kill, rename, resize, ...) are JSON
+text frames.
 Children are reaped through a `SIGCHLD` handler in the `SessionManager`.
 
 ## Development

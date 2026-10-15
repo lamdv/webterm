@@ -14,6 +14,24 @@ OP_BINARY = 0x2
 OP_CLOSE = 0x8
 
 
+def decode_output_frame(frame: bytes) -> tuple[str, int, bytes]:
+    """Decode a server output frame into ``(session_id, offset, payload)``.
+
+    The frame layout is ``[id_length][session_id][offset:8][payload]`` where
+    ``offset`` is the absolute position of ``payload`` in the session's byte
+    stream (big-endian, unsigned).
+    """
+    if not frame:
+        raise ValueError("empty output frame")
+    id_length = frame[0]
+    header = 1 + id_length + 8
+    if len(frame) < header:
+        raise ValueError("truncated output frame")
+    session_id = frame[1 : 1 + id_length].decode("utf-8")
+    (offset,) = struct.unpack(">Q", frame[1 + id_length : header])
+    return session_id, offset, frame[header:]
+
+
 def encode_client_frame(opcode: int, payload: bytes) -> bytes:
     """Encode a masked client frame."""
     b0 = 0x80 | opcode
@@ -111,6 +129,42 @@ class WSClient:
                     collected.extend(payload)
                     if needle in collected:
                         return bytes(collected)
+
+        return await asyncio.wait_for(_loop(), timeout)
+
+    async def recv_output(self, timeout: float = 10.0) -> tuple[str, int, bytes]:
+        """Receive the next binary output frame as (session_id, offset, payload)."""
+
+        async def _loop() -> tuple[str, int, bytes]:
+            while True:
+                opcode, frame = await self.recv_frame()
+                if opcode == OP_BINARY:
+                    return decode_output_frame(frame)
+
+        return await asyncio.wait_for(_loop(), timeout)
+
+    async def recv_output_until_contains(
+        self, needle: bytes, timeout: float = 10.0
+    ) -> tuple[str, int, bytes]:
+        """Collect binary output until ``needle`` appears.
+
+        Returns ``(session_id, consumed, data)`` where ``consumed`` is the
+        absolute offset just past the bytes collected (the resume point to
+        pass back as ``since``).
+        """
+        collected = bytearray()
+        session_id = ""
+        consumed = 0
+
+        async def _loop() -> tuple[str, int, bytes]:
+            nonlocal session_id, consumed
+            while True:
+                sid, offset, payload = await self.recv_output()
+                session_id = sid
+                consumed = offset + len(payload)
+                collected.extend(payload)
+                if needle in collected:
+                    return session_id, consumed, bytes(collected)
 
         return await asyncio.wait_for(_loop(), timeout)
 

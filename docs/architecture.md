@@ -91,15 +91,23 @@ would block, an `add_writer` callback drains the remaining buffer later.
 
 The event loop invokes `Session._on_readable`, which reads up to `READ_SIZE`
 bytes, appends to the scrollback ring buffer, and offers the bytes to every
-attached subscriber. `ClientConnection._offer` enqueues `(session_id, bytes)`
-on a bounded queue; a sender task encodes each item as a binary frame with a
-one-byte session-id length prefix and writes it to the socket.
+attached subscriber. Each offer carries the **absolute offset** of its first
+byte (the count of PTY bytes emitted since the session was created).
+`ClientConnection._offer` enqueues `(session_id, offset, bytes)` on a bounded
+queue; a sender task writes each item as a binary frame with a one-byte
+session-id length, the id, the 8-byte big-endian offset, and the payload.
 
 ### Attach / replay
 
-On subscribe, a connection is attached to the session and the current scrollback
-snapshot is enqueued **without awaiting** between attach and enqueue, so live
-output cannot slip ahead of replayed history.
+A `subscribe` may carry `since`, the absolute offset the client has already
+rendered. On subscribe, a connection is attached to the session and the
+retained bytes at or after `since` are enqueued **without awaiting** between
+attach and enqueue, so live output cannot slip ahead of replayed history. The
+replay starts at `max(since, buffer_start)`, so a client whose offset fell out
+of the retained window is replayed from the tail; the frame offset reveals the
+gap. Reconnecting clients pass their consumed offset and receive only the
+missing tail, which leaves terminal state (alternate buffer, mouse tracking,
+scrollback) intact.
 
 ### Exit
 
@@ -116,8 +124,10 @@ One WebSocket per browser, carrying two frame types:
   `unsubscribe`, `create`, `kill`, `rename`, `input`, `resize`, `list`,
   `restart`. Server → browser: `sessions`, `attached`, `exit`, `restarting`.
 - **Binary frames** — terminal output. Layout:
-  `[1 byte id length][id bytes (UTF-8)][raw terminal output]`.
-  The per-frame session id lets one socket carry many sessions.
+  `[1 byte id length][id bytes (UTF-8)][8-byte big-endian offset][terminal output]`.
+  The per-frame session id lets one socket carry many sessions; the offset
+  locates the output in the session's absolute byte stream so a reconnect can
+  resume exactly (or detect that it fell behind the scrollback window).
 
 A `restart` command (or `SIGHUP` sent to the server process) asks the process to
 re-exec itself in place. Every session is closed, each browser is sent

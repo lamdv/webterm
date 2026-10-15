@@ -116,12 +116,13 @@ connection is always closed in `finally`.
 One instance per browser WebSocket. It bridges the manager's synchronous
 fan-out to the async socket:
 
-- `offer_output(session, data)` / `offer_exit(session)` are called from the
-  event loop by `Session`. They push onto `out_queue`. If the queue is full the
-  connection is flagged for closure (backpressure) rather than dropping output.
+- `offer_output(session, data, offset)` / `offer_exit(session)` are called from
+  the event loop by `Session`. They push onto `out_queue`. If the queue is full
+  the connection is flagged for closure (backpressure) rather than dropping
+  output.
 - `_send_loop` dequeues and sends. `None` payloads become
   `{"type":"exit","session_id":...}`; byte payloads become binary frames
-  prefixed with `bytes([len(sid)]) + sid`.
+  `bytes([len(sid)]) + sid + struct.pack(">Q", offset) + payload`.
 - `_read_loop` decodes JSON text frames and dispatches `_handle`. Malformed
   JSON is ignored; per-message exceptions are logged without killing the
   connection.
@@ -132,7 +133,7 @@ fan-out to the async socket:
 
 | Type | Fields | Action |
 |---|---|---|
-| `subscribe` | `session_id` | Attach and send replayed scrollback + `attached`. Unknown id triggers a fresh `sessions` list. |
+| `subscribe` | `session_id`, `since?` | Attach and send retained output from the absolute byte `since` (default 0) plus `attached`. Unknown id triggers a fresh `sessions` list. |
 | `unsubscribe` | `session_id` | Detach. |
 | `create` | `cols`, `rows`, `title?`, `command?` | Spawn a session. `command` may be a non-empty string (a shell command line) or a non-empty list of strings (argv). |
 | `kill` | `session_id` | Terminate the session. |
@@ -182,11 +183,16 @@ Owns one PTY master fd and its child process.
   _on_readable)`, and applies the initial window size.
 - `info()` is the dict serialized to the browser: `id`, `title`, `cols`,
   `rows`, `pid`, `alive`, `exit_code`.
-- `_on_readable` loops `os.read` until it would block, appends to scrollback,
-  and offers bytes to all subscribers.
+- `_on_readable` loops `os.read` until it would block, records the chunk's
+  absolute offset, appends to scrollback, and offers the bytes to all
+  subscribers.
 - `_append` maintains the bounded ring buffer with `--scrollback` **bytes**.
   When it overflows it trims to the next newline so replay starts on a line
-  boundary.
+  boundary. `total` tracks every byte ever emitted and `buffer_start` is the
+  absolute offset of the oldest retained byte.
+- `replay_since(offset)` returns `(start, data)` for a client that has consumed
+  `offset` bytes: `start = max(offset, buffer_start)`, and `data` is the
+  retained tail from there (empty when the client is caught up).
 - `write` buffers into `_out` and calls `_flush`, which uses `add_writer` if the
   PTY is momentarily full.
 - `resize` clamps to at least 1×1 and issues `TIOCSWINSZ`.

@@ -10,6 +10,7 @@ import json
 import logging
 import signal
 import ssl
+import struct
 from pathlib import Path
 
 from .session import SessionManager
@@ -41,6 +42,17 @@ CONTENT_TYPES = {
 
 def _content_type(path: Path) -> str:
     return CONTENT_TYPES.get(path.suffix.lower(), "application/octet-stream")
+
+
+def _nonneg_int(value: object) -> int:
+    """Coerce a JSON value to a non-negative int, defaulting to 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return max(number, 0)
 
 
 def check_auth(headers: dict[str, str], token: str | None) -> bool:
@@ -182,7 +194,7 @@ class ClientConnection:
         self.ws = ws
         self.manager = manager
         self.control = control
-        self.out_queue: asyncio.Queue[tuple[str, bytes | None]] = asyncio.Queue(maxsize=2048)
+        self.out_queue: asyncio.Queue[tuple[str, int, bytes | None]] = asyncio.Queue(maxsize=2048)
         self.subscriptions = set()
         self.closed = False
         self._backpressure = False
@@ -190,17 +202,17 @@ class ClientConnection:
 
     # ---------------------------------------------------- Subscriber protocol
 
-    def offer_output(self, session, data: bytes) -> None:
-        self._offer((session.id, data))
+    def offer_output(self, session, data: bytes, offset: int) -> None:
+        self._offer((session.id, offset, data))
 
     def offer_exit(self, session) -> None:
-        self._offer((session.id, None))
+        self._offer((session.id, 0, None))
 
     def request_close(self) -> None:
         """Ask the connection loop to shut down (used during server stop)."""
         self._closed_event.set()
 
-    def _offer(self, item: tuple[str, bytes | None]) -> None:
+    def _offer(self, item: tuple[str, int, bytes | None]) -> None:
         if self.closed:
             return
         try:
@@ -259,12 +271,17 @@ class ClientConnection:
 
     async def _send_loop(self) -> None:
         while True:
-            session_id, payload = await self.out_queue.get()
+            session_id, offset, payload = await self.out_queue.get()
             if payload is None:
                 await self.ws.send_json({"type": "exit", "session_id": session_id})
                 continue
             sid = session_id.encode("utf-8")
-            await self.ws.send_binary(bytes([len(sid)]) + sid + payload)
+            # The 8-byte big-endian offset marks where this payload begins in
+            # the session's absolute output stream, so the client can resume
+            # exactly (skipping overlap or detecting a gap) after a reconnect.
+            await self.ws.send_binary(
+                bytes([len(sid)]) + sid + struct.pack(">Q", offset) + payload
+            )
 
     async def _read_loop(self) -> None:
         while True:
@@ -290,7 +307,9 @@ class ClientConnection:
     async def _handle(self, message: dict) -> None:
         kind = message.get("type")
         if kind == "subscribe":
-            await self._subscribe(str(message.get("session_id", "")))
+            await self._subscribe(
+                str(message.get("session_id", "")), _nonneg_int(message.get("since"))
+            )
         elif kind == "unsubscribe":
             self._unsubscribe(str(message.get("session_id", "")))
         elif kind == "create":
@@ -317,19 +336,22 @@ class ClientConnection:
         log.info("restart requested by client")
         self.control.request_restart()
 
-    async def _subscribe(self, session_id: str) -> None:
+    async def _subscribe(self, session_id: str, since: int = 0) -> None:
         session = self.manager.get(session_id)
         if session is None:
             await self.send_sessions()
             return
         if session not in self.subscriptions:
             # Attach and enqueue the replay without awaiting in between so no
-            # live output can slip ahead of the replayed scrollback.
+            # live output can slip ahead of the replayed scrollback.  When the
+            # client's ``since`` offset has been evicted the replay starts at
+            # the earliest retained byte; the client notices the gap from the
+            # frame offset and resets its terminal.
             self.subscriptions.add(session)
             session.attach(self)
-            replay = session.buffer
+            start, replay = session.replay_since(since)
             if replay:
-                self._offer((session.id, replay))
+                self._offer((session.id, start, replay))
         await self.ws.send_json(
             {
                 "type": "attached",

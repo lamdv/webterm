@@ -257,6 +257,46 @@ class SessionProtocolTests(ServerFixture):
         finally:
             await second.close()
 
+    async def test_subscribe_since_resumes_after_offset(self) -> None:
+        await self.client.send_json({"type": "create"})
+        sessions = await self.client.recv_json_until(
+            lambda m: m["type"] == "sessions" and m["sessions"]
+        )
+        session_id = sessions["sessions"][0]["id"]
+        await self.client.send_json({"type": "subscribe", "session_id": session_id})
+        await self.client.recv_json_until(lambda m: m["type"] == "attached")
+        await self.client.send_json(
+            {"type": "input", "session_id": session_id, "data": "echo ALPHA_MARKER\n"}
+        )
+        sid, consumed, data = await self.client.recv_output_until_contains(b"ALPHA_MARKER")
+        self.assertEqual(sid, session_id)
+        self.assertIn(b"ALPHA_MARKER", data)
+
+        # A second subscriber resuming at ``consumed`` must receive only bytes
+        # at or after that offset, then everything produced afterwards.
+        second = await WSClient.connect(self.host, self.port)
+        try:
+            await second.recv_json_until(
+                lambda m: m["type"] == "sessions" and m["sessions"]
+            )
+            await second.send_json(
+                {"type": "subscribe", "session_id": session_id, "since": consumed}
+            )
+            await second.recv_json_until(lambda m: m["type"] == "attached")
+            await self.client.send_json(
+                {"type": "input", "session_id": session_id, "data": "echo BETA_MARKER\n"}
+            )
+            collected = bytearray()
+            min_offset = None
+            while b"BETA_MARKER" not in collected:
+                sid2, offset, payload = await second.recv_output()
+                self.assertEqual(sid2, session_id)
+                min_offset = offset if min_offset is None else min(min_offset, offset)
+                collected.extend(payload)
+            self.assertGreaterEqual(min_offset, consumed)
+        finally:
+            await second.close()
+
     async def test_invalid_path_rejected(self) -> None:
         # A normal HTTP GET to the websocket path must not upgrade.
         reader, writer = await asyncio.open_connection(self.host, self.port)
@@ -265,6 +305,35 @@ class SessionProtocolTests(ServerFixture):
         raw = await reader.read()
         writer.close()
         self.assertNotIn(b"101", raw.split(b"\r\n")[0])
+
+
+class ScrollbackOffsetTests(unittest.IsolatedAsyncioTestCase):
+    async def test_replay_since_reports_gap(self) -> None:
+        manager = SessionManager(shell="/bin/sh", cwd="/tmp", scrollback=8)
+        try:
+            session = manager.create(cols=80, rows=24)
+            session._append(b"1234567890")  # 10 bytes retained as an 8-byte tail
+
+            self.assertEqual(session.total, 10)
+            self.assertEqual(session.buffer_start, 2)
+            self.assertEqual(session.buffer, b"34567890")
+
+            # A client that already consumed the whole stream gets nothing new.
+            start, data = session.replay_since(session.total)
+            self.assertEqual(start, session.total)
+            self.assertEqual(data, b"")
+
+            # A client whose offset was evicted is pointed at the retained tail.
+            start, data = session.replay_since(0)
+            self.assertEqual(start, session.buffer_start)
+            self.assertEqual(data, session.buffer)
+
+            # An in-window offset replays only the bytes after it.
+            start, data = session.replay_since(4)
+            self.assertEqual(start, 4)
+            self.assertEqual(data, b"567890")
+        finally:
+            manager.close_all()
 
 
 class RestartTests(unittest.IsolatedAsyncioTestCase):
