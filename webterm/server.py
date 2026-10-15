@@ -377,7 +377,10 @@ class ClientConnection:
     def _resize(self, message: dict) -> None:
         session = self.manager.get(str(message.get("session_id", "")))
         if session is not None:
-            session.resize(int(message.get("cols", session.cols)), int(message.get("rows", session.rows)))
+            session.resize(
+                int(message.get("cols", session.cols)),
+                int(message.get("rows", session.rows)),
+            )
 
 
 def _consume_task_exception(task: asyncio.Task) -> None:
@@ -397,7 +400,12 @@ async def handle_client(
     try:
         try:
             method, path, headers = await read_http_request(reader)
-        except (asyncio.IncompleteReadError, asyncio.TimeoutError, WebSocketError, asyncio.LimitOverrunError):
+        except (
+            TimeoutError,
+            asyncio.IncompleteReadError,
+            WebSocketError,
+            asyncio.LimitOverrunError,
+        ):
             return
 
         if not check_auth(headers, token):

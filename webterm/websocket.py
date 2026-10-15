@@ -118,7 +118,7 @@ class WebSocket:
         writer: asyncio.StreamWriter,
         headers: Mapping[str, str],
         **kwargs: object,
-    ) -> "WebSocket":
+    ) -> WebSocket:
         """Complete the opening handshake for an already-read request."""
         key = headers.get("sec-websocket-key")
         if not key:

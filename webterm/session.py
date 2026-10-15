@@ -29,9 +29,9 @@ log = logging.getLogger("webterm")
 class Subscriber(Protocol):
     """Receives output from a session it is attached to."""
 
-    def offer_output(self, session: "Session", data: bytes) -> None: ...
+    def offer_output(self, session: Session, data: bytes) -> None: ...
 
-    def offer_exit(self, session: "Session") -> None: ...
+    def offer_exit(self, session: Session) -> None: ...
 
 
 class Session:
@@ -48,7 +48,7 @@ class Session:
         rows: int,
         loop: asyncio.AbstractEventLoop,
         scrollback: int = DEFAULT_SCROLLBACK,
-        on_exit: Callable[["Session"], None] | None = None,
+        on_exit: Callable[[Session], None] | None = None,
     ) -> None:
         self.id = session_id
         self.pid = pid

@@ -44,7 +44,7 @@ class WSClient:
         *,
         ssl: ssl.SSLContext | None = None,
         server_hostname: str | None = None,
-    ) -> "WSClient":
+    ) -> WSClient:
         reader, writer = await asyncio.open_connection(
             host, port, ssl=ssl, server_hostname=server_hostname
         )

@@ -53,7 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="webterm",
         description="A web-based terminal multiplexer with persistent PTY sessions.",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="interface to bind (default: 127.0.0.1)")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="interface to bind (default: 127.0.0.1)",
+    )
     parser.add_argument("--port", type=int, default=8765, help="port to listen on (default: 8765)")
     parser.add_argument("--shell", default=None, help="shell to launch (default: $SHELL)")
     parser.add_argument(
@@ -71,7 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
             "(repeatable). Defaults to a 'pi agent' button when pi is installed."
         ),
     )
-    parser.add_argument("--cwd", default=None, help="working directory for new sessions (default: $HOME)")
+    parser.add_argument(
+        "--cwd",
+        default=None,
+        help="working directory for new sessions (default: $HOME)",
+    )
     parser.add_argument(
         "--tls-cert",
         default=None,
