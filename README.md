@@ -77,7 +77,8 @@ uv run webterm --host 0.0.0.0 --port 8765
 > token and terminal traffic are encrypted and the server is authenticated.
 >
 > Without TLS, `--token` is only base64 on the wire and does not stop a
-> man-in-the-middle. See [TLS](#tls).
+> man-in-the-middle. See [TLS](#tls) and
+> [Exposing it safely](#exposing-it-safely-reverse-proxy--tailscale).
 
 ## TLS
 
@@ -103,6 +104,38 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
 TLS encrypts the token and the terminal stream and authenticates the server, so
 it closes the man-in-the-middle gap that `--token` alone leaves open. Running
 behind a reverse proxy that already handles TLS works just as well.
+
+## Exposing it safely (reverse proxy / Tailscale)
+
+The recommended way to reach webterm from other machines is to keep it on
+localhost and put an authenticated, TLS-terminating proxy in front of it. That
+way webterm is never bound to the LAN and the token is never sent in the clear.
+
+### Tailscale (private tailnet)
+
+With [Tailscale](https://tailscale.com), `tailscale serve` proxies a local port
+to your tailnet over HTTPS — no certificate to manage, and only your own devices
+can connect. Keep webterm's default localhost bind:
+
+```bash
+uv run webterm --token "$WEBTERM_TOKEN"        # still listens on 127.0.0.1
+tailscale serve --bg 8765                      # tailnet HTTPS -> 127.0.0.1:8765
+tailscale serve status                         # confirm it is https://
+```
+
+Use `serve`, not `funnel`: `serve` is tailnet-only, while `funnel` publishes the
+service to the public internet and is not appropriate for something that hands
+out shells. Note that `serve` terminates TLS in tailscaled and proxies to
+localhost, so any local user on the same machine can still reach webterm
+directly — keep `--token` set on shared hosts.
+
+### Reverse proxy
+
+A proxy such as Caddy, nginx, or Traefik works the same way: bind webterm to
+`127.0.0.1`, have the proxy terminate TLS and forward to `http://127.0.0.1:8765`
+(remember to forward WebSocket upgrades), and add the proxy's own auth or keep
+`--token`. The client picks `wss://` automatically from the page's `https://`
+scheme, so no extra configuration is needed.
 
 ## Usage
 
