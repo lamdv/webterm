@@ -94,3 +94,10 @@ A native menu (`src-tauri/src/menu.rs`) provides **New Server** (Cmd/Ctrl+N),
 Close Window items. It is native so it also appears in server windows showing a
 remote page. Copy/Paste items are deliberately absent: their default Ctrl+C /
 Ctrl+V accelerators would swallow the terminal's SIGINT and paste keys.
+
+## Window state
+
+`tauri-plugin-window-state` remembers each window's size, position, maximized
+and fullscreen state in `app_config_dir()/.window-state.json`, keyed by window
+label. Server windows are restored because their label is derived from the
+profile id, which is stable across renames.

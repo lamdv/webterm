@@ -40,9 +40,13 @@ pub fn run() {
             commands::probe_all,
         ]);
 
-    // Menus are desktop-only; a future mobile build simply skips them.
+    // Menus and window-state are desktop-only plugins; a future mobile build
+    // simply skips them.
     #[cfg(desktop)]
-    let builder = builder.menu(menu::build).on_menu_event(menu::handle);
+    let builder = builder
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .menu(menu::build)
+        .on_menu_event(menu::handle);
 
     builder
         .run(tauri::generate_context!())

@@ -193,5 +193,5 @@ the desktop/mobile split actually appears in code rather than in a comment.
   handling.
 - The menu code is compiled out on mobile targets.
 
-Next: Chapter 7 remembers where every window was, so the app restores its layout
-across launches.
+Next: [Chapter 7 — Remembering windows](07-window-state.md) persists window
+size and position, for the picker and for every server window.

@@ -25,6 +25,7 @@ tauri = "2"
 tauri-build = "2"
 tauri-plugin-http = "2"
 tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
 url = "2"
 
 # Our own crates, referenced by path.

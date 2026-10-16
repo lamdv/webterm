@@ -23,6 +23,7 @@ tauri-build.workspace = true
 tauri.workspace = true
 tauri-plugin-http.workspace = true
 tauri-plugin-single-instance.workspace = true
+tauri-plugin-window-state.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 webterm-client.workspace = true
