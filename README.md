@@ -202,6 +202,7 @@ scheme, so no extra configuration is needed.
 | `--scrollback` | `100000` | Bytes of scrollback kept per session for reattach |
 | `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API |
 | `--no-control` | off | Disable the local control socket entirely |
+| `--no-discovery` | off | Disable the unauthenticated `/.well-known/webterm.json` document |
 | `--agent` | `pi` (if installed) | Agent profile for `webtermctl spawn`, as `NAME=COMMAND` (repeatable) |
 | `--agent-interactive` | same as `--agent` | Interactive command for an agent profile (repeatable) |
 | `--max-agent-depth` | `5` | Maximum sub-agent nesting depth |

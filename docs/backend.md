@@ -34,7 +34,7 @@ All modules use `from __future__ import annotations` and are linted by `ruff`
 | `--port` | `8765` | Bind port. |
 | `--tls-cert` | none | PEM certificate (or chain); enables HTTPS/WSS. |
 | `--tls-key` | none | PEM private key for `--tls-cert`. |
-| `--token` | `$WEBTERM_TOKEN`, else none | Require HTTP Basic auth with this shared secret. |
+| `--token` | `$WEBTERM_TOKEN`, else none | Require this shared secret, via HTTP Basic, Bearer, or the bootstrap cookie. |
 | `--shell` | `$SHELL` or a detected shell | Shell to launch. |
 | `--font` | Nerd Font aware stack | CSS `font-family` passed to the client. |
 | `--launcher LABEL=COMMAND` | `pi agent` if `pi` is installed | Sidebar launcher button (repeatable). |
@@ -114,15 +114,23 @@ listener; `handle_client` is unaware of the transport. The startup log line
 switches from `http://` to `https://` accordingly.
 
 `check_auth(headers, token)` gates every request when a token is configured.
-It accepts HTTP Basic credentials when either the username or the password
-equals the secret and does a constant-time comparison; otherwise
-`handle_client` answers `401 Unauthorized` with a `WWW-Authenticate: Basic`
-challenge before routing anything.
+It accepts HTTP Basic credentials (either the username or the password may
+carry the secret), `Authorization: Bearer <token>`, or the `webterm_session`
+cookie set by the bootstrap flow, and compares every candidate in constant
+time. When none match, `handle_client` answers `401 Unauthorized` with a
+`WWW-Authenticate: Basic` challenge before routing anything.
 
-`handle_client` ties it together: parse the request, enforce auth, route a
-WebSocket upgrade on `/ws` (path exact match) to `WebSocket.handshake`, route
-`/config.js` to `serve_config`, and otherwise fall back to static serving. The
-connection is always closed in `finally`.
+`serve_discovery` answers `GET`/`HEAD /.well-known/webterm.json` with a small
+unauthenticated document: the service name, the version, whether a token is
+required, and which credential types are accepted. It is served *before*
+`check_auth`, so a client can classify a server before it holds credentials,
+and `--no-discovery` removes it.
+
+`handle_client` ties it together: parse the request, serve discovery, handle a
+`?bootstrap=` exchange, enforce auth, route a WebSocket upgrade on `/ws` (path
+exact match) to `WebSocket.handshake`, route `/config.js` to `serve_config`, and
+otherwise fall back to static serving. The connection is always closed in
+`finally`.
 
 ### `ClientConnection`
 

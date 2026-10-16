@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import json
 import os
 import shutil
 import signal
@@ -29,6 +30,7 @@ from .wsclient import WSClient
 
 class ServerFixture(unittest.IsolatedAsyncioTestCase):
     token: str | None = None
+    discovery: bool = True
 
     async def asyncSetUp(self) -> None:
         self.connections: set = set()
@@ -41,11 +43,29 @@ class ServerFixture(unittest.IsolatedAsyncioTestCase):
         self.manager.add_listener(on_change)
 
         self.server = await asyncio.start_server(
-            lambda r, w: handle_client(r, w, self.manager, self.connections, token=self.token),
+            lambda r, w: handle_client(
+                r,
+                w,
+                self.manager,
+                self.connections,
+                token=self.token,
+                discovery=self.discovery,
+            ),
             "127.0.0.1",
             0,
         )
         self.host, self.port = self.server.sockets[0].getsockname()[:2]
+
+    async def _raw(self, method: str, path: str, headers: str = "") -> tuple[str, bytes]:
+        """Send one request, returning ``(status_line, full raw response)``."""
+        reader, writer = await asyncio.open_connection(self.host, self.port)
+        writer.write(
+            f"{method} {path} HTTP/1.1\r\nHost: x\r\n{headers}Connection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        return raw.split(b"\r\n", 1)[0].decode("latin-1"), raw
 
     async def asyncTearDown(self) -> None:
         self.manager.close_all()
@@ -150,6 +170,54 @@ class AuthTests(ServerFixture):
             self.assertEqual(hello["type"], "sessions")
         finally:
             await client.close()
+
+
+class DiscoveryTests(ServerFixture):
+    async def test_document_describes_an_open_server(self) -> None:
+        status, raw = await self._raw("GET", "/.well-known/webterm.json")
+        self.assertIn("200", status)
+        _, _, body = raw.partition(b"\r\n\r\n")
+        doc = json.loads(body)
+        self.assertEqual(doc["service"], "webterm")
+        self.assertFalse(doc["auth_required"])
+        self.assertEqual(doc["auth_methods"], [])
+        self.assertEqual(doc["websocket_path"], "/ws")
+        self.assertIn("version", doc)
+
+    async def test_head_sends_headers_without_a_body(self) -> None:
+        status, raw = await self._raw("HEAD", "/.well-known/webterm.json")
+        self.assertIn("200", status)
+        head, _, body = raw.partition(b"\r\n\r\n")
+        self.assertEqual(body, b"")
+        self.assertIn(b"application/json", head)
+
+    async def test_other_methods_fall_through_to_static_serving(self) -> None:
+        status, _ = await self._raw("POST", "/.well-known/webterm.json")
+        self.assertIn("405", status)
+
+
+class DiscoveryTokenTests(ServerFixture):
+    token = "s3cret-token"
+
+    async def test_discovery_is_unauthenticated(self) -> None:
+        status, raw = await self._raw("GET", "/.well-known/webterm.json")
+        self.assertIn("200", status)
+        _, _, body = raw.partition(b"\r\n\r\n")
+        doc = json.loads(body)
+        self.assertTrue(doc["auth_required"])
+        self.assertEqual(doc["auth_methods"], ["basic", "bearer", "cookie"])
+
+    async def test_protected_paths_still_require_credentials(self) -> None:
+        status, _ = await self._raw("GET", "/")
+        self.assertIn("401", status)
+
+
+class DiscoveryDisabledTests(ServerFixture):
+    discovery = False
+
+    async def test_document_is_not_served(self) -> None:
+        status, _ = await self._raw("GET", "/.well-known/webterm.json")
+        self.assertIn("404", status)
 
 
 class SessionProtocolTests(ServerFixture):
@@ -521,6 +589,12 @@ class CheckAuthTests(unittest.TestCase):
         encoded = base64.b64encode(f"ignored:{token}".encode()).decode()
         self.assertTrue(check_auth({"authorization": f"Basic {encoded}"}, token))
         self.assertFalse(check_auth({"authorization": "Basic bm9wZTpub3Bl"}, token))
+
+    def test_bearer_credentials(self) -> None:
+        token = "hunter2"
+        self.assertTrue(check_auth({"authorization": f"Bearer {token}"}, token))
+        self.assertFalse(check_auth({"authorization": "Bearer wrong"}, token))
+        self.assertFalse(check_auth({"authorization": "Bearer"}, token))
 
     def test_session_cookie(self) -> None:
         token = "hunter2"

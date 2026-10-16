@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import parse_qs
 
+from . import __version__
 from .control import ControlServer, default_control_socket, looks_like_tcp
 from .session import (
     DepthExceededError,
@@ -34,6 +35,8 @@ log = logging.getLogger("webterm")
 
 STATIC_ROOT = Path(__file__).parent / "static"
 WS_PATH = "/ws"
+#: Unauthenticated service-discovery document (see :func:`serve_discovery`).
+DISCOVERY_PATH = "/.well-known/webterm.json"
 MAX_HTTP_HEADER = 64 * 1024
 
 CONTENT_TYPES = {
@@ -108,18 +111,37 @@ def _check_basic(header: str, token: str) -> bool:
     return _constant_time_equals(username, token) or _constant_time_equals(password, token)
 
 
+def _check_bearer(header: str, token: str) -> bool:
+    """Accept ``Authorization: Bearer <token>``.
+
+    Some reverse proxies and native clients prefer a bearer credential to
+    Basic (which needs a base64 round-trip), so webterm accepts either.
+    """
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() != "bearer" or not value:
+        return False
+    return _constant_time_equals(value.strip(), token)
+
+
 def check_auth(headers: dict[str, str], token: str | None) -> bool:
     """Return True when a request is allowed to proceed.
 
     With no configured token every request is allowed, preserving webterm's
-    historical localhost-only behaviour.  With a token set, either HTTP Basic
-    credentials (the username is ignored; either field may carry the secret) or
-    a ``COOKIE_NAME`` cookie from the bootstrap flow is accepted.  All
-    comparisons are constant-time.
+    historical localhost-only behaviour.  With a token set, any one of the
+    following is accepted:
+
+    - HTTP Basic credentials (the username is ignored; either field may carry
+      the secret),
+    - ``Authorization: Bearer <token>``, for clients and reverse proxies that
+      forward a bearer credential,
+    - a ``COOKIE_NAME`` cookie from the bootstrap flow.
+
+    All comparisons are constant-time.
     """
     if token is None:
         return True
-    if _check_basic(headers.get("authorization", ""), token):
+    authorization = headers.get("authorization", "")
+    if _check_basic(authorization, token) or _check_bearer(authorization, token):
         return True
     cookie = _cookie(headers, COOKIE_NAME)
     return cookie is not None and _constant_time_equals(cookie, session_cookie_value(token))
@@ -220,6 +242,39 @@ async def serve_config(writer: asyncio.StreamWriter, config: dict) -> None:
             extra_headers="Cache-Control: no-store\r\n",
         )
     )
+    await writer.drain()
+
+
+async def serve_discovery(
+    writer: asyncio.StreamWriter, token: str | None, method: str = "GET"
+) -> None:
+    """Serve the unauthenticated ``/.well-known/webterm.json`` document.
+
+    A client uses this to confirm that a URL really is a webterm server and to
+    learn how to authenticate *before* it holds any credentials.  It exposes
+    nothing beyond the service name, the version and the accepted credential
+    types, and can be disabled entirely with ``--no-discovery``.
+    """
+    payload = {
+        "service": "webterm",
+        "version": __version__,
+        "auth_required": token is not None,
+        "auth_methods": ["basic", "bearer", "cookie"] if token is not None else [],
+        "websocket_path": WS_PATH,
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    response = _http_response(
+        "200 OK",
+        body,
+        content_type="application/json; charset=utf-8",
+        extra_headers="Cache-Control: no-store\r\n",
+    )
+    if method == "HEAD":
+        # Same headers, no body, so a probe can read Content-Length cheaply.
+        header_block = response.split(b"\r\n\r\n", 1)[0]
+        writer.write(header_block + b"\r\n\r\n")
+    else:
+        writer.write(response)
     await writer.drain()
 
 
@@ -747,6 +802,7 @@ async def handle_client(
     control: ServerControl | None = None,
     token: str | None = None,
     profiles: dict | None = None,
+    discovery: bool = True,
 ) -> None:
     try:
         try:
@@ -757,6 +813,12 @@ async def handle_client(
             WebSocketError,
             asyncio.LimitOverrunError,
         ):
+            return
+
+        # Discovery is served without authentication so a client can classify
+        # a server before it holds any credentials.
+        if discovery and path == DISCOVERY_PATH and method in ("GET", "HEAD"):
+            await serve_discovery(writer, token, method)
             return
 
         # The desktop app navigates once to /?bootstrap=<token>; exchange it
@@ -933,6 +995,7 @@ async def start_server(
     enable_control: bool = True,
     control_socket: str | None = None,
     profiles: dict | None = None,
+    discovery: bool = True,
 ) -> ServerHandle:
     """Bind the listener and start serving, returning a :class:`ServerHandle`.
 
@@ -944,6 +1007,10 @@ async def start_server(
     Unless *enable_control* is false, a local ``AF_UNIX`` control socket is
     also started (at *control_socket* or the default per-user path), and every
     child process is told where to find it via ``WEBTERM_SOCKET``.
+
+    Unless *discovery* is false, ``GET /.well-known/webterm.json`` is served
+    without authentication so a client can identify the server and the
+    credential types it accepts.
     """
     connections: set[ClientConnection] = set()
     client_tasks: set[asyncio.Task] = set()
@@ -969,7 +1036,15 @@ async def start_server(
     def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = loop.create_task(
             handle_client(
-                reader, writer, manager, connections, config, control, token, profiles
+                reader,
+                writer,
+                manager,
+                connections,
+                config,
+                control,
+                token,
+                profiles,
+                discovery=discovery,
             )
         )
         client_tasks.add(task)
@@ -1026,6 +1101,7 @@ async def serve(
     enable_control: bool = True,
     control_socket: str | None = None,
     profiles: dict | None = None,
+    discovery: bool = True,
 ) -> bool:
     """Run the server until stopped.  Returns True if a restart was requested."""
     handle = await start_server(
@@ -1038,6 +1114,7 @@ async def serve(
         enable_control=enable_control,
         control_socket=control_socket,
         profiles=profiles,
+        discovery=discovery,
     )
     loop = asyncio.get_running_loop()
     for sig, request in (

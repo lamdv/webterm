@@ -128,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="disable the local agent control socket entirely",
     )
     parser.add_argument(
+        "--no-discovery",
+        action="store_true",
+        help="disable the unauthenticated /.well-known/webterm.json document",
+    )
+    parser.add_argument(
         "--agent",
         action="append",
         default=None,
@@ -310,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
                 enable_control=not args.no_control,
                 control_socket=args.control_socket,
                 profiles=profiles,
+                discovery=not args.no_discovery,
             )
         )
     except KeyboardInterrupt:

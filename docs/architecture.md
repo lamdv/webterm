@@ -205,9 +205,13 @@ cacheable.
   when no token is configured.
 - `--token` (or `$WEBTERM_TOKEN`) enables a lightweight shared-secret guard:
   `check_auth()` runs before every HTTP request and WebSocket upgrade and
-  requires matching HTTP Basic credentials, so static files, `/config.js`, the
-  WebSocket, and terminal I/O are all covered by one check. The secret is
-  compared with `hmac.compare_digest`.
+  accepts HTTP Basic, `Authorization: Bearer`, or the bootstrap cookie, so
+  static files, `/config.js`, the WebSocket, and terminal I/O are all covered
+  by one check. The secret is compared with `hmac.compare_digest`.
+- `GET /.well-known/webterm.json` is the single unauthenticated route: it
+  reveals only the service name, the version and the accepted credential types,
+  so a client can classify a server before it holds any credential.
+  `--no-discovery` removes it.
 - `--tls-cert`/`--tls-key` wrap the single `asyncio.start_server` call in an
   `ssl.SSLContext`, so the same socket speaks HTTPS and WSS. This is what makes
   the token meaningful off localhost: TLS encrypts the secret and the terminal

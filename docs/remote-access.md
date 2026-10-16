@@ -251,9 +251,16 @@ Whatever proxy you use, the requirements are the same:
 - Terminate TLS and forward to `http://127.0.0.1:8765`.
 - Enable HTTP/1.1 and forward `Upgrade`/`Connection` headers so `/ws` upgrades.
 - Apply authentication to **all** paths, including `/ws` and `/config.js`, not
-  just `/`.
+  just `/`. The one intentional exception is `/.well-known/webterm.json`, which
+  webterm serves unauthenticated so a client can identify it; gate it at the
+  proxy if even that should be private.
 - Leave webterm bound to `127.0.0.1`.
-- Optionally retain `--token` as defense in depth for localhost access.
+- Optionally retain `--token` as defense in depth for localhost access. If you
+  do, have the proxy inject the credential upstream — webterm accepts
+  `Authorization: Bearer <token>`, so for nginx that is
+  `proxy_set_header Authorization "Bearer $WEBTERM_TOKEN";`. Without it, webterm
+  answers `401` and the browser prompts for HTTP Basic *after* the OAuth login,
+  which is rarely what anyone wants.
 
 ## Troubleshooting
 
