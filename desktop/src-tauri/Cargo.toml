@@ -16,16 +16,21 @@ path = "src/main.rs"
 required-features = ["pytauri/standalone"]
 
 [build-dependencies]
-# 2.7 requires tauri-utils >=2.10, which is incompatible (see below).
-tauri-build = { version = "=2.6.3", features = [] }
+tauri-build = { version = "=2.4.0", features = [] }
 
 [dependencies]
+# These versions mirror pytauri v0.8.0's own Cargo.lock.  The tauri stack and
+# wry must move together: newer wry/tauri-utils break pytauri-core 0.8.0 (e.g.
+# tauri-utils >=2.10 made `WindowEffect` #[non_exhaustive] while pytauri's
+# effect_impl! macro has no wildcard arm), and a newer wry adds trait methods
+# that tauri-runtime-wry 2.8.0 does not implement.
+#
 # `tray-icon` enables the system tray (best-effort at runtime on Linux).
-tauri = { version = "=2.8.5", features = ["tray-icon"] }
-# Pin below 2.10: 2.10 made `WindowEffect` #[non_exhaustive], but pytauri-core
-# 0.8.0's effect_impl! macro has no wildcard arm, so newer versions fail to
-# compile.  Remove once pytauri handles it.
-tauri-utils = "=2.9.3"
+tauri = { version = "=2.8.3", features = ["tray-icon"] }
+tauri-utils = "=2.7.0"
+tauri-runtime = "=2.8.0"
+tauri-runtime-wry = "=2.8.0"
+wry = "=0.53.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pyo3 = { version = "0.25" }
