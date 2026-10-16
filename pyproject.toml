@@ -9,6 +9,7 @@ dependencies = []
 
 [project.scripts]
 webterm = "webterm.__main__:main"
+webtermctl = "webterm.ctl:main"
 
 [project.optional-dependencies]
 dev = [

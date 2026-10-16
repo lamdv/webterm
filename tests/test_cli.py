@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from webterm.__main__ import build_parser, main, parse_launchers
+from webterm.__main__ import build_parser, main, parse_agents, parse_launchers
 
 
 class LauncherParsingTests(unittest.TestCase):
@@ -57,6 +57,33 @@ class LauncherParsingTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             main(["--launcher", "bad"])
         self.assertEqual(caught.exception.code, 2)
+
+
+class AgentProfileTests(unittest.TestCase):
+    def test_print_and_interactive_templates(self) -> None:
+        profiles = parse_agents(
+            ["pi=pi -p {task}"], ["pi=pi {task}"], lambda message: None
+        )
+        self.assertEqual(profiles["pi"]["print"], ["pi", "-p", "{task}"])
+        self.assertEqual(profiles["pi"]["interactive"], ["pi", "{task}"])
+
+    def test_name_defaults_to_argv0(self) -> None:
+        profiles = parse_agents(["=btop"], None, lambda message: None)
+        self.assertEqual(profiles["btop"]["print"], ["btop"])
+
+    def test_empty_command_reports_error(self) -> None:
+        errors: list[str] = []
+        parse_agents(["nope"], None, errors.append)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("expected NAME=COMMAND", errors[0])
+
+    def test_parser_accepts_agent_and_limits(self) -> None:
+        args = build_parser().parse_args(
+            ["--agent", "pi=pi -p {task}", "--max-agent-depth", "3", "--no-control"]
+        )
+        self.assertEqual(args.agent, ["pi=pi -p {task}"])
+        self.assertEqual(args.max_agent_depth, 3)
+        self.assertTrue(args.no_control)
 
 
 if __name__ == "__main__":
