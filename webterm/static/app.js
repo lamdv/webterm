@@ -43,6 +43,7 @@
   let closedByPage = false;
   let activateNext = false;
   let restarting = false;
+  let editingTabId = null;
   const userLaunchers = loadUserLaunchers();
 
   const CONFIG = window.WEBTERM_CONFIG || {};
@@ -480,6 +481,8 @@
   // ------------------------------------------------------------- tab / view
 
   function renderTabs() {
+    // Don't rebuild the list under an in-progress inline rename.
+    if (editingTabId !== null) return;
     sessionsList.innerHTML = "";
     for (const session of sessionsMeta) {
       const tab = document.createElement("li");
@@ -502,18 +505,54 @@
 
       tab.append(title, close);
       tab.addEventListener("click", () => activate(session.id));
-      tab.addEventListener("dblclick", () => renameSession(session));
+      tab.addEventListener("dblclick", () => startRename(tab, title, session));
       sessionsList.appendChild(tab);
     }
     updateActiveTab();
     emptyState.hidden = sessionsMeta.length > 0;
   }
 
-  function renameSession(session) {
-    const next = window.prompt("Rename session", session.title);
-    if (next && next.trim()) {
-      send({ type: "rename", session_id: session.id, title: next.trim() });
-    }
+  // Double-clicking a tab swaps its label for an inline text input; Enter or
+  // blur commits the new name, Escape cancels.
+  function startRename(tab, title, session) {
+    if (editingTabId !== null) return;
+    editingTabId = session.id;
+
+    const input = document.createElement("input");
+    input.className = "tab-rename";
+    input.type = "text";
+    input.value = session.title;
+    input.setAttribute("aria-label", "Rename session");
+
+    const finish = (commit) => {
+      if (editingTabId === null) return;
+      editingTabId = null;
+      const value = input.value.trim();
+      if (input.parentNode === tab) input.replaceWith(title);
+      if (commit && value && value !== session.title) {
+        session.title = value;
+        send({ type: "rename", session_id: session.id, title: value });
+      }
+      renderTabs();
+    };
+
+    input.addEventListener("keydown", (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") {
+        event.preventDefault();
+        finish(true);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("dblclick", (event) => event.stopPropagation());
+
+    tab.replaceChild(input, title);
+    input.focus();
+    input.select();
   }
 
   function updateActiveTab() {
@@ -532,6 +571,8 @@
     const entry = id ? terminals.get(id) : null;
     if (entry) {
       requestAnimationFrame(() => {
+        // Don't steal focus from an in-progress tab rename.
+        if (editingTabId !== null) return;
         fit(entry, 0);
         entry.term.focus();
       });
@@ -661,7 +702,7 @@
 
   // ---------------------------------------------------------------- actions
 
-  document.getElementById("new-session").addEventListener("click", openNewSessionPopover);
+  document.getElementById("new-session").addEventListener("click", () => createSession());
   document.getElementById("empty-new").addEventListener("click", () => createSession());
   document.getElementById("restart-server").addEventListener("click", () => {
     if (!window.confirm("Restart the server? All sessions will be closed.")) return;
@@ -724,7 +765,7 @@
     label.className = "launcher-label";
     label.textContent = commandLabel(launcher);
     pill.appendChild(label);
-    pill.addEventListener("click", () => createSession(launcher.command, launcher.title));
+    pill.addEventListener("click", () => createSession(launcher.command, commandLabel(launcher)));
 
     if (removable) {
       const remove = document.createElement("span");
@@ -808,12 +849,6 @@
 
   // ------------------------------------------------------------- popovers
 
-  const newSessionPopover = document.getElementById("new-session-popover");
-  const newSessionForm = document.getElementById("new-session-form");
-  const newSessionNameInput = document.getElementById("new-session-name");
-  const newSessionCommandInput = document.getElementById("new-session-command");
-  const newSessionButton = document.getElementById("new-session");
-
   const launcherPopover = document.getElementById("launcher-popover");
   const launcherForm = document.getElementById("launcher-form");
   const launcherCommandInput = document.getElementById("launcher-command");
@@ -839,22 +874,8 @@
     popover.style.top = top + "px";
   }
 
-  function openNewSessionPopover() {
-    if (!newSessionPopover) return;
-    closeLauncherPopover();
-    positionPopover(newSessionPopover, newSessionButton || newSessionPopover.parentElement);
-    newSessionNameInput.value = "";
-    newSessionCommandInput.value = "";
-    newSessionNameInput.focus();
-  }
-
-  function closeNewSessionPopover() {
-    if (newSessionPopover) newSessionPopover.hidden = true;
-  }
-
   function openLauncherPopover() {
     if (!launcherPopover) return;
-    closeNewSessionPopover();
     positionPopover(launcherPopover, addLauncherButton || launchersEl);
     launcherCommandInput.value = "";
     launcherNameInput.value = "";
@@ -864,19 +885,6 @@
   function closeLauncherPopover() {
     if (launcherPopover) launcherPopover.hidden = true;
   }
-
-  if (newSessionForm) {
-    newSessionForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const name = newSessionNameInput.value.trim();
-      const command = newSessionCommandInput.value.trim();
-      createSession(command || undefined, name || undefined);
-      closeNewSessionPopover();
-    });
-  }
-
-  const newSessionCancel = document.getElementById("new-session-cancel");
-  if (newSessionCancel) newSessionCancel.addEventListener("click", closeNewSessionPopover);
 
   if (launcherForm) {
     launcherForm.addEventListener("submit", (event) => {
@@ -898,10 +906,7 @@
   if (launcherCancel) launcherCancel.addEventListener("click", closeLauncherPopover);
 
   document.addEventListener("pointerdown", (event) => {
-    const pairs = [
-      [newSessionPopover, newSessionButton],
-      [launcherPopover, addLauncherButton],
-    ];
+    const pairs = [[launcherPopover, addLauncherButton]];
     for (const [pop, anchor] of pairs) {
       if (!pop || pop.hidden) continue;
       if (pop.contains(event.target)) continue;
@@ -912,7 +917,6 @@
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
-    if (newSessionPopover) newSessionPopover.hidden = true;
     if (launcherPopover) launcherPopover.hidden = true;
   });
 
@@ -951,7 +955,7 @@
   window.addEventListener("keydown", (event) => {
     if (event.ctrlKey && event.shiftKey && (event.key === "N" || event.key === "n")) {
       event.preventDefault();
-      openNewSessionPopover();
+      createSession();
     } else if (event.ctrlKey && event.shiftKey && (event.key === "B" || event.key === "b")) {
       event.preventDefault();
       setSidebarCollapsed(!isSidebarCollapsed());
@@ -969,7 +973,7 @@
   // via WebviewWindow.eval().  Expose only those actions; the page itself uses
   // no Tauri APIs, so the remote-origin webview needs no IPC surface.
   window.__webterm = {
-    newSession: openNewSessionPopover,
+    newSession: () => createSession(),
     toggleSidebar: () => setSidebarCollapsed(!isSidebarCollapsed()),
     closeActiveSession: () => {
       if (activeId) send({ type: "kill", session_id: activeId });

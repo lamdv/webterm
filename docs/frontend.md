@@ -48,7 +48,7 @@ sections:
 | Sidebar | Width/clamp/persist, drag-to-resize, collapse/expand. |
 | Socket | `connect`, `send`, `setStatus`, reconnect backoff. |
 | Control plane | `handleControl`, `reconcileSessions`, `ensureTerminal`. |
-| Tab / view | `renderTabs`, `activate`, `renameSession`. |
+| Tab / view | `renderTabs`, `activate`, `startRename` (inline tab rename). |
 | Resize | `fit`, `cellSize`, `domCellSize`, `refitAll`. |
 | Actions | Launchers, `createSession`, keyboard shortcuts. |
 | Boot | Feature check, initial render, `connect()`. |

@@ -244,7 +244,7 @@ body {
   color: #eaf2ff;
 }
 
-/* Popovers anchored to a button (add-command, new session). */
+/* Popover anchored to the add-command button. */
 .popover {
   position: fixed;
   z-index: 40;
@@ -312,15 +312,13 @@ body {
   background: var(--bg-elevated);
 }
 
-#launcher-create,
-#new-session-create {
+#launcher-create {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
 
-#launcher-create:hover,
-#new-session-create:hover {
+#launcher-create:hover {
   background: #6cb0ff;
   border-color: #6cb0ff;
   color: #fff;
@@ -364,6 +362,20 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+
+.tab-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  padding: 2px 5px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  outline: none;
 }
 
 .tab-close {
