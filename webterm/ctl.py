@@ -61,7 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--title")
     p.add_argument("--parent", default=None, help="parent session id")
     p.add_argument("--timeout", type=float, default=None)
-    p.add_argument("--no-wait", action="store_true")
+    wait = p.add_mutually_exclusive_group()
+    wait.add_argument("--wait", dest="wait", action="store_true", default=None)
+    wait.add_argument("--no-wait", dest="wait", action="store_false")
     p.add_argument("--text", action="store_true", help="emit plain text (ANSI stripped)")
     p.add_argument("--private", action="store_true")
 
@@ -229,7 +231,12 @@ def _cmd_spawn(client: ControlClient, args: argparse.Namespace) -> int:
     }
     if args.interactive is not None:
         params["interactive"] = args.interactive
-    if args.no_wait:
+    # Print-mode agents are awaited by default; an interactive TUI is not, so
+    # the CLI returns the session id and the human attaches in the browser.
+    wait = args.wait
+    if wait is None:
+        wait = not bool(args.interactive)
+    if not wait:
         result = client.spawn(wait=False, **params)
         if args.json:
             _print_json(result)

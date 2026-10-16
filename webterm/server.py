@@ -568,11 +568,14 @@ class ClientConnection:
         if not template:
             raise RequestError("bad_request", f"agent {agent!r} has no {key} command")
         parts = [str(part) for part in template]
-        if task and any("{task}" in part for part in parts):
-            return [part.replace("{task}", task) for part in parts]
         if task:
+            if any("{task}" in part for part in parts):
+                return [part.replace("{task}", task) for part in parts]
             parts.append(task)
-        return parts
+            return parts
+        # No task supplied: drop arguments that are only the empty placeholder
+        # (e.g. an interactive profile's bare {task}), keeping the command.
+        return [part for part in (p.replace("{task}", "").strip() for p in parts) if part]
 
     async def _run(self, message: dict, *, spawn: bool) -> dict:
         interactive = bool(message.get("interactive")) or message.get("mode") == "interactive"

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from tests.controlclient import ControlClient
 from webterm.control import looks_like_tcp
-from webterm.server import ServerHandle, start_server
+from webterm.server import ClientConnection, RequestError, ServerHandle, start_server
 from webterm.session import SessionManager
 
 
@@ -184,6 +184,28 @@ class ControlSocketTests(ControlSocketBase):
     async def test_capture_base64_roundtrip(self) -> None:
         result = self.result(await self.client.request("run", command="printf 'abc'", wait=True))
         self.assertEqual(base64.b64decode(result["output_base64"]), b"abc")
+
+
+class ResolveAgentTests(unittest.TestCase):
+    def connection(self, profiles: dict) -> ClientConnection:
+        return ClientConnection(None, None, profiles=profiles)
+
+    def test_task_is_substituted(self) -> None:
+        conn = self.connection({"p": {"print": ["/bin/echo", "{task}"]}})
+        self.assertEqual(conn._resolve_agent("p", "hi", None, False), ["/bin/echo", "hi"])
+
+    def test_missing_task_drops_placeholder(self) -> None:
+        conn = self.connection({"p": {"interactive": ["/bin/echo", "{task}"]}})
+        self.assertEqual(conn._resolve_agent("p", None, None, True), ["/bin/echo"])
+
+    def test_task_is_appended_without_placeholder(self) -> None:
+        conn = self.connection({"p": {"print": ["/bin/echo"]}})
+        self.assertEqual(conn._resolve_agent("p", "hi", None, False), ["/bin/echo", "hi"])
+
+    def test_missing_mode_is_rejected(self) -> None:
+        conn = self.connection({"p": {"print": ["/bin/echo"]}})
+        with self.assertRaises(RequestError):
+            conn._resolve_agent("p", None, None, True)
 
 
 class ControlConfigTests(unittest.IsolatedAsyncioTestCase):

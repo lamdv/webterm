@@ -23,7 +23,10 @@ class CtlBase(unittest.IsolatedAsyncioTestCase):
         self.socket_path = str(Path(self.tmp.name) / "control.sock")
         self.manager = SessionManager(shell="/bin/sh", cwd="/tmp")
         self.profiles = {
-            "echoer": {"print": ["/bin/sh", "-c", "printf '{task}'"]},
+            "echoer": {
+                "print": ["/bin/sh", "-c", "printf '{task}'"],
+                "interactive": ["/bin/sh", "-c", "printf '{task}'"],
+            },
         }
         self.handle: ServerHandle = await start_server(
             "127.0.0.1", 0, self.manager, control_socket=self.socket_path, profiles=self.profiles
@@ -82,6 +85,15 @@ class CtlCommandTests(CtlBase):
     async def test_spawn_without_agent_or_command_fails(self) -> None:
         code, _ = await self.run_ctl("spawn")
         self.assertEqual(code, 2)
+
+    async def test_spawn_interactive_does_not_wait(self) -> None:
+        code, out = await self.run_ctl(
+            "spawn", "--agent", "echoer", "--task", "x", "--interactive"
+        )
+        self.assertEqual(code, 0)
+        session_id = out.decode().strip()
+        self.assertTrue(session_id)
+        await self.run_ctl("kill", session_id)
 
     async def test_new_capture_and_kill(self) -> None:
         code, out = await self.run_ctl("new")
