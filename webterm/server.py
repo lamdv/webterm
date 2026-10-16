@@ -13,7 +13,7 @@ import ssl
 import struct
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 
 from . import __version__
 from .control import ControlServer, default_control_socket, looks_like_tcp
@@ -835,11 +835,16 @@ async def handle_client(
             and bootstrap is not None
             and _constant_time_equals(bootstrap, token)
         ):
+            # Redirect to / minus the secret, but keep any other query
+            # parameters the client asked for (e.g. the desktop app passing a
+            # sidebar width through the bootstrap).
+            remaining = {key: value for key, value in query.items() if key != "bootstrap"}
+            location = "/" + ("?" + urlencode(remaining) if remaining else "")
             writer.write(
                 _http_response(
                     "302 Found",
                     extra_headers=(
-                        "Location: /\r\n"
+                        f"Location: {location}\r\n"
                         f"Set-Cookie: {COOKIE_NAME}={session_cookie_value(token)}; "
                         "HttpOnly; SameSite=Strict; Path=/\r\n"
                         "Cache-Control: no-store\r\n"

@@ -645,6 +645,11 @@ class BootstrapAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SameSite=Strict", head)
         self.assertIn("Location: /", head)
 
+    async def test_bootstrap_redirect_preserves_other_query_parameters(self) -> None:
+        status, head, _ = await self._get(f"/?bootstrap={self.token}&sidebar=260")
+        self.assertIn("302", status)
+        self.assertIn("Location: /?sidebar=260", head)
+
     async def test_wrong_bootstrap_token_is_rejected(self) -> None:
         status, _, _ = await self._get("/?bootstrap=wrong")
         self.assertIn("401", status)

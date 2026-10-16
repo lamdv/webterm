@@ -20,6 +20,72 @@ let profiles = [];
 let probes = new Map();
 let editingId = null;
 
+// --- sidebar width ---------------------------------------------------------
+// Same bounds as the terminal's sidebar.  The chosen width is passed to the
+// server view on connect so the two views line up.
+
+const layout = document.querySelector(".layout");
+const resizer = document.querySelector("#sidebar-resizer");
+const DEFAULT_SIDEBAR_WIDTH = 220;
+const MIN_SIDEBAR_WIDTH = 150;
+const MAX_SIDEBAR_WIDTH = 640;
+let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+
+function maxSidebarWidth() {
+  return Math.max(
+    MIN_SIDEBAR_WIDTH,
+    Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 200),
+  );
+}
+
+function clampSidebarWidth(width) {
+  return Math.min(maxSidebarWidth(), Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)));
+}
+
+function applySidebarWidth(width, persist = true) {
+  const clamped = clampSidebarWidth(width);
+  sidebarWidth = clamped;
+  document.documentElement.style.setProperty("--sidebar-width", `${clamped}px`);
+  if (persist) {
+    try {
+      localStorage.setItem("webterm.sidebarWidth", String(clamped));
+    } catch {
+      /* storage may be unavailable */
+    }
+  }
+}
+
+function loadSidebarWidth() {
+  const stored = parseInt(localStorage.getItem("webterm.sidebarWidth"), 10);
+  return Number.isFinite(stored) ? clampSidebarWidth(stored) : DEFAULT_SIDEBAR_WIDTH;
+}
+
+applySidebarWidth(loadSidebarWidth(), false);
+window.addEventListener("resize", () => applySidebarWidth(sidebarWidth, false));
+
+let dragStartX = 0;
+let dragStartWidth = 0;
+resizer.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0) return;
+  dragStartX = event.clientX;
+  dragStartWidth = sidebarWidth;
+  layout.classList.add("resizing");
+  resizer.setPointerCapture(event.pointerId);
+  event.preventDefault();
+});
+resizer.addEventListener("pointermove", (event) => {
+  if (!resizer.hasPointerCapture(event.pointerId)) return;
+  applySidebarWidth(dragStartWidth + (event.clientX - dragStartX));
+});
+function endResize(event) {
+  if (!resizer.hasPointerCapture(event.pointerId)) return;
+  resizer.releasePointerCapture(event.pointerId);
+  layout.classList.remove("resizing");
+}
+resizer.addEventListener("pointerup", endResize);
+resizer.addEventListener("pointercancel", endResize);
+resizer.addEventListener("dblclick", () => applySidebarWidth(DEFAULT_SIDEBAR_WIDTH));
+
 function showError(error) {
   errorBox.textContent = error instanceof Error ? error.message : String(error);
   errorBox.hidden = false;
@@ -144,7 +210,7 @@ function serverRow(profile) {
   actions.className = "server-actions";
 
   const connect = button("Connect", "primary", () => {
-    guard(() => invoke("connect", { id: profile.id }));
+    guard(() => invoke("connect", { id: profile.id, sidebarWidth }));
   });
   const edit = button("Edit", "", () => startEdit(profile));
   const remove = button("Remove", "danger", () => {

@@ -111,6 +111,15 @@ fullscreen state in `app_config_dir()/.window-state.json`. There is a single
 window, so the picker and every server share one geometry rather than each
 server keeping its own.
 
+## Layout
+
+The picker's sidebar (the add/edit form) is resizable with the same bounds as
+the terminal's session switcher (150–640px, default 220px) and remembers its
+width. On connect that width rides in the URL (`?sidebar=<px>`), so the server
+view's sidebar lines up with the picker's. A narrow terminal view collapses its
+sidebar regardless, collapses it again when a shell is chosen, and leaves the
+expand button in reach — see `docs/frontend.md`.
+
 ## Roadmap
 
 - [x] **oauth2-proxy integration test (automated half).**

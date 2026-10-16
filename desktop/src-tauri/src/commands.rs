@@ -263,11 +263,15 @@ async fn fetch_server_info(
 /// Once the window is on the server origin the page is remote, and Tauri's ACL
 /// denies it every command in `capabilities/default.json`; `show_picker` brings
 /// the picker back.
+///
+/// `sidebar_width` is the picker's sidebar width.  It rides in the URL so the
+/// terminal view can line its own sidebar up with the picker.
 #[tauri::command]
 pub fn connect(
     app: tauri::AppHandle,
     state: State<'_, Profiles>,
     id: String,
+    sidebar_width: Option<u32>,
 ) -> Result<(), String> {
     let profile = {
         let store = state.0.lock().map_err(|_| poisoned())?;
@@ -289,8 +293,12 @@ pub fn connect(
         }
     }
 
-    let url = webterm_client::connect_url(&profile)
+    let mut url = webterm_client::connect_url(&profile)
         .map_err(|error| format!("{:?} is not a valid server URL: {error}", profile.url))?;
+    if let Some(width) = sidebar_width {
+        url.query_pairs_mut()
+            .append_pair("sidebar", &width.to_string());
+    }
     window.navigate(url).map_err(|error| error.to_string())
 }
 

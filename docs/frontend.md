@@ -45,13 +45,30 @@ sections:
 | Section | Responsibility |
 |---|---|
 | Top-level state | Element refs, `terminals`, `subscribed`, `activeId`, `socket`, reconnect state. |
-| Sidebar | Width/clamp/persist, drag-to-resize, collapse/expand. |
+| Sidebar | Width/clamp/persist, drag-to-resize, collapse/expand, responsive auto-collapse, `?sidebar=` handoff. |
 | Socket | `connect`, `send`, `setStatus`, reconnect backoff. |
 | Control plane | `handleControl`, `reconcileSessions`, `ensureTerminal`. |
 | Tab / view | `renderTabs`, `activate`, `startRename` (inline tab rename). |
 | Resize | `fit`, `cellSize`, `domCellSize`, `refitAll`. |
 | Actions | Launchers, `createSession`, keyboard shortcuts. |
 | Boot | Feature check, initial render, `connect()`. |
+
+### Sidebar
+
+- **Resizable** — drag `#sidebar-resizer`, or focus it and use Left/Right
+  (Shift for larger steps); double-click resets to 220px. The width is clamped
+  to 150–640px and `window.innerWidth - 200`, and persisted in
+  `webterm.sidebarWidth`.
+- **Collapsible** — the header button collapses it, `#sidebar-expand` brings it
+  back, and `Ctrl+Shift+B` toggles. The preference is persisted.
+- **Responsive** — below `NARROW_VIEWPORT` (640px) the sidebar is collapsed no
+  matter what the stored preference says, and choosing a shell collapses it
+  again, leaving only the expand button. Widening the window restores the
+  preference.
+- **Desktop width handoff** — the desktop picker appends `?sidebar=<px>` when it
+  navigates to a server; the client adopts that as the width, persists it, and
+  strips the parameter with `history.replaceState` so a reload falls back to the
+  stored value.
 
 ### State
 

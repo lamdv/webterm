@@ -67,7 +67,11 @@
   const DEFAULT_SIDEBAR_WIDTH = 220;
   const MIN_SIDEBAR_WIDTH = 150;
   const MAX_SIDEBAR_WIDTH = 640;
+  // Below this width the sidebar starts collapsed and hides itself again
+  // whenever a shell is chosen.
+  const NARROW_VIEWPORT = 640;
   let sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
+  let sidebarCollapsedByUser = false;
 
   function maxSidebarWidth() {
     return Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, window.innerWidth - 200));
@@ -100,16 +104,53 @@
     return Number.isFinite(stored) ? clampSidebarWidth(stored) : DEFAULT_SIDEBAR_WIDTH;
   }
 
-  function setSidebarCollapsed(collapsed) {
+  // The desktop picker passes its sidebar width through the URL so the two
+  // views line up.  Returns null when absent.
+  function sidebarWidthFromUrl() {
+    const raw = new URLSearchParams(window.location.search).get("sidebar");
+    if (raw === null) return null;
+    const parsed = parseInt(raw, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  function stripQueryParameter(name) {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has(name)) return;
+    params.delete(name);
+    const search = params.toString();
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + (search ? "?" + search : "") + window.location.hash,
+    );
+  }
+
+  function applySidebarCollapsed(collapsed) {
     appEl.classList.toggle("sidebar-collapsed", collapsed);
     collapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     expandBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     expandBtn.hidden = !collapsed;
+  }
+
+  function setSidebarCollapsed(collapsed, persist = true) {
+    applySidebarCollapsed(collapsed);
+    if (!persist) return;
+    sidebarCollapsedByUser = collapsed;
     try {
       localStorage.setItem("webterm.sidebarCollapsed", collapsed ? "1" : "0");
     } catch (e) {
       /* storage may be unavailable */
     }
+  }
+
+  function isNarrow() {
+    return window.innerWidth < NARROW_VIEWPORT;
+  }
+
+  // A narrow viewport hides the sidebar whatever the stored preference says;
+  // widening it again restores that preference.
+  function refreshSidebarForViewport() {
+    applySidebarCollapsed(isNarrow() || sidebarCollapsedByUser);
   }
 
   function isSidebarCollapsed() {
@@ -158,11 +199,24 @@
     event.preventDefault();
   });
 
-  setSidebarWidth(loadSidebarWidth(), false);
-  setSidebarCollapsed(localStorage.getItem("webterm.sidebarCollapsed") === "1");
+  const requestedWidth = sidebarWidthFromUrl();
+  if (requestedWidth !== null) {
+    // The desktop picker handed its sidebar width over in the URL; adopt it and
+    // drop the parameter so a reload falls back to the stored value.
+    setSidebarWidth(requestedWidth);
+    stripQueryParameter("sidebar");
+  } else {
+    setSidebarWidth(loadSidebarWidth(), false);
+  }
+  sidebarCollapsedByUser = localStorage.getItem("webterm.sidebarCollapsed") === "1";
+  refreshSidebarForViewport();
 
-  // Keep a restored width within bounds when the window shrinks.
-  window.addEventListener("resize", () => setSidebarWidth(sidebarWidth, false));
+  // Keep a restored width within bounds when the window shrinks, and let a
+  // narrow viewport take over the collapsed state.
+  window.addEventListener("resize", () => {
+    setSidebarWidth(sidebarWidth, false);
+    refreshSidebarForViewport();
+  });
 
   // ------------------------------------------------------------------ socket
 
@@ -630,6 +684,10 @@
       entry.wrapper.classList.toggle("active", sessionId === id);
     }
     updateActiveTab();
+    // On a narrow viewport, choosing a shell gets the switcher out of the way.
+    if (isNarrow()) {
+      applySidebarCollapsed(true);
+    }
     const entry = id ? terminals.get(id) : null;
     if (entry) {
       requestAnimationFrame(() => {

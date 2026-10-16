@@ -24,7 +24,7 @@
   --danger: #e5534b;
   --ok: #3fb950;
   --warn: #d29922;
-  --sidebar-width: 20rem;
+  --sidebar-width: 220px;
   font-size: 14px;
   /* Tell the browser to render native widgets — selects, scrollbars, the
      caret — in dark mode, so they match the palette instead of the OS. */
@@ -48,12 +48,14 @@ body {
 /* --- shell ------------------------------------------------------------- */
 
 .layout {
-  display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  display: flex;
   height: 100vh;
 }
 
 .sidebar {
+  flex: 0 0 var(--sidebar-width);
+  width: var(--sidebar-width);
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
@@ -63,7 +65,25 @@ body {
   overflow-y: auto;
 }
 
+.sidebar-resizer {
+  flex: 0 0 5px;
+  margin-left: -3px;
+  margin-right: -2px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus-visible,
+.layout.resizing .sidebar-resizer {
+  background: var(--accent-dim);
+  outline: none;
+}
+
 .content {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 1rem;
@@ -107,9 +127,14 @@ body {
   }
 
   .sidebar {
+    width: auto;
     border-right: none;
     border-bottom: 1px solid var(--border);
     overflow: visible;
+  }
+
+  .sidebar-resizer {
+    display: none;
   }
 
   .content {
