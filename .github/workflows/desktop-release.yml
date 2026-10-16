@@ -128,12 +128,6 @@ jobs:
           $PYO3_PYTHON = (Resolve-Path -LiteralPath ".\desktop\src-tauri\pyembed\python\python.exe").Path
           echo "PYO3_PYTHON=$PYO3_PYTHON" >> $env:GITHUB_ENV
 
-      - name: Generate icons
-        run: |
-          npx --yes @tauri-apps/cli@^2 icon \
-            desktop/src/webterm_desktop/icons/icon.png \
-            -o desktop/src-tauri/icons
-
       - name: Build bundles
         working-directory: desktop
         run: |
