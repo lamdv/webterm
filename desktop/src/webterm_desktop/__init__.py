@@ -24,9 +24,16 @@ import time
 from os import environ
 from pathlib import Path
 
-# pytauri requires this to be set before any pytauri import.  It selects the
-# prebuilt pytauri-wheel native libraries instead of the Cargo extension.
-environ["_PYTAURI_DIST"] = "pytauri-wheel"
+# Development uses the prebuilt pytauri-wheel native libraries; a bundled app
+# gets the factories from its Rust extension module instead.  pytauri-wheel
+# requires this env var to be set before any pytauri import.
+try:
+    import pytauri_wheel  # noqa: F401
+except ImportError:
+    _STANDALONE = True
+else:
+    _STANDALONE = False
+    environ["_PYTAURI_DIST"] = "pytauri-wheel"
 
 from anyio.from_thread import start_blocking_portal  # noqa: E402
 from pytauri import AppHandle, Commands, Manager  # noqa: E402
@@ -34,7 +41,12 @@ from pytauri.image import Image  # noqa: E402
 from pytauri.menu import Menu, MenuItem, PredefinedMenuItem, Submenu  # noqa: E402
 from pytauri.tray import TrayIcon, TrayIconEvent  # noqa: E402
 from pytauri_plugins import single_instance, window_state  # noqa: E402
-from pytauri_wheel.lib import builder_factory, context_factory  # noqa: E402
+
+if _STANDALONE:
+    from pytauri import builder_factory, context_factory  # noqa: E402
+else:
+    from pytauri_wheel.lib import builder_factory, context_factory  # noqa: E402
+
 from webterm.server import start_server  # noqa: E402
 from webterm.session import DEFAULT_SCROLLBACK, SessionManager  # noqa: E402
 
@@ -63,6 +75,9 @@ MENU_ACTIONS = {
 
 #: True when the server was spawned as a detached daemon for this session.
 _DAEMON = False
+
+#: Loopback URL a bundled (standalone) app navigates to in ``setup``.
+_START_URL: str | None = None
 
 
 def _build_menu(app_handle: AppHandle) -> Menu:
@@ -205,6 +220,12 @@ def _tray_available() -> bool:
 
 def _setup(app_handle: AppHandle) -> None:
     _setup_menu(app_handle)
+    if _STANDALONE and _START_URL:
+        # The bundled Tauri context uses static frontend assets; point the
+        # window at the loopback server now that we know its port.
+        window = Manager.get_webview_window(app_handle, "main")
+        if window is not None:
+            window.navigate(_START_URL)
     if not _tray_available():
         log.info(
             "system tray disabled: install libayatana-appindicator3 or "
@@ -328,7 +349,7 @@ def _stop_daemon() -> None:
 
 def main() -> int:
     """Run the desktop app and return its exit code."""
-    global _DAEMON
+    global _DAEMON, _START_URL
     external_url = environ.get("WEBTERM_DESKTOP_URL")
     daemon = environ.get("WEBTERM_DESKTOP_DAEMON") == "1" and not external_url
     _DAEMON = daemon
@@ -353,9 +374,14 @@ def main() -> int:
             handle = portal.call(_start_in_process, manager, token)
             url = f"{handle.url}/?bootstrap={token}"
 
+        _START_URL = url
         try:
+            if _STANDALONE:
+                context = context_factory()
+            else:
+                context = context_factory(PACKAGE_DIR, tauri_config=_tauri_config(url))
             app = builder_factory().build(
-                context=context_factory(PACKAGE_DIR, tauri_config=_tauri_config(url)),
+                context=context,
                 invoke_handler=commands.generate_handler(portal),
                 setup=_setup,
                 plugins=(
