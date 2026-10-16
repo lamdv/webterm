@@ -963,6 +963,19 @@
     if (socket) socket.close();
   });
 
+  // ------------------------------------------------- native-app bridge
+
+  // The desktop host (Tauri) drives a few UI actions from native menu items
+  // via WebviewWindow.eval().  Expose only those actions; the page itself uses
+  // no Tauri APIs, so the remote-origin webview needs no IPC surface.
+  window.__webterm = {
+    newSession: openNewSessionPopover,
+    toggleSidebar: () => setSidebarCollapsed(!isSidebarCollapsed()),
+    closeActiveSession: () => {
+      if (activeId) send({ type: "kill", session_id: activeId });
+    },
+  };
+
   // ------------------------------------------------------------------- boot
 
   if (!window.Terminal) {
