@@ -76,6 +76,12 @@ accepts Bearer for exactly that reason.
 identity-aware proxy (oauth2-proxy, Authelia), and letting the proxy run its own
 login in the window is the whole feature.
 
+> **Untested.** This is the one credential path that has not been run against a
+> real proxy. It depends on the provider's login page rendering in the embedded
+> webview, which several IdPs refuse. Testing it against oauth2-proxy is a
+> tracked roadmap item in `desktop/README.md`, along with the follow-ups it will
+decide (sign-in-again, a "login required" status, popup handling).
+
 ## Editing, and the `update` method
 
 The store gets the method from the Chapter 2 exercise:

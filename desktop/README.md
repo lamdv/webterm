@@ -77,7 +77,8 @@ the picker; an edit keeps the profile's id.
   the secret for an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`,
   so the WebSocket authenticates with the cookie rather than a token in its URL.
 - **Browser login** profiles send no credential and let an identity-aware proxy
-  (oauth2-proxy, Authelia) run its own login in the window.
+  (oauth2-proxy, Authelia) run its own login in the window. This is the
+  least-tested path; see [Roadmap](#roadmap).
 
 The URL-building rule lives in `crates/webterm-client/src/connect.rs` and is
 unit tested there.
@@ -109,3 +110,26 @@ swallow the terminal's SIGINT and paste keys.
 fullscreen state in `app_config_dir()/.window-state.json`. There is a single
 window, so the picker and every server share one geometry rather than each
 server keeping its own.
+
+## Roadmap
+
+- [ ] **Test browser-login auth against a real oauth2-proxy.** Stand up
+  `oauth2-proxy` in front of a local `webterm` with a test OIDC issuer (Dex or
+  Keycloak), add a `browser` profile, and verify:
+  - the provider's login page renders in the webview — many IdPs (Google
+    included) refuse embedded user-agents, which would make this profile kind
+    unusable without a workaround;
+  - after login the proxy's session cookie is sent on the `/ws` upgrade and the
+    terminal connects;
+  - the session survives an app restart, or the limitation is documented;
+  - both deployment shapes work: proxy-only auth (webterm open behind the
+    proxy), and proxy plus webterm `--token` with the proxy injecting
+    `Authorization: Bearer <token>` upstream as `docs/remote-access.md`
+    describes.
+
+  Decide from the result whether to add a **Sign in again / Clear session**
+  menu action, a "login required" probe state (the discovery probe is
+  unauthenticated, so the pill stays green while logged out), and handling for
+  an OIDC popup flow.
+- [ ] **Package the app.** `cargo tauri build` bundles (deb/rpm/AppImage, macOS
+  `.app`/`.dmg`, Windows `.msi`/NSIS) and macOS signing/notarization.
