@@ -28,9 +28,16 @@ commands = Commands()
 
 def main() -> int:
     """Run the desktop app and return its exit code."""
+    # Step 2: point the webview at an already-running webterm server.  Later
+    # steps start the server in-process and compute this URL dynamically.
+    tauri_config = None
+    url = environ.get("WEBTERM_DESKTOP_URL")
+    if url:
+        tauri_config = {"build": {"frontendDist": url}}
+
     with start_blocking_portal("asyncio") as portal:
         app = builder_factory().build(
-            context=context_factory(PACKAGE_DIR),
+            context=context_factory(PACKAGE_DIR, tauri_config=tauri_config),
             invoke_handler=commands.generate_handler(portal),
         )
         return app.run_return()
