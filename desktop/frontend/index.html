@@ -13,10 +13,49 @@
         <p class="dim">connect to a server</p>
       </header>
 
-      <p class="note">
-        Chapter 0: the Tauri shell is running and the bundled frontend loaded.
-        The server list arrives in Chapter 3.
+      <p id="error" class="error" role="alert" hidden></p>
+
+      <ul id="servers" class="servers" aria-label="saved servers"></ul>
+      <p id="empty" class="note" hidden>
+        No servers yet. Add the address of a webterm server below.
       </p>
+
+      <form id="add-form" class="add-form" autocomplete="off">
+        <h2>Add a server</h2>
+
+        <label class="field">
+          <span>Name</span>
+          <input id="name" type="text" placeholder="Dev box" required />
+        </label>
+
+        <label class="field">
+          <span>URL</span>
+          <input
+            id="url"
+            type="url"
+            placeholder="https://webterm.example.com"
+            required
+          />
+        </label>
+
+        <label class="field">
+          <span>Authentication</span>
+          <select id="auth">
+            <option value="none">None</option>
+            <option value="token">Shared token</option>
+            <option value="browser">Browser login</option>
+          </select>
+        </label>
+
+        <label id="token-row" class="field" hidden>
+          <span>Token</span>
+          <input id="token" type="password" autocomplete="off" />
+        </label>
+
+        <button type="submit" class="primary">Add server</button>
+      </form>
     </main>
+
+    <script type="module" src="app.js"></script>
   </body>
 </html>

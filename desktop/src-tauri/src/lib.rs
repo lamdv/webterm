@@ -2,7 +2,9 @@
 //!
 //! This crate is deliberately thin.  Anything that can be tested without a
 //! window lives in the `webterm-client` crate; here we only wire up the window
-//! system, the IPC commands and the plugins.
+//! system, the profile store, the IPC commands and the plugins.
+
+mod commands;
 
 use tauri::Manager;
 
@@ -17,6 +19,19 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .setup(|app| {
+            // Store the profiles in the per-app config directory, e.g.
+            // `~/.config/dev.webterm.desktop/servers.json` on Linux.
+            let path = app.path().app_config_dir()?.join("servers.json");
+            app.manage(commands::Profiles::load(path)?);
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::list_profiles,
+            commands::add_profile,
+            commands::remove_profile,
+            commands::connect,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running the webterm desktop app");
 }

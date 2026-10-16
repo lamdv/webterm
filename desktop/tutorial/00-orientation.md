@@ -120,11 +120,14 @@ src-tauri/
   Cargo.toml
   build.rs                      generates Tauri's context at compile time
   src/main.rs                   trivial: calls webterm_desktop_lib::run()
-  src/lib.rs                    builds the app, registers the single-instance
+  src/lib.rs                    builds the app, registers state and commands
+  src/commands.rs               Chapter 3: ProfileStore state + IPC commands
   tauri.conf.json               window + bundle configuration
   capabilities/default.json     IPC permissions — picker window only
 frontend/
-  index.html                    the picker page (a placeholder for now)
+  index.html                    the picker page
+  app.js                        Chapter 3: list/add/remove/connect
+  ipc.js                        Chapter 3: the invoke bridge
   picker.css                    self-contained styling
 ```
 

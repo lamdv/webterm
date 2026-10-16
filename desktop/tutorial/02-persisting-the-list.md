@@ -259,5 +259,5 @@ would compile but be worse API design than `&[Profile]`.
 - Saving is atomic and the file is owner-only.
 - `cargo test -p webterm-client` passes, including the new store tests.
 
-Next: Chapter 3 hands the store to the Tauri shell and renders the list in the
-picker, so the app finally shows something you can click.
+Next: [Chapter 3 — The picker](03-the-picker.md) hands the store to the Tauri
+shell and renders the list, so the app finally shows something you can click.

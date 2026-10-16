@@ -3,5 +3,11 @@
   "identifier": "default",
   "description": "Capability for the picker window only. Server windows are deliberately left out: a remote webterm page must never be able to reach this app's IPC.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "allow-list-profiles",
+    "allow-add-profile",
+    "allow-remove-profile",
+    "allow-connect"
+  ]
 }

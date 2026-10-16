@@ -78,3 +78,151 @@ body {
   color: var(--text-dim);
   line-height: 1.5;
 }
+
+.error {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-alt));
+  color: var(--danger);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+/* --- server list ------------------------------------------------------- */
+
+.servers {
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.servers:empty {
+  display: none;
+}
+
+.server {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.server-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.server-name {
+  font-weight: 600;
+}
+
+.server-url {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+}
+
+.server-auth {
+  flex: none;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.server-actions {
+  flex: none;
+  display: flex;
+  gap: 0.4rem;
+}
+
+/* --- buttons ----------------------------------------------------------- */
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent-dim);
+}
+
+button.primary {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+button.danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--danger);
+}
+
+/* --- add form ---------------------------------------------------------- */
+
+.add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.add-form h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.field > span {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+
+.field input,
+.field select {
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.field input:focus,
+.field select:focus,
+button:focus-visible {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 1px;
+}
+
+.add-form button[type="submit"] {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+}
