@@ -15,7 +15,14 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import parse_qs
 
-from .session import SessionManager
+from .control import ControlServer, default_control_socket, looks_like_tcp
+from .session import (
+    DepthExceededError,
+    Session,
+    SessionError,
+    SessionLimitError,
+    SessionManager,
+)
 from .websocket import (
     OP_TEXT,
     ConnectionClosed,
@@ -236,15 +243,37 @@ class ServerControl:
         self.shutdown.set()
 
 
+class RequestError(Exception):
+    """A client request was rejected; carries a protocol error code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class ClientConnection:
-    """One browser connection: fans session output to it and handles commands."""
+    """One client (browser or local agent) attached to the session manager.
+
+    The transport is either the browser :class:`~webterm.websocket.WebSocket`
+    or a local :class:`~webterm.transport.FramedTransport`; one dispatcher
+    serves both.  Requests may carry an ``id`` and then receive a correlated
+    ``result`` / ``error``; browser requests omit it and stay fire-and-forget.
+    """
 
     def __init__(
-        self, ws: WebSocket, manager: SessionManager, control: ServerControl | None = None
+        self,
+        transport,
+        manager: SessionManager,
+        control: ServerControl | None = None,
+        *,
+        peer: str = "browser",
+        profiles: dict[str, dict] | None = None,
     ) -> None:
-        self.ws = ws
+        self.transport = transport
         self.manager = manager
         self.control = control
+        self.peer = peer
+        self.profiles = profiles or {}
         self.out_queue: asyncio.Queue[tuple[str, int, bytes | None]] = asyncio.Queue(maxsize=2048)
         self.subscriptions = set()
         self.closed = False
@@ -299,14 +328,17 @@ class ClientConnection:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
             with contextlib.suppress(Exception):
-                await self.ws.close()
+                await self.transport.close()
 
     async def send_sessions(self) -> None:
         if self.closed:
             return
         try:
-            await self.ws.send_json(
-                {"type": "sessions", "sessions": self.manager.list_info()}
+            await self.transport.send_json(
+                {
+                    "type": "sessions",
+                    "sessions": self.manager.list_info(include_private=self.peer == "agent"),
+                }
             )
         except (ConnectionClosed, WebSocketError):
             self._closed_event.set()
@@ -316,7 +348,7 @@ class ClientConnection:
         if self.closed:
             return
         try:
-            await self.ws.send_json({"type": "restarting"})
+            await self.transport.send_json({"type": "restarting"})
         except (ConnectionClosed, WebSocketError):
             self._closed_event.set()
 
@@ -324,19 +356,19 @@ class ClientConnection:
         while True:
             session_id, offset, payload = await self.out_queue.get()
             if payload is None:
-                await self.ws.send_json({"type": "exit", "session_id": session_id})
+                await self.transport.send_json({"type": "exit", "session_id": session_id})
                 continue
             sid = session_id.encode("utf-8")
             # The 8-byte big-endian offset marks where this payload begins in
             # the session's absolute output stream, so the client can resume
             # exactly (skipping overlap or detecting a gap) after a reconnect.
-            await self.ws.send_binary(
+            await self.transport.send_binary(
                 bytes([len(sid)]) + sid + struct.pack(">Q", offset) + payload
             )
 
     async def _read_loop(self) -> None:
         while True:
-            message = await self.ws.recv()
+            message = await self.transport.recv()
             if message is None:
                 return
             opcode, payload = message
@@ -347,38 +379,90 @@ class ClientConnection:
             except (ValueError, UnicodeDecodeError):
                 log.debug("ignoring malformed message")
                 continue
-            if isinstance(data, dict):
-                try:
-                    await self._handle(data)
-                except (ConnectionClosed, WebSocketError):
-                    return
-                except Exception:  # noqa: BLE001 - keep the connection alive
-                    log.exception("error handling message %r", data.get("type"))
+            if not isinstance(data, dict):
+                continue
+            request_id = data.get("id")
+            try:
+                result = await self._dispatch(data)
+            except RequestError as exc:
+                await self._send_error(request_id, exc.code, str(exc))
+                continue
+            except (ConnectionClosed, WebSocketError):
+                return
+            except Exception:  # noqa: BLE001 - keep the connection alive
+                log.exception("error handling message %r", data.get("type"))
+                await self._send_error(request_id, "internal", "internal error")
+                continue
+            if request_id is not None:
+                await self._send_result(request_id, result)
 
-    async def _handle(self, message: dict) -> None:
+    async def _send_result(self, request_id: object, result: dict | None) -> None:
+        try:
+            await self.transport.send_json(
+                {"type": "result", "id": request_id, "result": result or {}}
+            )
+        except (ConnectionClosed, WebSocketError):
+            self._closed_event.set()
+
+    async def _send_error(self, request_id: object, code: str, message: str) -> None:
+        if request_id is None:
+            return
+        try:
+            await self.transport.send_json(
+                {"type": "error", "id": request_id, "error": {"code": code, "message": message}}
+            )
+        except (ConnectionClosed, WebSocketError):
+            self._closed_event.set()
+
+    async def _dispatch(self, message: dict) -> dict:
         kind = message.get("type")
         if kind == "subscribe":
-            await self._subscribe(
+            info = await self._subscribe(
                 str(message.get("session_id", "")), _nonneg_int(message.get("since"))
             )
-        elif kind == "unsubscribe":
+            return {"session": info}
+        if kind == "unsubscribe":
             self._unsubscribe(str(message.get("session_id", "")))
-        elif kind == "create":
-            self._create(message)
-        elif kind == "kill":
-            self.manager.kill(str(message.get("session_id", "")))
-        elif kind == "rename":
-            self._rename(message)
-        elif kind == "input":
+            return {"ok": True}
+        if kind == "create":
+            return {"session": self._create(message).info()}
+        if kind == "kill":
+            killed = self.manager.kill(
+                str(message.get("session_id", "")), tree=bool(message.get("tree", True))
+            )
+            return {"ok": bool(killed), "killed": killed}
+        if kind == "rename":
+            return self._rename(message)
+        if kind == "input":
             self._input(message)
-        elif kind == "resize":
+            return {"ok": True}
+        if kind == "resize":
             self._resize(message)
-        elif kind == "list":
-            await self.send_sessions()
-        elif kind == "restart":
+            return {"ok": True}
+        if kind == "list":
+            result = {
+                "sessions": self.manager.list_info(include_private=self.peer == "agent")
+            }
+            if message.get("id") is None:
+                await self.send_sessions()
+            return result
+        if kind == "run":
+            return await self._run(message, spawn=False)
+        if kind == "spawn":
+            return await self._run(message, spawn=True)
+        if kind == "send":
+            return self._send(message)
+        if kind == "capture":
+            return self._capture(message)
+        if kind == "wait":
+            return await self._wait(message)
+        if kind == "close":
+            return self._close(message)
+        if kind == "restart":
             self._restart()
-        else:
-            log.debug("unknown message type %r", kind)
+            return {"ok": True}
+        log.debug("unknown message type %r", kind)
+        raise RequestError("bad_request", f"unknown message type {kind!r}")
 
     def _restart(self) -> None:
         if self.control is None:
@@ -387,11 +471,11 @@ class ClientConnection:
         log.info("restart requested by client")
         self.control.request_restart()
 
-    async def _subscribe(self, session_id: str, since: int = 0) -> None:
+    async def _subscribe(self, session_id: str, since: int = 0) -> dict | None:
         session = self.manager.get(session_id)
         if session is None:
             await self.send_sessions()
-            return
+            return None
         if session not in self.subscriptions:
             # Attach and enqueue the replay without awaiting in between so no
             # live output can slip ahead of the replayed scrollback.  When the
@@ -403,12 +487,13 @@ class ClientConnection:
             start, replay = session.replay_since(since)
             if replay:
                 self._offer((session.id, start, replay))
-        await self.ws.send_json(
+        await self.transport.send_json(
             {
                 "type": "attached",
                 "session": session.info(),
             }
         )
+        return session.info()
 
     def _unsubscribe(self, session_id: str) -> None:
         session = self.manager.get(session_id)
@@ -416,30 +501,31 @@ class ClientConnection:
             session.detach(self)
             self.subscriptions.discard(session)
 
-    def _create(self, message: dict) -> None:
-        command = message.get("command")
-        if command is not None:
-            if isinstance(command, str):
-                command = command if command.strip() else None
-            elif (
-                not isinstance(command, list)
-                or not command
-                or not all(isinstance(arg, str) for arg in command)
-            ):
-                log.debug("ignoring invalid command %r", command)
-                command = None
-        self.manager.create(
-            cols=int(message.get("cols", 80)),
-            rows=int(message.get("rows", 24)),
-            title=message.get("title"),
-            command=command,
-        )
+    def _create(self, message: dict) -> Session:
+        command = _valid_command(message.get("command"))
+        try:
+            return self.manager.create(
+                cols=int(message.get("cols", 80)),
+                rows=int(message.get("rows", 24)),
+                title=message.get("title"),
+                command=command,
+                cwd=message.get("cwd"),
+                env=message.get("env"),
+                parent_id=message.get("parent_id"),
+                origin=str(message.get("origin", "user")),
+                role=str(message.get("role", "shell")),
+                agent=message.get("agent"),
+                task=message.get("task"),
+                visibility=str(message.get("visibility", "public")),
+            )
+        except SessionError as exc:
+            raise _request_error(exc) from exc
 
-    def _rename(self, message: dict) -> None:
-        session = self.manager.get(str(message.get("session_id", "")))
-        if session is not None:
-            session.title = str(message.get("title", session.title))[:200]
-            self.manager.notify()
+    def _rename(self, message: dict) -> dict:
+        session = self._require(message)
+        session.title = str(message.get("title", session.title))[:200]
+        self.manager.notify()
+        return {"session": session.info()}
 
     def _input(self, message: dict) -> None:
         session = self.manager.get(str(message.get("session_id", "")))
@@ -457,6 +543,192 @@ class ClientConnection:
                 int(message.get("rows", session.rows)),
             )
 
+    # -------------------------------------------------------- agent verbs
+
+    def _require(self, message: dict) -> Session:
+        session = self.manager.get(str(message.get("session_id", "")))
+        if session is None:
+            raise RequestError("not_found", f"unknown session {message.get('session_id')!r}")
+        return session
+
+    def _resolve_agent(
+        self, agent: str | None, task: str | None, command, interactive: bool
+    ) -> list[str] | str:
+        """Turn an agent profile + task into the argv to run."""
+        command = _valid_command(command)
+        if command is not None:
+            return command
+        if not agent:
+            raise RequestError("bad_request", "agent or command is required")
+        profile = self.profiles.get(agent)
+        if profile is None:
+            raise RequestError("bad_request", f"unknown agent {agent!r}")
+        key = "interactive" if interactive else "print"
+        template = profile.get(key)
+        if not template:
+            raise RequestError("bad_request", f"agent {agent!r} has no {key} command")
+        parts = [str(part) for part in template]
+        if task and any("{task}" in part for part in parts):
+            return [part.replace("{task}", task) for part in parts]
+        if task:
+            parts.append(task)
+        return parts
+
+    async def _run(self, message: dict, *, spawn: bool) -> dict:
+        interactive = bool(message.get("interactive")) or message.get("mode") == "interactive"
+        task = message.get("task")
+        agent = message.get("agent")
+        common = dict(
+            cwd=message.get("cwd"),
+            env=message.get("env"),
+            title=message.get("title"),
+            cols=int(message.get("cols", 80)),
+            rows=int(message.get("rows", 24)),
+            parent_id=message.get("parent_id") or None,
+            visibility=str(message.get("visibility", "public")),
+        )
+        try:
+            if spawn:
+                argv = self._resolve_agent(agent, task, message.get("command"), interactive)
+                session = self.manager.spawn(
+                    argv, interactive=interactive, agent=agent, task=task, **common
+                )
+            else:
+                command = _valid_command(message.get("command"))
+                if command is None:
+                    raise RequestError("bad_request", "command is required")
+                if interactive:
+                    session = self.manager.create(
+                        command=command, origin="agent", **common
+                    )
+                else:
+                    session = self.manager.create_single(
+                        command, origin="agent", **common
+                    )
+        except RequestError:
+            raise
+        except SessionError as exc:
+            raise _request_error(exc) from exc
+        except ValueError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+
+        wait = bool(message.get("wait", not interactive))
+        if not wait:
+            return {"session_id": session.id, "session": session.info()}
+        code = await session.wait(timeout=_optional_float(message.get("timeout")))
+        result = self._output_result(session, message)
+        result["exit_code"] = code
+        result["timed_out"] = code is None
+        return result
+
+    def _output_result(self, session: Session, message: dict) -> dict:
+        fmt = str(message.get("format", "base64"))
+        start, end, data = session.capture(
+            0, strip_ansi=bool(message.get("strip_ansi", False))
+        )
+        result: dict[str, object] = {
+            "session_id": session.id,
+            "start": start,
+            "end": end,
+            "total": session.total,
+            "truncated": start > 0,
+            "output_base64": base64.b64encode(data).decode("ascii"),
+        }
+        if fmt == "text":
+            result["output_text"] = data.decode("utf-8", "replace")
+        return result
+
+    def _send(self, message: dict) -> dict:
+        session = self._require(message)
+        data = message.get("data", "")
+        if not isinstance(data, str):
+            raise RequestError("bad_request", "data must be a string")
+        if message.get("submit"):
+            data += "\n"
+        if data:
+            session.write(data.encode("utf-8"))
+        return {"ok": True}
+
+    def _capture(self, message: dict) -> dict:
+        session = self._require(message)
+        fmt = str(message.get("format", "base64"))
+        start, end, data = session.capture(
+            _nonneg_int(message.get("since")), strip_ansi=bool(message.get("strip_ansi", False))
+        )
+        result: dict[str, object] = {"start": start, "end": end, "total": session.total}
+        if fmt == "text":
+            result["text"] = data.decode("utf-8", "replace")
+        else:
+            result["data_base64"] = base64.b64encode(data).decode("ascii")
+        return result
+
+    async def _wait(self, message: dict) -> dict:
+        session = self._require(message)
+        until = str(message.get("until", "exit"))
+        timeout = _optional_float(message.get("timeout"))
+        if until == "text":
+            pattern = message.get("pattern")
+            if not isinstance(pattern, str) or not pattern:
+                raise RequestError("bad_request", "pattern is required for until=text")
+            matched, offset, match = await session.wait_for_text(
+                pattern,
+                since=_nonneg_int(message.get("since")),
+                timeout=timeout,
+                strip_ansi=bool(message.get("strip_ansi", True)),
+            )
+            return {
+                "matched": matched,
+                "offset": offset,
+                "match": match,
+                "exit_code": session.exit_code,
+            }
+        if until == "idle":
+            matched = await session.wait_for_idle(
+                int(message.get("quiet_ms", 500)), timeout=timeout
+            )
+            return {"matched": matched, "offset": session.total, "exit_code": session.exit_code}
+        if until == "exit":
+            code = await session.wait(timeout=timeout)
+            return {"matched": code is not None, "exit_code": code}
+        raise RequestError("bad_request", f"unknown wait target {until!r}")
+
+    def _close(self, message: dict) -> dict:
+        session_id = str(message.get("session_id", ""))
+        if self.manager.get(session_id) is None:
+            raise RequestError("not_found", f"unknown session {session_id!r}")
+        killed = self.manager.kill(session_id, tree=False)
+        return {"ok": bool(killed), "killed": killed}
+
+
+def _valid_command(command) -> list[str] | str | None:
+    """Normalise a create/run command, rejecting malformed values."""
+    if command is None:
+        return None
+    if isinstance(command, str):
+        return command if command.strip() else None
+    if isinstance(command, list) and command and all(isinstance(arg, str) for arg in command):
+        return command
+    log.debug("ignoring invalid command %r", command)
+    return None
+
+
+def _optional_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _request_error(exc: SessionError) -> RequestError:
+    if isinstance(exc, DepthExceededError):
+        return RequestError("depth_exceeded", str(exc))
+    if isinstance(exc, SessionLimitError):
+        return RequestError("too_many_sessions", str(exc))
+    return RequestError("bad_request", str(exc))
+
 
 def _consume_task_exception(task: asyncio.Task) -> None:
     if not task.cancelled() and task.exception() is not None:
@@ -471,6 +743,7 @@ async def handle_client(
     config: dict | None = None,
     control: ServerControl | None = None,
     token: str | None = None,
+    profiles: dict | None = None,
 ) -> None:
     try:
         try:
@@ -529,7 +802,7 @@ async def handle_client(
                 with contextlib.suppress(Exception):
                     await writer.drain()
                 return
-            connection = ClientConnection(ws, manager, control)
+            connection = ClientConnection(ws, manager, control, peer="browser", profiles=profiles)
             connections.add(connection)
             try:
                 await connection.run()
@@ -571,6 +844,7 @@ class ServerHandle:
         port: int,
         scheme: str,
         on_sessions_changed: Callable[[], None],
+        control_server: ControlServer | None = None,
     ) -> None:
         self.server = server
         self.control = control
@@ -580,6 +854,7 @@ class ServerHandle:
         self.host = host
         self.port = port
         self.scheme = scheme
+        self.control_server = control_server
         self._on_sessions_changed = on_sessions_changed
         self._stopped = False
 
@@ -588,6 +863,11 @@ class ServerHandle:
         """Base URL a client should load, suitable for a webview or browser."""
         host = self.host if self.host not in ("", "0.0.0.0", "::") else "127.0.0.1"
         return f"{self.scheme}://{host}:{self.port}"
+
+    @property
+    def control_socket(self) -> str | None:
+        """Path to the local control socket, if one is running."""
+        return str(self.control_server.path) if self.control_server is not None else None
 
     def request_stop(self) -> None:
         """Ask the server to shut down (safe from a signal handler)."""
@@ -624,6 +904,9 @@ class ServerHandle:
         # Server.wait_closed() waits for every active connection, so an open
         # browser WebSocket would otherwise make Ctrl+C hang forever.
         self.server.close()
+        if self.control_server is not None:
+            await self.control_server.stop()
+            self.control_server = None
         for connection in list(self.connections):
             connection.request_close()
         self.manager.close_all()
@@ -644,6 +927,9 @@ async def start_server(
     *,
     token: str | None = None,
     ssl_context: ssl.SSLContext | None = None,
+    enable_control: bool = True,
+    control_socket: str | None = None,
+    profiles: dict | None = None,
 ) -> ServerHandle:
     """Bind the listener and start serving, returning a :class:`ServerHandle`.
 
@@ -651,10 +937,22 @@ async def start_server(
     an embedded host running the event loop on a worker thread.  Use
     ``await handle.wait()`` to block until stopped.  :func:`serve` wraps this
     for the CLI together with main-thread signal handling.
+
+    Unless *enable_control* is false, a local ``AF_UNIX`` control socket is
+    also started (at *control_socket* or the default per-user path), and every
+    child process is told where to find it via ``WEBTERM_SOCKET``.
     """
     connections: set[ClientConnection] = set()
     client_tasks: set[asyncio.Task] = set()
     control = ServerControl()
+
+    # Validate the control path before binding the TCP listener so a
+    # misconfiguration cannot leave a half-started server behind.
+    control_path: Path | None = None
+    if enable_control:
+        control_path = Path(control_socket) if control_socket else default_control_socket()
+        if looks_like_tcp(str(control_path)):
+            raise ValueError(f"control socket must be a local path, got {control_path!r}")
 
     def on_sessions_changed() -> None:
         for connection in list(connections):
@@ -667,7 +965,9 @@ async def start_server(
 
     def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         task = loop.create_task(
-            handle_client(reader, writer, manager, connections, config, control, token)
+            handle_client(
+                reader, writer, manager, connections, config, control, token, profiles
+            )
         )
         client_tasks.add(task)
         task.add_done_callback(client_tasks.discard)
@@ -681,7 +981,7 @@ async def start_server(
         f"{sock.getsockname()[0]}:{sock.getsockname()[1]}" for sock in sockets
     )
     log.info("webterm listening on %s://%s", scheme, addresses)
-    return ServerHandle(
+    handle = ServerHandle(
         server,
         control,
         manager,
@@ -693,6 +993,24 @@ async def start_server(
         on_sessions_changed,
     )
 
+    if enable_control and control_path is not None:
+        def make_control_connection(transport):
+            return ClientConnection(
+                transport, manager, control, peer="agent", profiles=profiles
+            )
+
+        control_server = ControlServer(
+            manager,
+            make_control_connection,
+            path=control_path,
+            url=handle.url,
+            connections=connections,
+        )
+        await control_server.start()
+        handle.control_server = control_server
+        manager.set_control_env(socket=str(control_path), url=handle.url)
+    return handle
+
 
 async def serve(
     host: str,
@@ -702,10 +1020,21 @@ async def serve(
     *,
     token: str | None = None,
     ssl_context: ssl.SSLContext | None = None,
+    enable_control: bool = True,
+    control_socket: str | None = None,
+    profiles: dict | None = None,
 ) -> bool:
     """Run the server until stopped.  Returns True if a restart was requested."""
     handle = await start_server(
-        host, port, manager, config, token=token, ssl_context=ssl_context
+        host,
+        port,
+        manager,
+        config,
+        token=token,
+        ssl_context=ssl_context,
+        enable_control=enable_control,
+        control_socket=control_socket,
+        profiles=profiles,
     )
     loop = asyncio.get_running_loop()
     for sig, request in (

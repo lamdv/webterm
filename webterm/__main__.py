@@ -14,7 +14,14 @@ import sys
 
 from . import __version__
 from .server import serve
-from .session import DEFAULT_SCROLLBACK, SessionManager
+from .session import (
+    DEFAULT_MAX_AGENT_DEPTH,
+    DEFAULT_MAX_RETAINED,
+    DEFAULT_MAX_SESSIONS,
+    DEFAULT_RETAINED_TTL,
+    DEFAULT_SCROLLBACK,
+    SessionManager,
+)
 
 log = logging.getLogger("webterm")
 
@@ -106,6 +113,64 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SCROLLBACK,
         help=f"bytes of scrollback kept per session (default: {DEFAULT_SCROLLBACK})",
     )
+    parser.add_argument(
+        "--control-socket",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Unix socket for the local agent control API "
+            "(default: $XDG_RUNTIME_DIR/webterm/control.sock)"
+        ),
+    )
+    parser.add_argument(
+        "--no-control",
+        action="store_true",
+        help="disable the local agent control socket entirely",
+    )
+    parser.add_argument(
+        "--agent",
+        action="append",
+        default=None,
+        metavar="NAME=COMMAND",
+        help=(
+            "agent profile usable with `webtermctl spawn`, in print mode "
+            "(repeatable; `{task}` is substituted). Defaults to pi when installed."
+        ),
+    )
+    parser.add_argument(
+        "--agent-interactive",
+        action="append",
+        default=None,
+        metavar="NAME=COMMAND",
+        help="override the interactive command for an agent profile (repeatable)",
+    )
+    parser.add_argument(
+        "--max-agent-depth",
+        type=int,
+        default=DEFAULT_MAX_AGENT_DEPTH,
+        help=f"maximum sub-agent nesting depth (default: {DEFAULT_MAX_AGENT_DEPTH})",
+    )
+    parser.add_argument(
+        "--max-sessions",
+        type=int,
+        default=DEFAULT_MAX_SESSIONS,
+        help=f"maximum concurrent sessions (default: {DEFAULT_MAX_SESSIONS})",
+    )
+    parser.add_argument(
+        "--max-retained",
+        type=int,
+        default=DEFAULT_MAX_RETAINED,
+        help=f"maximum finished one-shot sessions kept (default: {DEFAULT_MAX_RETAINED})",
+    )
+    parser.add_argument(
+        "--retained-ttl",
+        type=float,
+        default=DEFAULT_RETAINED_TTL,
+        help=(
+            "seconds a finished one-shot session is kept before cleanup "
+            f"(default: {DEFAULT_RETAINED_TTL:g}; negative disables)"
+        ),
+    )
     parser.add_argument("--verbose", "-v", action="store_true", help="enable debug logging")
     parser.add_argument("--version", action="version", version=f"webterm {__version__}")
     return parser
@@ -123,6 +188,44 @@ def parse_launchers(items: list[str], error) -> list[dict[str, object]]:
     return launchers
 
 
+def parse_agents(
+    items: list[str] | None,
+    interactive: list[str] | None,
+    error,
+) -> dict[str, dict[str, list[str]]]:
+    """Turn ``--agent`` / ``--agent-interactive`` flags into agent profiles.
+
+    Each profile has a ``print`` template (one-shot, result returned) and an
+    ``interactive`` template (a TUI the human can attach to).  ``{task}`` in a
+    template is replaced with the task text; otherwise the task is appended.
+    """
+    profiles: dict[str, dict[str, list[str]]] = {}
+
+    def entries(values: list[str] | None):
+        for item in values or []:
+            name, _, command = item.partition("=")
+            argv = shlex.split(command)
+            if not argv:
+                error(f"invalid agent profile {item!r}: expected NAME=COMMAND")
+            yield name.strip() or argv[0], argv
+
+    for name, argv in entries(items):
+        profiles[name] = {"print": argv, "interactive": list(argv)}
+    for name, argv in entries(interactive):
+        profile = profiles.setdefault(name, {"print": [], "interactive": []})
+        profile["interactive"] = argv
+    return profiles
+
+
+def default_agents() -> dict[str, dict[str, list[str]]]:
+    """Built-in agent profiles detected on ``PATH``."""
+    profiles: dict[str, dict[str, list[str]]] = {}
+    pi = shutil.which("pi")
+    if pi:
+        profiles["pi"] = {"print": [pi, "-p", "{task}"], "interactive": [pi, "{task}"]}
+    return profiles
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -135,7 +238,15 @@ def main(argv: list[str] | None = None) -> int:
     shell = args.shell or _default_shell()
     cwd = args.cwd or os.path.expanduser("~")
 
-    manager = SessionManager(shell=shell, cwd=cwd, scrollback=args.scrollback)
+    manager = SessionManager(
+        shell=shell,
+        cwd=cwd,
+        scrollback=args.scrollback,
+        max_agent_depth=args.max_agent_depth,
+        max_sessions=args.max_sessions,
+        max_retained=args.max_retained,
+        retained_ttl=None if args.retained_ttl < 0 else args.retained_ttl,
+    )
 
     config: dict[str, object] = {}
     if args.font:
@@ -173,6 +284,15 @@ def main(argv: list[str] | None = None) -> int:
     if launchers:
         config["launchers"] = launchers
 
+    profiles = parse_agents(args.agent, args.agent_interactive, parser.error)
+    if not profiles:
+        profiles = default_agents()
+    if profiles:
+        config["agents"] = [
+            {"name": name, **{key: value for key, value in profile.items() if value}}
+            for name, profile in profiles.items()
+        ]
+
     # Re-exec the same interpreter and package so a restart picks up edited
     # source without needing a supervisor.  `python -m webterm` is used rather
     # than sys.argv[0], which may be a console-script path or a module file.
@@ -180,7 +300,17 @@ def main(argv: list[str] | None = None) -> int:
     restart = False
     try:
         restart = asyncio.run(
-            serve(args.host, args.port, manager, config, token=token, ssl_context=ssl_context)
+            serve(
+                args.host,
+                args.port,
+                manager,
+                config,
+                token=token,
+                ssl_context=ssl_context,
+                enable_control=not args.no_control,
+                control_socket=args.control_socket,
+                profiles=profiles,
+            )
         )
     except KeyboardInterrupt:
         pass

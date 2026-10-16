@@ -352,7 +352,9 @@ class RestartTests(unittest.IsolatedAsyncioTestCase):
         port = probe.getsockname()[1]
         probe.close()
 
-        server_task = asyncio.create_task(serve("127.0.0.1", port, manager))
+        server_task = asyncio.create_task(
+            serve("127.0.0.1", port, manager, enable_control=False)
+        )
         client = None
         try:
             for _ in range(100):
@@ -427,7 +429,14 @@ class TlsTests(unittest.IsolatedAsyncioTestCase):
         probe.close()
 
         server_task = asyncio.create_task(
-            serve("127.0.0.1", port, manager, token="tls-token", ssl_context=server_ctx)
+            serve(
+                "127.0.0.1",
+                port,
+                manager,
+                token="tls-token",
+                ssl_context=server_ctx,
+                enable_control=False,
+            )
         )
         client = None
         try:
@@ -475,7 +484,7 @@ class TlsTests(unittest.IsolatedAsyncioTestCase):
 class StartServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_ephemeral_port_url_and_stop(self) -> None:
         manager = SessionManager(shell="/bin/sh", cwd="/tmp")
-        handle = await start_server("127.0.0.1", 0, manager)
+        handle = await start_server("127.0.0.1", 0, manager, enable_control=False)
         try:
             self.assertGreater(handle.port, 0)
             self.assertEqual(handle.host, "127.0.0.1")
@@ -494,7 +503,7 @@ class StartServerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wait_returns_false_after_stop_request(self) -> None:
         manager = SessionManager(shell="/bin/sh", cwd="/tmp")
-        handle = await start_server("127.0.0.1", 0, manager)
+        handle = await start_server("127.0.0.1", 0, manager, enable_control=False)
         waiter = asyncio.create_task(handle.wait())
         await asyncio.sleep(0)
         handle.request_stop()
@@ -528,7 +537,9 @@ class BootstrapAuthTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.manager = SessionManager(shell="/bin/sh", cwd="/tmp")
         self.token = "bootstrap-secret"
-        self.handle = await start_server("127.0.0.1", 0, self.manager, token=self.token)
+        self.handle = await start_server(
+            "127.0.0.1", 0, self.manager, token=self.token, enable_control=False
+        )
 
     async def asyncTearDown(self) -> None:
         await self.handle.stop()
