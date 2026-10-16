@@ -140,6 +140,20 @@ view's sidebar lines up with the picker's. A narrow terminal view collapses its
 sidebar regardless, collapses it again when a shell is chosen, and leaves the
 expand button in reach — see `docs/frontend.md`.
 
+## Mobile (iOS / Android)
+
+The crate is already arranged for Tauri's mobile targets: `src-tauri/Cargo.toml`
+builds a `staticlib`/`cdylib`, the portable `webterm-client` has no platform
+code, and the desktop-only pieces (single-instance, menus, window-state) sit
+behind `#[cfg(desktop)]`. `run()` carries
+`#[cfg_attr(mobile, tauri::mobile_entry_point)]`.
+
+Building it needs a **macOS host with Xcode** (`cargo tauri ios init`, then
+`cargo tauri ios build`); this Linux setup and the current CI matrix cannot do
+it, and no `gen/apple` project is checked in yet. On mobile the app is a
+**remote client only** — the server cannot run there (no `forkpty`) — and the
+open UX question is terminal input with the iPad's on-screen keyboard.
+
 ## Roadmap
 
 - [x] **oauth2-proxy integration test (automated half).**
@@ -167,3 +181,9 @@ expand button in reach — see `docs/frontend.md`.
   dependencies); the CI matrix builds macOS `.app`/`.dmg` and Windows
   `.msi`/NSIS and publishes them on a tag. macOS signing/notarization is still
   outstanding for distribution.
+- [ ] **iPad client.** Generate the iOS project (`cargo tauri ios init`) and
+  build it for the simulator on a macOS runner, then evaluate the terminal UX
+  (on-screen keyboard, soft-keyboard resizing, touch scrolling). Needs Xcode;
+  distributing to a device or the App Store needs an Apple Developer account and
+  review. A native SwiftTerm client remains the alternative if the webview
+  terminal does not feel right on iPad.

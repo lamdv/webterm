@@ -10,19 +10,13 @@ mod menu;
 
 use tauri::Manager;
 
-/// Build and run the application.  Called exactly once, from `main`.
+/// Build and run the application.  Called from `main` on desktop, and from the
+/// generated host project on iOS and Android.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         // The HTTP plugin gives us the `reqwest` client used to probe servers.
         .plugin(tauri_plugin_http::init())
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // A second launch focuses the picker instead of starting a second
-            // copy of the app.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
         .setup(|app| {
             // Store the profiles in the per-app config directory, e.g.
             // `~/.config/dev.webterm.desktop/servers.json` on Linux.
@@ -41,13 +35,22 @@ pub fn run() {
             commands::probe_all,
         ]);
 
-    // Menus and window-state are desktop-only plugins; a future mobile build
-    // simply skips them.
+    // Single-instance, menus and window-state are desktop-only; a mobile build
+    // simply skips them.  (`tauri-plugin-single-instance` is an empty crate on
+    // iOS/Android, so registering it unconditionally would not even compile.)
     //
     // There is no tray icon and no `ExitRequested` handler, so Tauri's default
     // applies: closing the last (only) window quits the app.
     #[cfg(desktop)]
     let builder = builder
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // A second launch focuses the picker instead of starting a second
+            // copy of the app.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .menu(menu::build)
         .on_menu_event(menu::handle);
