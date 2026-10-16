@@ -12,8 +12,13 @@ for the client see [frontend.md](frontend.md).
 |---|---|
 | `webterm/__main__.py` | CLI entry point: argument parsing, config assembly, `asyncio.run`. |
 | `webterm/server.py` | HTTP static serving, WebSocket upgrade, `ClientConnection` command loop and fan-out, shutdown. |
-| `webterm/session.py` | `Session` (PTY + scrollback + subscribers) and `SessionManager` (spawn, reap, list, kill). |
+| `webterm/session.py` | `Session` (PTY + scrollback + subscribers + lineage) and `SessionManager` (spawn, reap, list, kill, limits, GC). |
 | `webterm/websocket.py` | Minimal RFC 6455 server: handshake, framing, fragmentation, ping/pong/close. |
+| `webterm/transport.py` | `Transport` protocol and `FramedTransport` (length-prefixed frames for the control socket). |
+| `webterm/control.py` | Local `AF_UNIX` control listener, discovery file, peer-credential check. |
+| `webterm/ansi.py` | Best-effort ANSI/control-sequence stripping for `capture` / `wait --text`. |
+| `webterm/client.py` | Blocking `ControlClient` for the local control socket. |
+| `webterm/ctl.py` | The `webtermctl` command-line client. |
 | `webterm/__init__.py` | Package version. |
 
 All modules use `from __future__ import annotations` and are linted by `ruff`
@@ -35,6 +40,14 @@ All modules use `from __future__ import annotations` and are linted by `ruff`
 | `--launcher LABEL=COMMAND` | `pi agent` if `pi` is installed | Sidebar launcher button (repeatable). |
 | `--cwd` | `$HOME` | Working directory for new sessions. |
 | `--scrollback` | `100000` | Bytes retained per session for replay. |
+| `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API. |
+| `--no-control` | off | Disable the local control socket. |
+| `--agent NAME=COMMAND` | `pi` if installed | Agent profile for `spawn` (print mode); `{task}` is substituted. |
+| `--agent-interactive NAME=COMMAND` | same as `--agent` | Interactive command for an agent profile. |
+| `--max-agent-depth` | `5` | Maximum sub-agent nesting depth. |
+| `--max-sessions` | `64` | Maximum concurrent sessions. |
+| `--max-retained` | `32` | Maximum finished one-shot sessions retained. |
+| `--retained-ttl` | `600` | Seconds a finished one-shot session is kept (negative disables). |
 | `--verbose`, `-v` | off | Debug logging. |
 | `--version` | | Print version. |
 
@@ -140,7 +153,13 @@ fan-out to the async socket:
 | `rename` | `session_id`, `title` | Set the title (capped at 200 chars) and broadcast. |
 | `input` | `session_id`, `data` | Write UTF-8 bytes to the PTY. |
 | `resize` | `session_id`, `cols`, `rows` | `TIOCSWINSZ` on the PTY. |
-| `list` | | Re-send the session list. |
+| `list` | `parent_id?` | Re-send the session list (and return it when `id` is set). |
+| `run` | `command`, `cwd?`, `env?`, `parent_id?`, `timeout?`, `wait?`, `format?`, `strip_ansi?` | Run a command in its own PTY; return output + exit code, or a session id when `wait` is false. |
+| `spawn` | `agent?`, `task?`, `command?`, `mode?`, `parent_id?`, `wait?` | Start a sub-agent from an agent profile; otherwise like `run`. |
+| `send` | `session_id`, `data`, `submit?` | Write to a session (`submit` appends a newline). |
+| `capture` | `session_id`, `since?`, `format?`, `strip_ansi?` | Read scrollback from an absolute byte offset. |
+| `wait` | `session_id`, `until` (`exit`\|`text`\|`idle`), `pattern?`, `timeout?`, `quiet_ms?` | Block until exit, a regex matches, or output goes quiet. |
+| `close` | `session_id` | Drop a finished retained session. |
 | `restart` | | Ask the process to re-exec itself. Broadcasts `restarting`, then shuts down. |
 
 Unknown types are logged at debug level. Binary frames from the client are
@@ -154,6 +173,8 @@ ignored.
 | `attached` | `session` | Acknowledge a subscribe, with that session's info. |
 | `exit` | `session_id` | The child process exited. |
 | `restarting` | | The server is about to re-exec; reconnect once the socket drops. |
+| `result` | `id`, `result` | Correlated reply to a request that carried an `id`. |
+| `error` | `id`, `error.{code,message}` | Correlated failure (`bad_request`, `not_found`, `timeout`, `depth_exceeded`, `too_many_sessions`, `internal`). |
 
 Binary frames carry terminal output as described in
 [architecture.md](architecture.md#wire-protocol).
@@ -172,6 +193,28 @@ restart was requested, it first broadcasts `restarting` to every connection, and
 `serve()` returns `True` so `__main__.main()` can re-exec. The comment in the
 code explains why `wait_closed()` is bounded: from Python 3.12 it waits for
 active connections, so an open browser WebSocket would otherwise hang Ctrl+C.
+
+### Local control plane (`control.py`, `transport.py`)
+
+`ClientConnection` is transport-agnostic: it talks to a `Transport` protocol
+(`send_json`, `send_binary`, `recv`, `close`). The browser passes a `WebSocket`;
+the local control socket passes a `FramedTransport`, whose frames are
+`u32 big-endian length | u8 kind | payload` with kind 1 = JSON text and kind 2
+the same session-id/offset binary output frame the browser receives. Requests
+may carry an `id` and then get a correlated `result`/`error`; browser requests
+omit it. This is what lets one dispatcher serve the browser and `webtermctl`.
+
+`ControlServer` binds the Unix socket, writes
+`$XDG_RUNTIME_DIR/webterm/server.json` (`{socket, url, pid}`), and checks
+`SO_PEERCRED` on Linux (uid must equal `os.geteuid()`; elsewhere the `0600`
+mode is the boundary). It is an `AF_UNIX` socket only — `start_server` rejects a
+`--control-socket` value that looks like a TCP address via `looks_like_tcp` — so
+network reachability of the UI never grants programmatic control. `webtermctl`
+(`ctl.py`) and `webterm.client.ControlClient` are the stdlib clients; both
+autofill `parent_id` from `$WEBTERM_SESSION_ID` so a nested agent spawns visible
+children with one command. `session.set_control_env()` injects `WEBTERM_SOCKET`,
+`WEBTERM_URL`, `WEBTERM_SESSION_ID`, `WEBTERM_PARENT_SESSION`, `WEBTERM_DEPTH`,
+and `WEBTERM_AGENT` into every child before `exec`.
 
 ## `session.py` — PTYs, scrollback, and reaping
 

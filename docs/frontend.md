@@ -130,9 +130,15 @@ Unknown ids are ignored.
 
 ### Tabs and view
 
-- `renderTabs` rebuilds `#sessions` from `sessionsMeta`: each tab has a title
-  (double-click to rename via `prompt`) and a `×` close button that sends
-  `{"type":"kill"}`.
+- `renderTabs` rebuilds `#sessions` from `sessionsMeta` as a **tree**: sessions
+  are ordered by `parent_id` (`orderedSessions`), children are indented with a
+  `--depth` custom property, and a child whose parent is gone falls back to the
+  root so nothing disappears. Agent sessions get a badge (`session.agent`) and,
+  once dead, an `exit N` chip. Each tab has an inline-rename title
+  (double-click) and a `×` close button that sends `{"type":"kill"}` (which
+  cascades to the session's descendants server-side).
+- A session created by an agent does **not** steal focus: only a session the
+  user created (`activateNext`) is activated on arrival.
 - `activate(id)` persists the choice, toggles the `active` class on wrappers,
   updates tab highlighting, and fits/focuses the terminal on the next animation
   frame plus a 50 ms follow-up (needed when a terminal is first made visible).

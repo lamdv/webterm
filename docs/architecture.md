@@ -65,6 +65,31 @@ replayed on reattach.
   `ClientConnection` and receives its own copy of the fan-out.
 - A session can outlive all browsers. Output produced while nobody is attached
   still goes into the scrollback buffer, which is replayed on the next attach.
+- In addition to the TCP listener, the server binds a **local Unix control
+  socket** for agents and scripts (see below). It is `AF_UNIX` only and never
+  affects, or is affected by, `--host`.
+
+## Sub-agents and the local control plane
+
+Sessions carry lineage: `parent_id`, `depth`, `role` (`shell`/`agent`),
+`agent`, `task`, `origin`, and `visibility`. The browser renders the session
+list as a tree by `parent_id`, so a sub-agent nests under the session that
+spawned it, with a badge and exit status, and the human can click it and type.
+
+An agent running inside a session inherits `WEBTERM_SOCKET` and
+`WEBTERM_SESSION_ID` (plus `WEBTERM_PARENT_SESSION`, `WEBTERM_DEPTH`,
+`WEBTERM_URL`, `WEBTERM_AGENT`). It delegates with `webtermctl spawn --agent
+... --task ...`, which connects to the local control socket; `webtermctl` fills
+`parent_id` from `WEBTERM_SESSION_ID`, so the child nests automatically — and
+recursively, since the child inherits the same variables.
+
+The control socket is a second, local-only transport for the same command
+dispatcher as the browser WebSocket (see [backend.md](backend.md)). It is
+`AF_UNIX` only, mode `0600` inside a `0700` directory, with a peer-credential
+check; it is never on the network. Recursion is bounded by `--max-agent-depth`
+and `--max-sessions`, `kill` cascades to descendants by default, and finished
+one-shot sessions are swept by TTL/count. The browser transport is unchanged and
+keeps its own remote-access story (`--token`, TLS, a reverse proxy).
 
 ## Data flow
 
@@ -118,7 +143,8 @@ manager then broadcasts the updated session list.
 
 ## Wire protocol
 
-One WebSocket per browser, carrying two frame types:
+One link carries two frame types — the browser WebSocket, and (for local
+clients) the length-prefixed control socket:
 
 - **Text frames** — JSON control messages. Browser → server: `subscribe`,
   `unsubscribe`, `create`, `kill`, `rename`, `input`, `resize`, `list`,

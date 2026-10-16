@@ -29,6 +29,9 @@ you left it — including full scrollback.
 - Full terminal emulation via [xterm.js](https://xtermjs.org/): colors,
   Unicode, mouse reporting, alt-screen apps (vim, htop, ...)
 - Resizes propagate to the PTY
+- **Sub-agents** — an agent or script running locally can spawn extra sessions
+  over a local-only Unix control socket (`webtermctl`); sub-agents nest under
+  their parent in the sidebar so you can watch them and take over at any time
 - **Zero Python dependencies** — the WebSocket server is built on the standard
   library, and xterm.js is loaded in the browser from a pinned, integrity-checked
   CDN URL, so there is no build step and nothing to install
@@ -150,6 +153,22 @@ scheme, so no extra configuration is needed.
   prompt rather than losing the tab. By default, if `pi` is on `PATH`, a **pi
   agent** button starts `pi`. Add your own with e.g.
   `--launcher "btop=btop" --launcher "logs=journalctl -f"`.
+- **Sub-agents** — webterm also listens on a local Unix socket so a process on
+  the same machine (an agent, a script, a test harness) can spawn sessions that
+  show up in the sidebar. An agent running *inside* a webterm session inherits
+  `$WEBTERM_SOCKET` and `$WEBTERM_SESSION_ID`, so it can delegate with one
+  command and the child nests under it:
+
+  ```bash
+  # inside a webterm session (any shell); the child is a visible sub-agent
+  webtermctl spawn --agent pi --task "run the test suite" --text
+  webtermctl run --wait make test          # run a command, get output + exit code
+  webtermctl list --tree                   # see the agent tree
+  ```
+
+  The socket is guarded by filesystem permissions (`0600`) and peer
+  credentials, and is never exposed over the network. See
+  [docs/agent-control.md](docs/agent-control.md).
 - **Switch session** — click a tab in the sidebar.
 - **Resize sidebar** — drag the divider between the sidebar and the terminal
   (or focus it and use `←`/`→`, `Home` to reset).
@@ -178,6 +197,14 @@ scheme, so no extra configuration is needed.
 | `--launcher` | `pi agent` (if `pi` is installed) | Add a button that starts a session running `LABEL=COMMAND` (repeatable) |
 | `--cwd` | `$HOME` | Working directory for new sessions |
 | `--scrollback` | `100000` | Bytes of scrollback kept per session for reattach |
+| `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API |
+| `--no-control` | off | Disable the local control socket entirely |
+| `--agent` | `pi` (if installed) | Agent profile for `webtermctl spawn`, as `NAME=COMMAND` (repeatable) |
+| `--agent-interactive` | same as `--agent` | Interactive command for an agent profile (repeatable) |
+| `--max-agent-depth` | `5` | Maximum sub-agent nesting depth |
+| `--max-sessions` | `64` | Maximum concurrent sessions |
+| `--max-retained` | `32` | Maximum finished one-shot sessions kept |
+| `--retained-ttl` | `600` | Seconds a finished one-shot session is kept (negative disables) |
 
 ## How it works
 
@@ -199,6 +226,18 @@ carry several sessions at once and a reconnecting client can resume exactly
 where it left off; control messages (create, kill, rename, resize, ...) are JSON
 text frames.
 Children are reaped through a `SIGCHLD` handler in the `SessionManager`.
+
+Alongside the browser WebSocket, the server binds a local Unix control socket
+(`$XDG_RUNTIME_DIR/webterm/control.sock` by default). The `webtermctl` command
+and the `webterm.client` library speak the same `type`-keyed protocol over that
+socket — with an optional `id` for correlated `result`/`error` replies — and can
+`create`, `run`, `spawn`, `send`, `capture`, `wait`, and `kill` sessions. Every
+child process is given `WEBTERM_SOCKET`, `WEBTERM_SESSION_ID`,
+`WEBTERM_PARENT_SESSION`, `WEBTERM_DEPTH`, and `WEBTERM_URL`, so a nested agent
+finds the control plane and its place in the session tree with no configuration.
+The socket is an `AF_UNIX` socket only, mode `0600`, with a peer-credential
+check; it is never exposed over TCP. The browser transport is unchanged and
+keeps its own remote-access story (`--token`, TLS, a reverse proxy).
 
 ## Development
 

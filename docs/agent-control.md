@@ -1,7 +1,7 @@
 # Proposal: sub-agents in webterm (local agent control API)
 
-Status: **draft for discussion** · Owner: _unassigned_ · Depends on: `b962620`
-(retained one-shot sessions)
+Status: **phases 0–3 implemented** on the `subagents` branch · Owner: _unassigned_ ·
+Depends on: `b962620` (retained one-shot sessions)
 
 ## 1. The user story
 
@@ -525,3 +525,26 @@ user story real and should not be deferred past the CLI.
 7. **Attach UX.** Should `webtermctl attach <id>` give a human a real terminal on
    a sub-agent, or is the browser always the attach path? (AgentAPI has
    `attach`; it is convenient for debugging a stuck child.)
+
+## 12. Implementation status
+
+Phases 0–3 are implemented on the `subagents` branch:
+
+- **Phase 0** — lineage and metadata (`parent_id`, `depth`, `role`, `agent`,
+  `task`, `origin`, `visibility`), `Session.wait` / `wait_for_text` /
+  `wait_for_idle`, offset-based `capture` with ANSI stripping,
+  `SessionManager.spawn`, `children_of` / `descendants_of`, cascade `kill`,
+  depth/session caps, retained-GC, and `WEBTERM_*` env export.
+- **Phase 1** — the `Transport` / `FramedTransport` split, request `id` →
+  `result` / `error`, the run/spawn/send/capture/wait/close verbs, the local
+  `AF_UNIX` control socket with peer-credential checks, the discovery file, and
+  the `--control-socket` / `--agent` / limit flags.
+- **Phase 2** — `webterm.client.ControlClient` and the `webtermctl` CLI
+  (`list` / `new` / `run` / `spawn` / `send` / `capture` / `wait` / `kill` /
+  `rename`), with auto-parenting from `$WEBTERM_SESSION_ID`.
+- **Phase 3** — the sidebar session tree with agent badges and exit chips, and
+  updated README / architecture / backend / frontend docs.
+
+Verified end to end: a session running `webtermctl spawn --command ...` creates
+a child that `list --tree` shows nested under it. Phases 4–5 (MCP, fan-out,
+VT screen) remain open.
