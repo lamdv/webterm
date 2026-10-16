@@ -1,0 +1,80 @@
+/*
+ * Picker styling.
+ *
+ * This file is deliberately self-contained: the picker runs on the app's own
+ * origin and cannot fetch the server's stylesheet (different origin, no CORS).
+ * The palette below intentionally mirrors `:root` in
+ * webterm/static/style.css so that the picker and the terminal it launches look
+ * like one application. The terminal UI itself is not restyled here — it is the
+ * server's own UI, loaded verbatim when a window navigates to a server.
+ */
+
+:root {
+  --bg: #0f1117;
+  --bg-alt: #161a22;
+  --bg-elevated: #1c212c;
+  --border: #262c38;
+  --text: #c9d1d9;
+  --text-dim: #7d8799;
+  --accent: #4f9cf9;
+  --accent-dim: #2b5c99;
+  --danger: #e5534b;
+  --ok: #3fb950;
+  --warn: #d29922;
+  font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    sans-serif;
+}
+
+body {
+  display: grid;
+  place-items: center;
+  padding: 1.5rem;
+}
+
+.picker {
+  width: 100%;
+  max-width: 30rem;
+}
+
+.picker-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 1.5rem;
+}
+
+.picker-head h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.dim {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.note {
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  line-height: 1.5;
+}

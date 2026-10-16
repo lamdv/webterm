@@ -1,0 +1,6 @@
+# Pins the toolchain so the tutorial behaves the same on every machine.
+# `rustup` reads this file automatically: run any `cargo` command inside
+# `desktop/` and it will use stable, with rustfmt and clippy available.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

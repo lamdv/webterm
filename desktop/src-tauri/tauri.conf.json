@@ -4,8 +4,7 @@
   "version": "0.1.0",
   "identifier": "dev.webterm.desktop",
   "build": {
-    "frontendDist": "../src/webterm_desktop/frontend",
-    "features": ["pytauri/standalone"]
+    "frontendDist": "../frontend"
   },
   "app": {
     "withGlobalTauri": false,
@@ -13,8 +12,10 @@
       {
         "label": "main",
         "title": "webterm",
-        "width": 1100,
-        "height": 720
+        "width": 760,
+        "height": 560,
+        "minWidth": 520,
+        "minHeight": 400
       }
     ],
     "security": {
@@ -22,7 +23,8 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
+    "targets": ["deb", "rpm", "app", "dmg", "msi", "nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1,0 +1,38 @@
+# The desktop and mobile client for webterm.
+#
+# This is a Cargo *workspace*: a virtual root with two members.
+#
+#   crates/webterm-client   portable logic, no Tauri, unit-testable
+#   src-tauri               the Tauri shell (windows, IPC, plugins)
+#
+# The split is deliberate.  Keeping the interesting code out of the shell means
+# `cargo test -p webterm-client` runs in milliseconds with no window, and the
+# very same crate compiles for iOS and Android when we get there.
+[workspace]
+resolver = "2"
+members = ["crates/webterm-client", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Third-party crates are declared once here so every member agrees on a version.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = "2"
+tauri-build = "2"
+tauri-plugin-single-instance = "2"
+
+# Our own crates, referenced by path.
+webterm-client = { path = "crates/webterm-client" }
+
+[workspace.lints.rust]
+# No unsafe in the client.  If we ever need it, it comes with a comment and a
+# chapter of its own.
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = "warn"

@@ -1,0 +1,16 @@
+[package]
+name = "webterm-client"
+description = "Portable core of the webterm client: profiles, probing and authentication."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+# Only tests need to turn values into JSON, so this stays a dev-dependency.
+serde_json.workspace = true
+
+[lints]
+workspace = true

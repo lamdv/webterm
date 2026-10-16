@@ -362,10 +362,12 @@ and exposing the UI cannot grant programmatic control.
 
 ### 5.11 In-process use
 
-Everything above is usable in-process: the desktop host already holds a
-`SessionManager`, and `ServerHandle` exposes it. The socket is one client among
-others, so the Tauri app can spawn and inspect sub-agents directly, and tests
-drive the API without a socket.
+Everything above is usable in-process: `start_server` returns a `ServerHandle`
+that exposes the live `SessionManager`. The socket is one client among others,
+so an embedding host can spawn and inspect sub-agents directly, and tests drive
+the API without a socket. (The Tauri desktop app no longer embeds the server —
+it is a remote client — but any host that calls `start_server` still gets the
+same access.)
 
 ## 6. CLI and client library
 
@@ -480,9 +482,9 @@ user story real and should not be deferred past the CLI.
   memory, the sidebar cannot draw the tree and a reconnecting browser loses the
   relationships. Lineage is shared state.
 - **Why a Unix socket, not the WebSocket?** Local agents should not need HTTP,
-  tokens, or a WS client, and the embedded desktop app has no way to hand a
-  local process its per-launch token. A `0600` socket is the right local
-  boundary, and it guarantees local-only control.
+  tokens, or a WS client, and a browser-derived token is awkward to hand to a
+  local process. A `0600` socket is the right local boundary, and it guarantees
+  local-only control.
 - **Why agent profiles?** Hardcoding `pi` would repeat the current single
   launcher. Profiles give a config seam for the future default agentic interface
   and keep agent-specific argv out of the transport.

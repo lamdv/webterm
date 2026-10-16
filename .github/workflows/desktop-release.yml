@@ -1,10 +1,7 @@
-# Build the webterm desktop app as standalone bundles.
+# Build and test the desktop client, and publish bundles on a tag.
 #
-# This is the supported packaging path.  It downloads a portable CPython into
-# src-tauri/pyembed, installs the desktop package and the webterm server into
-# it, and lets tauri-cli produce per-OS bundles.
-#
-# See: <https://pytauri.github.io/pytauri/latest/usage/tutorial/build-standalone/>
+# The client is a plain Rust/Tauri app: no Python, no embedded interpreter, no
+# portable CPython download.
 
 name: desktop-release
 
@@ -18,9 +15,38 @@ defaults:
   run:
     shell: bash
 
+env:
+  # The Linux webview and packaging libraries Tauri needs to link against.
+  LINUX_DEPS: libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
 jobs:
-  check:
-    name: lint + unit tests
+  rust:
+    name: rust fmt + clippy + test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $LINUX_DEPS
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+      - name: cargo fmt
+        working-directory: desktop
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        working-directory: desktop
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test
+        working-directory: desktop
+        run: cargo test -p webterm-client
+
+  server:
+    name: server lint + tests
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +57,7 @@ jobs:
 
   build:
     name: build (${{ matrix.target }})
-    needs: check
+    needs: [rust, server]
     permissions:
       contents: write # for publishing a release on tag
     strategy:
@@ -57,100 +83,39 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y $LINUX_DEPS patchelf
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@v2
         with:
-          workspaces: desktop/src-tauri
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-
-      - name: Download python-build-standalone
-        env:
-          PYTHON_VERSION: "3.13.7"
-          TAG: "20250828"
-          TARGET: ${{ matrix.target }}
-        run: |
-          url="https://github.com/astral-sh/python-build-standalone/releases/download/${TAG}/cpython-${PYTHON_VERSION}+${TAG}-${TARGET}-install_only_stripped.tar.gz"
-          dest="desktop/src-tauri/pyembed"
-          mkdir -p "$dest"
-          curl -L "$url" | tar -xz -C "$dest"
-
-          # See <https://github.com/pytauri/pytauri/issues/99#issuecomment-2704556726>
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            minor="${PYTHON_VERSION%.*}" # "3.13.7" -> "3.13"
-            install_name_tool -id "@rpath/libpython${minor}.dylib" \
-              "$dest/python/lib/libpython${minor}.dylib"
-          fi
-
-      - name: Install the project into the embedded python
-        env:
-          PYTAURI_STANDALONE: "1"
-          PYTHON_PATH: ${{ runner.os == 'Windows' && './desktop/src-tauri/pyembed/python/python.exe' || './desktop/src-tauri/pyembed/python/bin/python3' }}
-        run: |
-          uv pip install \
-            --exact \
-            --compile-bytecode \
-            --python="$PYTHON_PATH" \
-            ./desktop/src-tauri \
-            .
-
-      - name: Set build environment (linux)
-        if: runner.os == 'Linux'
-        run: |
-          PYO3_PYTHON=$(realpath desktop/src-tauri/pyembed/python/bin/python3)
-          RUSTFLAGS="-C link-arg=-Wl,-rpath,\$ORIGIN/../lib/webterm/lib -L $(realpath desktop/src-tauri/pyembed/python/lib)"
-          echo "PYO3_PYTHON=$PYO3_PYTHON" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=$RUSTFLAGS" >> "$GITHUB_ENV"
-
-      - name: Set build environment (macos)
-        if: runner.os == 'macOS'
-        run: |
-          PYO3_PYTHON=$(realpath desktop/src-tauri/pyembed/python/bin/python3)
-          RUSTFLAGS="-C link-arg=-Wl,-rpath,@executable_path/../Resources/lib -L $(realpath desktop/src-tauri/pyembed/python/lib)"
-          echo "PYO3_PYTHON=$PYO3_PYTHON" >> "$GITHUB_ENV"
-          echo "RUSTFLAGS=$RUSTFLAGS" >> "$GITHUB_ENV"
-
-      - name: Set build environment (windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $PYO3_PYTHON = (Resolve-Path -LiteralPath ".\desktop\src-tauri\pyembed\python\python.exe").Path
-          echo "PYO3_PYTHON=$PYO3_PYTHON" >> $env:GITHUB_ENV
+          workspaces: desktop
 
       - name: Build bundles
         working-directory: desktop
         run: |
-          npx --yes @tauri-apps/cli@^2 build \
-            --target "${{ matrix.target }}" \
-            --config src-tauri/tauri.bundle.json
+          npx --yes @tauri-apps/cli@^2 build --target "${{ matrix.target }}"
 
       - name: Upload bundles
         uses: actions/upload-artifact@v4
         with:
           name: webterm-desktop-${{ matrix.target }}
           if-no-files-found: error
+          # The workspace keeps build output at desktop/target, not
+          # desktop/src-tauri/target.
           path: |
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
-            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe
+            desktop/target/${{ matrix.target }}/release/bundle/**/*.deb
+            desktop/target/${{ matrix.target }}/release/bundle/**/*.rpm
+            desktop/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            desktop/target/${{ matrix.target }}/release/bundle/**/*.app.tar.gz
+            desktop/target/${{ matrix.target }}/release/bundle/**/*.msi
+            desktop/target/${{ matrix.target }}/release/bundle/**/*.exe
 
       - name: Publish release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/desktop-v')
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**
+          files: desktop/target/${{ matrix.target }}/release/bundle/**

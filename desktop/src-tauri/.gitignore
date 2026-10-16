@@ -1,13 +1,6 @@
-# Rust / Tauri build output
-/target/
+# Rust / Tauri build output.  With a workspace the real `target/` sits at
+# desktop/target, but individual crate builds still land here.
+target/
+
+# Generated Tauri capability schemas.
 /gen/schemas
-
-# Portable Python downloaded for the standalone bundle
-/pyembed/
-
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
