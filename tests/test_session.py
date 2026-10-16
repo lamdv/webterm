@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest import mock
 
 from webterm.session import SessionManager, _single_argv
 
@@ -102,6 +103,20 @@ class SessionRunTests(unittest.IsolatedAsyncioTestCase):
         await wait_for(lambda: manager.get(session.id) is None)
 
         self.assertTrue(session.dead)
+
+    async def test_fallback_reaper_when_signals_unavailable(self) -> None:
+        # Off-main-thread loops (the Tauri desktop app) cannot install a SIGCHLD
+        # handler; the poll reaper must still reap children and report exits.
+        manager = self.manager()
+        loop = asyncio.get_running_loop()
+        with mock.patch.object(
+            type(loop), "add_signal_handler", side_effect=ValueError("worker thread")
+        ):
+            session = manager.create_single("exit 5")
+
+        self.assertIsNotNone(manager._reap_task)
+        await wait_for(lambda: session.dead)
+        self.assertEqual(session.exit_code, 5)
 
 
 class SingleArgvTests(unittest.TestCase):

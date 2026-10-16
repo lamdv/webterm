@@ -289,6 +289,10 @@ class Session:
 class SessionManager:
     """Owns the set of live sessions and spawns new ones."""
 
+    #: Poll interval for the fallback child reaper used when SIGCHLD cannot be
+    #: handled (the event loop runs off the main thread, as in the Tauri app).
+    REAP_POLL_INTERVAL = 0.5
+
     def __init__(
         self,
         shell: str,
@@ -307,28 +311,45 @@ class SessionManager:
         self._by_pid: dict[int, Session] = {}
         self._reaper_installed = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._reap_task: asyncio.Task | None = None
 
     def _install_reaper(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Reap child processes via SIGCHLD (asyncio removed child watchers)."""
+        """Start reaping child processes.
+
+        Prefer SIGCHLD, which is immediate and costs nothing while idle.  When
+        the loop is not on the main thread (embedded hosts such as the Tauri
+        app) signal handlers are unavailable, so fall back to polling
+        ``waitpid`` on a timer.
+        """
         if self._reaper_installed:
             return
+        self._loop = loop
         try:
             loop.add_signal_handler(signal.SIGCHLD, self._reap_children)
         except (NotImplementedError, RuntimeError, ValueError):
-            return
-        self._loop = loop
+            self._reap_task = loop.create_task(self._reap_forever())
         self._reaper_installed = True
 
-    def _remove_reaper(self) -> None:
-        """Uninstall the SIGCHLD handler before the event loop closes.
+    async def _reap_forever(self) -> None:
+        """Fallback reaper: poll for exited children on an interval."""
+        while True:
+            await asyncio.sleep(self.REAP_POLL_INTERVAL)
+            self._reap_children()
 
-        The loop's signal wakeup fd is closed on shutdown; leaving the handler
-        installed lets a late SIGCHLD write to the closed fd, which Python
-        reports as an ignored ``OSError: [Errno 9] Bad file descriptor``.
+    def _remove_reaper(self) -> None:
+        """Stop reaping children before the event loop closes.
+
+        The loop's signal wakeup fd is closed on shutdown; leaving the SIGCHLD
+        handler installed lets a late signal write to the closed fd, which
+        Python reports as an ignored ``OSError: [Errno 9] Bad file descriptor``.
+        A fallback poll task is cancelled instead.
         """
         if not self._reaper_installed:
             return
         self._reaper_installed = False
+        if self._reap_task is not None:
+            self._reap_task.cancel()
+            self._reap_task = None
         loop = self._loop
         if loop is None:
             return
