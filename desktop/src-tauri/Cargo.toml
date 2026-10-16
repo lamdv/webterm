@@ -34,5 +34,7 @@ wry = "=0.53.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pyo3 = { version = "0.25" }
-pytauri = { version = "0.8", features = [] }
+# The bundled app must compile in the plugins the Python host imports
+# (pytauri-wheel includes them all in development).
+pytauri = { version = "0.8", features = ["plugin-single-instance", "plugin-window-state"] }
 tauri-plugin-pytauri = { version = "0.8" }
