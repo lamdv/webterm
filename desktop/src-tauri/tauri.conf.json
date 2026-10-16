@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "webterm",
+  "version": "0.1.0",
+  "identifier": "dev.webterm.desktop",
+  "build": {
+    "frontendDist": "../src/webterm_desktop/frontend",
+    "features": ["pytauri/standalone"]
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "webterm",
+        "width": 1100,
+        "height": 720
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png"]
+  }
+}
