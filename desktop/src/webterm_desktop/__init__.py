@@ -11,8 +11,11 @@ starting one in-process (handy for debugging against ``uv run webterm``).
 
 from __future__ import annotations
 
+import ctypes.util
+import logging
 import os
 import secrets
+import sys
 from os import environ
 
 # pytauri requires this to be set before any pytauri import.  It selects the
@@ -23,10 +26,15 @@ from pathlib import Path  # noqa: E402
 
 from anyio.from_thread import start_blocking_portal  # noqa: E402
 from pytauri import AppHandle, Commands, Manager  # noqa: E402
+from pytauri.image import Image  # noqa: E402
 from pytauri.menu import Menu, MenuItem, PredefinedMenuItem, Submenu  # noqa: E402
+from pytauri.tray import TrayIcon, TrayIconEvent  # noqa: E402
+from pytauri_plugins import single_instance, window_state  # noqa: E402
 from pytauri_wheel.lib import builder_factory, context_factory  # noqa: E402
 from webterm.server import start_server  # noqa: E402
 from webterm.session import DEFAULT_SCROLLBACK, SessionManager  # noqa: E402
+
+log = logging.getLogger("webterm.desktop")
 
 #: Directory holding ``Tauri.toml``, ``capabilities/``, ``icons/`` and the
 #: frontend assets.  ``context_factory`` reads the Tauri config from here.
@@ -88,6 +96,13 @@ def _build_menu(app_handle: AppHandle) -> Menu:
     return Menu.with_items(app_handle, [file_menu, edit_menu, view_menu, help_menu])
 
 
+def _focus_main_window(app_handle: AppHandle) -> None:
+    window = Manager.get_webview_window(app_handle, "main")
+    if window is not None:
+        window.show()
+        window.set_focus()
+
+
 def _setup_menu(app_handle: AppHandle) -> None:
     """Attach the menu and route item clicks to the client bridge (runs in setup)."""
     menu = _build_menu(app_handle)
@@ -106,6 +121,92 @@ def _setup_menu(app_handle: AppHandle) -> None:
             target.eval(script)
 
     app_handle.on_menu_event(on_menu)
+
+
+#: Keep the tray wrapper alive; dropping it could unregister the tray icon.
+_tray: TrayIcon | None = None
+
+
+def _build_tray_menu(app_handle: AppHandle) -> Menu:
+    return Menu.with_items(
+        app_handle,
+        [
+            MenuItem.with_id(app_handle, "tray-show", "Show Window", True),
+            MenuItem.with_id(app_handle, "tray-new", "New Session", True),
+            PredefinedMenuItem.separator(app_handle),
+            MenuItem.with_id(app_handle, "tray-quit", "Quit", True),
+        ],
+    )
+
+
+def _on_tray_menu(app_handle: AppHandle, event_id: str) -> None:
+    if event_id == "tray-show":
+        _focus_main_window(app_handle)
+    elif event_id == "tray-new":
+        _focus_main_window(app_handle)
+        window = Manager.get_webview_window(app_handle, "main")
+        if window is not None:
+            window.eval(MENU_ACTIONS["new-session"])
+    elif event_id == "tray-quit":
+        app_handle.exit(0)
+
+
+def _on_tray_icon(app_handle: AppHandle, event: TrayIconEvent) -> None:
+    if isinstance(event, TrayIconEvent.Click):
+        _focus_main_window(app_handle)
+
+
+def _setup_tray(app_handle: AppHandle) -> None:
+    """Add a status tray with show/new-session/quit (best effort)."""
+    global _tray
+    tray = TrayIcon.with_id(app_handle, "webterm-tray")
+    icon = None
+    try:
+        icon = Image.from_path(PACKAGE_DIR / "icons" / "icon.png")
+    except Exception:  # noqa: BLE001 - fall back to the app icon
+        icon = app_handle.default_window_icon()
+    if icon is not None:
+        tray.set_icon(icon)
+    tray.set_tooltip("webterm")
+    tray.set_menu(_build_tray_menu(app_handle))
+    tray.set_show_menu_on_left_click(False)
+    tray.on_menu_event(_on_tray_menu)
+    tray.on_tray_icon_event(_on_tray_icon)
+    _tray = tray
+
+
+def _on_second_instance(app_handle: AppHandle, _args: list[str], _cwd: str) -> None:
+    """A second launch focused the running instance instead of starting one."""
+    _focus_main_window(app_handle)
+
+
+def _tray_available() -> bool:
+    """Whether a status-tray backend is present.
+
+    Tauri's tray on Linux needs libayatana-appindicator3 (or libappindicator3);
+    without it the Rust side panics in a way Python cannot reliably catch, so
+    check for the library up front.  macOS and Windows always have a backend.
+    """
+    if sys.platform != "linux":
+        return True
+    return any(
+        ctypes.util.find_library(name)
+        for name in ("ayatana-appindicator3", "appindicator3")
+    )
+
+
+def _setup(app_handle: AppHandle) -> None:
+    _setup_menu(app_handle)
+    if not _tray_available():
+        log.info(
+            "system tray disabled: install libayatana-appindicator3 or "
+            "libappindicator3 to enable it"
+        )
+        return
+    try:
+        _setup_tray(app_handle)
+    except Exception:  # noqa: BLE001 - a missing tray backend must not break the app
+        log.exception("could not create the system tray")
 
 
 def _tauri_config(url: str) -> dict:
@@ -143,7 +244,12 @@ def main() -> int:
             app = builder_factory().build(
                 context=context_factory(PACKAGE_DIR, tauri_config=_tauri_config(url)),
                 invoke_handler=commands.generate_handler(portal),
-                setup=_setup_menu,
+                setup=_setup,
+                plugins=(
+                    # single-instance must be registered first to work correctly.
+                    single_instance.init(_on_second_instance),
+                    window_state.Builder.build(),
+                ),
             )
             return app.run_return()
         finally:
