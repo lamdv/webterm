@@ -15,7 +15,7 @@ import tempfile
 import unittest
 
 from webterm.__main__ import build_ssl_context
-from webterm.server import handle_client, serve
+from webterm.server import handle_client, serve, start_server
 from webterm.session import SessionManager
 
 from .wsclient import WSClient
@@ -464,6 +464,37 @@ class TlsTests(unittest.IsolatedAsyncioTestCase):
                 server_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await server_task
+
+
+class StartServerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ephemeral_port_url_and_stop(self) -> None:
+        manager = SessionManager(shell="/bin/sh", cwd="/tmp")
+        handle = await start_server("127.0.0.1", 0, manager)
+        try:
+            self.assertGreater(handle.port, 0)
+            self.assertEqual(handle.host, "127.0.0.1")
+            self.assertEqual(handle.url, f"http://127.0.0.1:{handle.port}")
+            reader, writer = await asyncio.open_connection("127.0.0.1", handle.port)
+            writer.write(b"GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            raw = await reader.read()
+            writer.close()
+            self.assertIn(b"200", raw.split(b"\r\n", 1)[0])
+        finally:
+            await handle.stop()
+        # Stopping really releases the listener.
+        with self.assertRaises(OSError):
+            await asyncio.open_connection("127.0.0.1", handle.port)
+
+    async def test_wait_returns_false_after_stop_request(self) -> None:
+        manager = SessionManager(shell="/bin/sh", cwd="/tmp")
+        handle = await start_server("127.0.0.1", 0, manager)
+        waiter = asyncio.create_task(handle.wait())
+        await asyncio.sleep(0)
+        handle.request_stop()
+        restart = await asyncio.wait_for(waiter, 5)
+        self.assertFalse(restart)
+        self.assertTrue(handle.control.shutdown.is_set())
 
 
 class ReaperShutdownTests(unittest.IsolatedAsyncioTestCase):

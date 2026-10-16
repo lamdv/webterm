@@ -11,6 +11,7 @@ import logging
 import signal
 import ssl
 import struct
+from collections.abc import Callable
 from pathlib import Path
 
 from .session import SessionManager
@@ -474,7 +475,93 @@ async def handle_client(
             await writer.wait_closed()
 
 
-async def serve(
+class ServerHandle:
+    """A bound webterm server that can be driven programmatically.
+
+    :func:`start_server` returns one of these once the listener is up.  An
+    embedded host (for example the Tauri desktop app) can read :attr:`port` /
+    :attr:`url`, then ``await wait()`` or ``await stop()``.  ``manager`` and
+    ``control`` are exposed so a host can attach further control surfaces (such
+    as an agent/MCP control socket) without reaching into module state.
+    """
+
+    def __init__(
+        self,
+        server: asyncio.AbstractServer,
+        control: ServerControl,
+        manager: SessionManager,
+        connections: set[ClientConnection],
+        client_tasks: set[asyncio.Task],
+        host: str,
+        port: int,
+        scheme: str,
+        on_sessions_changed: Callable[[], None],
+    ) -> None:
+        self.server = server
+        self.control = control
+        self.manager = manager
+        self.connections = connections
+        self.client_tasks = client_tasks
+        self.host = host
+        self.port = port
+        self.scheme = scheme
+        self._on_sessions_changed = on_sessions_changed
+        self._stopped = False
+
+    @property
+    def url(self) -> str:
+        """Base URL a client should load, suitable for a webview or browser."""
+        host = self.host if self.host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+        return f"{self.scheme}://{host}:{self.port}"
+
+    def request_stop(self) -> None:
+        """Ask the server to shut down (safe from a signal handler)."""
+        self.control.request_stop()
+
+    def request_restart(self) -> None:
+        """Ask the server to restart, exiting with the restart flag set."""
+        self.control.request_restart()
+
+    async def wait(self) -> bool:
+        """Run until stopped, tear down, and return whether a restart was asked."""
+        try:
+            await self.control.shutdown.wait()
+        finally:
+            await self.stop()
+        return self.control.restart_requested
+
+    async def stop(self) -> None:
+        """Close the listener, disconnect clients, and kill every session."""
+        if self._stopped:
+            return
+        self._stopped = True
+        control = self.control
+        log.info("restarting" if control.restart_requested else "shutting down")
+        if control.restart_requested:
+            # Let every browser know this is a deliberate restart, not a crash,
+            # so it can show the right status while it reconnects.
+            pending = [
+                asyncio.create_task(connection.send_restarting())
+                for connection in list(self.connections)
+            ]
+            await asyncio.gather(*pending, return_exceptions=True)
+        # Stop accepting, then disconnect clients.  As of Python 3.12
+        # Server.wait_closed() waits for every active connection, so an open
+        # browser WebSocket would otherwise make Ctrl+C hang forever.
+        self.server.close()
+        for connection in list(self.connections):
+            connection.request_close()
+        self.manager.close_all()
+        self.manager.remove_listener(self._on_sessions_changed)
+        for task in list(self.client_tasks):
+            task.cancel()
+        if self.client_tasks:
+            await asyncio.gather(*self.client_tasks, return_exceptions=True)
+        with contextlib.suppress(Exception, asyncio.TimeoutError):
+            await asyncio.wait_for(self.server.wait_closed(), timeout=2)
+
+
+async def start_server(
     host: str,
     port: int,
     manager: SessionManager,
@@ -482,8 +569,14 @@ async def serve(
     *,
     token: str | None = None,
     ssl_context: ssl.SSLContext | None = None,
-) -> bool:
-    """Run the server until stopped.  Returns True if a restart was requested."""
+) -> ServerHandle:
+    """Bind the listener and start serving, returning a :class:`ServerHandle`.
+
+    This does not block or install signal handlers, so it is safe to call from
+    an embedded host running the event loop on a worker thread.  Use
+    ``await handle.wait()`` to block until stopped.  :func:`serve` wraps this
+    for the CLI together with main-thread signal handling.
+    """
     connections: set[ClientConnection] = set()
     client_tasks: set[asyncio.Task] = set()
     control = ServerControl()
@@ -505,44 +598,46 @@ async def serve(
         task.add_done_callback(client_tasks.discard)
 
     server = await asyncio.start_server(on_client, host, port, ssl=ssl_context)
-    addresses = ", ".join(
-        f"{sock.getsockname()[0]}:{sock.getsockname()[1]}"
-        for sock in server.sockets or ()
-    )
+    sockets = server.sockets or []
+    bound_host = sockets[0].getsockname()[0] if sockets else host
+    bound_port = sockets[0].getsockname()[1] if sockets else port
     scheme = "https" if ssl_context is not None else "http"
+    addresses = ", ".join(
+        f"{sock.getsockname()[0]}:{sock.getsockname()[1]}" for sock in sockets
+    )
     log.info("webterm listening on %s://%s", scheme, addresses)
+    return ServerHandle(
+        server,
+        control,
+        manager,
+        connections,
+        client_tasks,
+        bound_host,
+        bound_port,
+        scheme,
+        on_sessions_changed,
+    )
 
+
+async def serve(
+    host: str,
+    port: int,
+    manager: SessionManager,
+    config: dict | None = None,
+    *,
+    token: str | None = None,
+    ssl_context: ssl.SSLContext | None = None,
+) -> bool:
+    """Run the server until stopped.  Returns True if a restart was requested."""
+    handle = await start_server(
+        host, port, manager, config, token=token, ssl_context=ssl_context
+    )
+    loop = asyncio.get_running_loop()
     for sig, request in (
-        (signal.SIGINT, control.request_stop),
-        (signal.SIGTERM, control.request_stop),
-        (signal.SIGHUP, control.request_restart),
+        (signal.SIGINT, handle.request_stop),
+        (signal.SIGTERM, handle.request_stop),
+        (signal.SIGHUP, handle.request_restart),
     ):
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, request)
-
-    try:
-        await control.shutdown.wait()
-    finally:
-        log.info("restarting" if control.restart_requested else "shutting down")
-        if control.restart_requested:
-            # Let every browser know this is a deliberate restart, not a crash,
-            # so it can show the right status while it reconnects.
-            pending = [
-                asyncio.create_task(connection.send_restarting())
-                for connection in list(connections)
-            ]
-            await asyncio.gather(*pending, return_exceptions=True)
-        # Stop accepting, then disconnect clients.  As of Python 3.12
-        # Server.wait_closed() waits for every active connection, so an open
-        # browser WebSocket would otherwise make Ctrl+C hang forever.
-        server.close()
-        for connection in list(connections):
-            connection.request_close()
-        manager.close_all()
-        for task in list(client_tasks):
-            task.cancel()
-        if client_tasks:
-            await asyncio.gather(*client_tasks, return_exceptions=True)
-        with contextlib.suppress(Exception, asyncio.TimeoutError):
-            await asyncio.wait_for(server.wait_closed(), timeout=2)
-    return control.restart_requested
+    return await handle.wait()
