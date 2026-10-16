@@ -480,19 +480,74 @@
 
   // ------------------------------------------------------------- tab / view
 
+  // Order sessions as a forest by parent_id.  A session whose parent is gone
+  // (or hidden from this client) is treated as a root, so nothing disappears.
+  function orderedSessions() {
+    const byId = new Map(sessionsMeta.map((session) => [session.id, session]));
+    const children = new Map();
+    const roots = [];
+    for (const session of sessionsMeta) {
+      const parent = session.parent_id;
+      if (parent && byId.has(parent)) {
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(session);
+      } else {
+        roots.push(session);
+      }
+    }
+    const ordered = [];
+    const walk = (list, depth) => {
+      for (const session of list) {
+        ordered.push({ session, depth });
+        const kids = children.get(session.id);
+        if (kids) walk(kids, depth + 1);
+      }
+    };
+    walk(roots, 0);
+    return ordered;
+  }
+
   function renderTabs() {
     // Don't rebuild the list under an in-progress inline rename.
     if (editingTabId !== null) return;
     sessionsList.innerHTML = "";
-    for (const session of sessionsMeta) {
+    for (const { session, depth } of orderedSessions()) {
       const tab = document.createElement("li");
       tab.className = "tab";
+      if (depth > 0) tab.classList.add("nested");
+      if (session.role === "agent") tab.classList.add("agent");
+      if (!session.alive) tab.classList.add("exited");
       tab.dataset.id = session.id;
+      tab.style.setProperty("--depth", String(depth));
+
+      if (depth > 0) {
+        const branch = document.createElement("span");
+        branch.className = "tab-branch";
+        branch.textContent = "\u2514";
+        tab.appendChild(branch);
+      }
 
       const title = document.createElement("span");
       title.className = "tab-title";
       title.textContent = session.title;
       title.title = session.title;
+      tab.appendChild(title);
+
+      if (session.role === "agent") {
+        const badge = document.createElement("span");
+        badge.className = "tab-badge";
+        badge.textContent = session.agent || "agent";
+        badge.title = session.task || "agent session";
+        tab.appendChild(badge);
+      }
+
+      if (!session.alive) {
+        const status = document.createElement("span");
+        status.className = "tab-exit";
+        status.textContent =
+          session.exit_code === null ? "exited" : `exit ${session.exit_code}`;
+        tab.appendChild(status);
+      }
 
       const close = document.createElement("button");
       close.className = "tab-close";
@@ -502,8 +557,8 @@
         event.stopPropagation();
         send({ type: "kill", session_id: session.id });
       });
+      tab.appendChild(close);
 
-      tab.append(title, close);
       tab.addEventListener("click", () => activate(session.id));
       tab.addEventListener("dblclick", () => startRename(tab, title, session));
       sessionsList.appendChild(tab);
