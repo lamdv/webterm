@@ -12,6 +12,7 @@ starting one in-process (handy for debugging against ``uv run webterm``).
 from __future__ import annotations
 
 import os
+import secrets
 from os import environ
 
 # pytauri requires this to be set before any pytauri import.  It selects the
@@ -42,6 +43,11 @@ def _tauri_config(url: str) -> dict:
     return {"build": {"frontendDist": url}}
 
 
+async def _start_in_process(manager: SessionManager, token: str):
+    # ``portal.call`` has no keyword arguments, so bind the token here.
+    return await start_server("127.0.0.1", 0, manager, {}, token=token)
+
+
 def main() -> int:
     """Run the desktop app and return its exit code."""
     external_url = environ.get("WEBTERM_DESKTOP_URL")
@@ -56,8 +62,12 @@ def main() -> int:
                 cwd=os.path.expanduser("~"),
                 scrollback=DEFAULT_SCROLLBACK,
             )
-            handle = portal.call(start_server, "127.0.0.1", 0, manager, {})
-            url = handle.url + "/"
+            # A fresh secret per launch: the port is ephemeral and any local
+            # process could otherwise reach the shell.  The webview exchanges
+            # it for an HttpOnly cookie on first navigation.
+            token = secrets.token_urlsafe(32)
+            handle = portal.call(_start_in_process, manager, token)
+            url = f"{handle.url}/?bootstrap={token}"
 
         try:
             app = builder_factory().build(
