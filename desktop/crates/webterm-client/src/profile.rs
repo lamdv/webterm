@@ -58,7 +58,7 @@ impl AuthKind {
     /// no lifetime tied to `self`.
     pub fn label(&self) -> &'static str {
         match self {
-            AuthKind::None => "open",
+            AuthKind::None => "no auth",
             AuthKind::Token { .. } => "token",
             AuthKind::Browser => "browser login",
         }
@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn labels_describe_the_auth_kind() {
-        assert_eq!(AuthKind::None.label(), "open");
+        assert_eq!(AuthKind::None.label(), "no auth");
         assert_eq!(AuthKind::Token { token: "x".into() }.label(), "token");
         assert_eq!(AuthKind::Browser.label(), "browser login");
     }

@@ -116,11 +116,15 @@ pub fn update_profile(state: State<'_, Profiles>, profile: Profile) -> Result<bo
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeStatus {
-    /// Reachable and protocol-compatible.
+    /// Reachable, and its discovery document says it speaks our protocol.
     Online,
     /// Reachable, but speaking a protocol this client does not know.
     Incompatible,
-    /// Unreachable, or not a webterm server.
+    /// Reachable, but it served no discovery document we understand.  Usually
+    /// an older server or one started with `--no-discovery`; unlike `Offline`,
+    /// the connection succeeded, so the server is there.
+    Unknown,
+    /// Not reachable: DNS, connection, TLS or timeout.
     Offline,
 }
 
@@ -131,7 +135,7 @@ pub struct ProbeResult {
     pub status: ProbeStatus,
     /// Present when the server answered with a discovery document.
     pub server: Option<ServerInfo>,
-    /// Present when the probe failed; a message for the user.
+    /// Present when the probe did not produce a server; a message for the user.
     pub error: Option<String>,
 }
 
@@ -151,6 +155,15 @@ impl ProbeResult {
             status: ProbeStatus::Incompatible,
             server: Some(server),
             error: None,
+        }
+    }
+
+    fn unknown(id: String, error: String) -> Self {
+        Self {
+            id,
+            status: ProbeStatus::Unknown,
+            server: None,
+            error: Some(error),
         }
     }
 
@@ -191,8 +204,21 @@ async fn probe_one(client: &reqwest::Client, profile: Profile) -> ProbeResult {
     match fetch_server_info(client, &profile).await {
         Ok(info) if info.is_compatible() => ProbeResult::online(id, info),
         Ok(info) => ProbeResult::incompatible(id, info),
-        Err(error) => ProbeResult::offline(id, error),
+        Err(ProbeFailure::NotWebterm(error)) => ProbeResult::unknown(id, error),
+        Err(ProbeFailure::Unreachable(error)) => ProbeResult::offline(id, error),
     }
+}
+
+/// Why a discovery request did not produce a [`ServerInfo`].
+///
+/// The distinction matters to the user: "I could not connect" and "I connected,
+/// but this is not (or not yet) a webterm discovery document" are different
+/// problems with different fixes.
+enum ProbeFailure {
+    /// The connection never completed.
+    Unreachable(String),
+    /// The server answered, but not with a discovery document we understand.
+    NotWebterm(String),
 }
 
 /// Fetch and parse a profile's discovery document.
@@ -201,22 +227,30 @@ async fn probe_one(client: &reqwest::Client, profile: Profile) -> ProbeResult {
 async fn fetch_server_info(
     client: &reqwest::Client,
     profile: &Profile,
-) -> Result<ServerInfo, String> {
-    let url = webterm_client::discovery_url(profile).map_err(|error| error.to_string())?;
+) -> Result<ServerInfo, ProbeFailure> {
+    let url = webterm_client::discovery_url(profile)
+        .map_err(|error| ProbeFailure::NotWebterm(error.to_string()))?;
 
     let response = client
         .get(url)
         .send()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| ProbeFailure::Unreachable(error.to_string()))?;
 
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("server replied {status}"));
+        return Err(ProbeFailure::NotWebterm(format!(
+            "the server has no discovery document (replied {status})"
+        )));
     }
 
-    let body = response.text().await.map_err(|error| error.to_string())?;
-    serde_json::from_str(&body).map_err(|error| format!("unexpected discovery document: {error}"))
+    let body = response
+        .text()
+        .await
+        .map_err(|error| ProbeFailure::Unreachable(error.to_string()))?;
+    serde_json::from_str(&body).map_err(|error| {
+        ProbeFailure::NotWebterm(format!("unexpected discovery document: {error}"))
+    })
 }
 
 /// Open a profile's server **in the main window**.
@@ -283,4 +317,19 @@ pub fn show_picker<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), S
 
     url.set_fragment(None);
     window.navigate(url).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProbeStatus;
+
+    /// The picker switches on these strings, so pin them.
+    #[test]
+    fn probe_statuses_serialise_to_snake_case() {
+        let encode = |status| serde_json::to_string(&status).expect("serialise");
+        assert_eq!(encode(ProbeStatus::Online), "\"online\"");
+        assert_eq!(encode(ProbeStatus::Incompatible), "\"incompatible\"");
+        assert_eq!(encode(ProbeStatus::Unknown), "\"unknown\"");
+        assert_eq!(encode(ProbeStatus::Offline), "\"offline\"");
+    }
 }

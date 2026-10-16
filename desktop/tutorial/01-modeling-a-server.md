@@ -105,7 +105,7 @@ Rust `Browser` is JSON `"browser"`.
 impl AuthKind {
     pub fn label(&self) -> &'static str {
         match self {
-            AuthKind::None => "open",
+            AuthKind::None => "no auth",
             AuthKind::Token { .. } => "token",
             AuthKind::Browser => "browser login",
         }

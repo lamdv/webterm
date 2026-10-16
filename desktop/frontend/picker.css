@@ -56,6 +56,10 @@ body {
   margin-bottom: 1.5rem;
 }
 
+.picker-head button {
+  margin-left: auto;
+}
+
 .picker-head h1 {
   margin: 0;
   font-size: 1.4rem;
@@ -157,6 +161,11 @@ body {
   color: var(--text-dim);
 }
 
+.server-status.unknown {
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
 .server-status.online {
   border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
   color: var(--ok);
@@ -197,6 +206,17 @@ button:hover {
 button.primary {
   border-color: var(--accent-dim);
   color: var(--accent);
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+
+button.ghost:hover {
+  border-color: var(--border);
+  color: var(--text);
 }
 
 button.danger {

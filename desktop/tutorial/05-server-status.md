@@ -141,7 +141,7 @@ future unable to run on Tauri's multi-threaded runtime and fail to compile. So
 we take what we need (`to_vec()`), let the guard drop at the end of the block,
 and only then await. This is the standard shape for "async command + mutex".
 
-### Turning failures into three states
+### Turning failures into four states
 
 `probe_one` collapses the result into a small enum the frontend can switch on:
 
@@ -151,14 +151,23 @@ async fn probe_one(client: &reqwest::Client, profile: Profile) -> ProbeResult {
     match fetch_server_info(client, &profile).await {
         Ok(info) if info.is_compatible() => ProbeResult::online(id, info),
         Ok(info) => ProbeResult::incompatible(id, info),
-        Err(error) => ProbeResult::offline(id, error),
+        Err(ProbeFailure::NotWebterm(error)) => ProbeResult::unknown(id, error),
+        Err(ProbeFailure::Unreachable(error)) => ProbeResult::offline(id, error),
     }
 }
 ```
 
-`fetch_server_info` reports every non-success answer as a string: a DNS failure,
-a refused connection, a TLS error, a `401`, or JSON that is not a discovery
-document. The picker only needs "offline, and here is why" for the tooltip.
+The `ProbeFailure` split is the important part. "I could not connect" and "I
+connected, but this is not a discovery document" are different problems:
+
+- `Unreachable` is DNS, a refused connection, a TLS error or a timeout — the
+  server is not answering, so the pill is **offline**.
+- `NotWebterm` is a real HTTP reply (a `404`, or JSON we cannot parse). The
+  server *is* there; it just has no discovery document, usually because it is an
+  older webterm or was started with `--no-discovery`. Calling that "offline" is
+  a lie, so it gets its own **no discovery** status. This is exactly the bug an
+  early version of this chapter shipped: a perfectly reachable old server
+greyed out as offline and looked broken.
 
 The probes run one at a time. For the handful of servers a picker holds, a
 sequential loop is simpler than spawning tasks and joining them, and the
@@ -180,6 +189,8 @@ function probeState(probe) {
     }
     case "incompatible":
       return { className: "warn", label: `needs protocol ${probe.server?.protocol}` };
+    case "unknown":
+      return { className: "unknown", label: "no discovery" };
     default:
       return { className: "offline", label: "offline" };
   }
@@ -189,7 +200,14 @@ function probeState(probe) {
 Because `probes` starts empty, every row renders as "checking…" first, then
 updates when `probe_all` returns. Editing, adding or removing a profile calls
 `load()`, which re-renders and re-probes, so a corrected token or URL gets a
-fresh status.
+fresh status. A **Refresh** button in the header calls the same `load()` for a
+manual re-probe, and the failure reason is one hover away in the pill's
+`title`.
+
+The other pill on the row is the **auth badge**, unrelated to probing: it shows
+which credential the profile will use — `no auth`, `token`, or `browser login`
+— with a tooltip explaining it. It is deliberately grey; it is information, not
+a warning.
 
 ## Security notes
 

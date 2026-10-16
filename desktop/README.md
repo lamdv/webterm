@@ -86,10 +86,13 @@ unit tested there.
 
 Each row is probed against the server's unauthenticated
 `/.well-known/webterm.json` document using the `reqwest` client re-exported by
-`tauri-plugin-http`. A probe that fails or a protocol this client does not know
-shows as offline or incompatible, with the reason in the tooltip. The document
-shape and the discovery URL rule live in
-`crates/webterm-client/src/discovery.rs`.
+`tauri-plugin-http`. The status pill shows `v<version>` when the server is
+reachable and compatible, `needs protocol N` when it is not, `no discovery`
+when it answers but has no discovery document (an older server, or
+`--no-discovery`), and `offline` only when the connection itself fails. Hover
+the pill for the reason, or use the header's **Refresh** button. The auth pill
+next to it shows which credential the profile will use. The document shape and
+the discovery URL rule live in `crates/webterm-client/src/discovery.rs`.
 
 ## Menu and shortcuts
 

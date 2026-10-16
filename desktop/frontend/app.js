@@ -57,7 +57,19 @@ function authLabel(auth) {
     case "browser":
       return "browser login";
     default:
-      return "open";
+      return "no auth";
+  }
+}
+
+/// What the auth pill means, shown on hover.
+function authTitle(auth) {
+  switch (auth?.kind) {
+    case "token":
+      return "Authenticates to the server with a shared token";
+    case "browser":
+      return "Signs in through an identity-aware proxy (oauth2-proxy, Authelia)";
+    default:
+      return "No credential: the server is open, or the network protects it";
   }
 }
 
@@ -78,6 +90,9 @@ function probeState(probe) {
         label: protocol ? `needs protocol ${protocol}` : "incompatible",
       };
     }
+    case "unknown":
+      // Reachable, but no discovery document: usually an older server.
+      return { className: "unknown", label: "no discovery" };
     default:
       return { className: "offline", label: "offline" };
   }
@@ -122,6 +137,7 @@ function serverRow(profile) {
   const badge = document.createElement("span");
   badge.className = "server-auth";
   badge.textContent = authLabel(profile.auth);
+  badge.title = authTitle(profile.auth);
 
   const actions = document.createElement("div");
   actions.className = "server-actions";
@@ -194,6 +210,10 @@ authSelect.addEventListener("change", () => {
 });
 
 cancelButton.addEventListener("click", stopEdit);
+
+document
+  .querySelector("#refresh")
+  .addEventListener("click", () => guard(load));
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
