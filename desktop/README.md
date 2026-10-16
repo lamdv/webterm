@@ -34,6 +34,24 @@ cargo tauri dev                # run the app
 cargo tauri build              # produce bundles
 ```
 
+### Bundles
+
+`cargo tauri build` writes the host platform's installers under
+`target/release/bundle/`:
+
+| Platform | Formats |
+| --- | --- |
+| Linux | `.deb`, `.rpm`, AppImage |
+| macOS | `.app`, `.dmg` |
+| Windows | `.msi`, NSIS `.exe` |
+
+Only the host's formats are built locally; the CI matrix
+(`.github/workflows/desktop-release.yml`) builds all of them and attaches the
+artifacts on a `desktop-v*` tag. No distribution packaging tools are needed:
+Tauri's bundler writes the `.deb`/`.rpm` itself and fetches `linuxdeploy` and
+the AppImage runtime on first use. The Linux packages declare
+`libwebkit2gtk-4.1-0` and `libgtk-3-0` as dependencies.
+
 ## Why the terminal UI is not in this repository
 
 When you connect, the window navigates to the server's origin and loads the
@@ -104,6 +122,8 @@ also appears while the window is showing a remote server page. Copy/Paste items
 are deliberately absent: their default Ctrl+C / Ctrl+V accelerators would
 swallow the terminal's SIGINT and paste keys.
 
+There is no tray icon: the app has one window, and closing it quits.
+
 ## Window state
 
 `tauri-plugin-window-state` remembers the window's size, position, maximized and
@@ -142,5 +162,8 @@ expand button in reach — see `docs/frontend.md`.
   cannot inject a static `Authorization` header, so combining it with `--token`
   would need an nginx/Caddy `forward_auth` in front; that is deliberately out of
   scope for now.
-- [ ] **Package the app.** `cargo tauri build` bundles (deb/rpm/AppImage, macOS
-  `.app`/`.dmg`, Windows `.msi`/NSIS) and macOS signing/notarization.
+- [x] **Package the app.** `cargo tauri build` bundles deb/rpm/AppImage on
+  Linux (verified: 6.6/6.6/112 MiB, correct `.desktop`, categories and
+  dependencies); the CI matrix builds macOS `.app`/`.dmg` and Windows
+  `.msi`/NSIS and publishes them on a tag. macOS signing/notarization is still
+  outstanding for distribution.

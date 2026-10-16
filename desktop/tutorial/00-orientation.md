@@ -47,7 +47,7 @@ On this machine (Arch/CachyOS):
 # Rust itself, plus the native libraries Tauri links against.
 sudo pacman -S --needed rustup webkit2gtk-4.1
 
-# A tray icon also needs this; we do not use the tray yet, so it is optional.
+# A tray icon would also need this; we use no tray, so it is optional.
 #   sudo pacman -S --needed libayatana-appindicator
 
 rustup default stable

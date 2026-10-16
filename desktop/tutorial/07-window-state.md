@@ -111,6 +111,6 @@ The save happens on a clean exit, so the workflow is:
 - The state file lives beside `servers.json` in the app config directory.
 - The plugin is compiled out on mobile targets.
 
-Next: Chapter 8 gives the app a tray icon with a session count and a
-quit-when-idle action, so it can live in the background without a visible
-window.
+Next: there is no further chapter for now. The app closes and exits with its
+one window (there is no tray icon), and the remaining work is packaging —
+see the Roadmap in `desktop/README.md`.

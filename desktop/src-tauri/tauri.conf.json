@@ -25,6 +25,11 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "rpm", "app", "dmg", "msi", "nsis"],
+    "category": "Development",
+    "shortDescription": "Remote terminal client for webterm servers",
+    "longDescription": "A thin client for webterm: it stores server profiles, probes their status, and opens the server's own terminal UI in a single window.",
+    "publisher": "webterm",
+    "license": "MIT",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

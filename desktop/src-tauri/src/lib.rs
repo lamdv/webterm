@@ -43,6 +43,9 @@ pub fn run() {
 
     // Menus and window-state are desktop-only plugins; a future mobile build
     // simply skips them.
+    //
+    // There is no tray icon and no `ExitRequested` handler, so Tauri's default
+    // applies: closing the last (only) window quits the app.
     #[cfg(desktop)]
     let builder = builder
         .plugin(tauri_plugin_window_state::Builder::default().build())
