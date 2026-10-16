@@ -127,9 +127,11 @@ server keeping its own.
   to decide afterwards: a **Sign in again / Clear session** menu action, a
   "login required" probe state (the discovery probe is unauthenticated, so the
   pill stays green while logged out), and OIDC popup handling.
-- [ ] **Proxy plus webterm `--token`.** The other deployment shape: oauth2-proxy
-  injecting `Authorization: Bearer <token>` upstream, as `docs/remote-access.md`
-  describes. The browser cookie alone authenticates the user to the proxy, not
-  to webterm.
+- **Not planned: proxy plus webterm `--token`.** The supported shape is
+  oauth2-proxy alone (no `--token`), with webterm bound to `127.0.0.1` and the
+  proxy gating every route including `/ws`. oauth2-proxy's own `--upstream` mode
+  cannot inject a static `Authorization` header, so combining it with `--token`
+  would need an nginx/Caddy `forward_auth` in front; that is deliberately out of
+  scope for now.
 - [ ] **Package the app.** `cargo tauri build` bundles (deb/rpm/AppImage, macOS
   `.app`/`.dmg`, Windows `.msi`/NSIS) and macOS signing/notarization.

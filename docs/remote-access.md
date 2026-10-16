@@ -136,8 +136,15 @@ Note the issuer URL, client ID, and client secret.
 ### 2. Start webterm on localhost
 
 ```bash
-uv run webterm --token "$WEBTERM_TOKEN"
+uv run webterm
 ```
+
+No `--token` here: with oauth2-proxy as the reverse proxy it is the gate, and
+webterm is reachable only through it. (oauth2-proxy's `--upstream` mode cannot
+add a static `Authorization` header, so combining the two would just earn a
+`401` and an HTTP Basic prompt *after* the OAuth login. If you want the token as
+a second layer, use the nginx `auth_request` shape in 4a, where nginx can
+`proxy_set_header Authorization`.)
 
 ### 3. Run oauth2-proxy
 
@@ -255,12 +262,13 @@ Whatever proxy you use, the requirements are the same:
   webterm serves unauthenticated so a client can identify it; gate it at the
   proxy if even that should be private.
 - Leave webterm bound to `127.0.0.1`.
-- Optionally retain `--token` as defense in depth for localhost access. If you
-  do, have the proxy inject the credential upstream — webterm accepts
-  `Authorization: Bearer <token>`, so for nginx that is
-  `proxy_set_header Authorization "Bearer $WEBTERM_TOKEN";`. Without it, webterm
-  answers `401` and the browser prompts for HTTP Basic *after* the OAuth login,
-  which is rarely what anyone wants.
+- Optionally retain `--token` as defense in depth. This applies to the
+  reverse-proxy/`auth_request` shape (4a), where the proxy can inject the
+  credential upstream: webterm accepts `Authorization: Bearer <token>`, so for
+  nginx that is `proxy_set_header Authorization "Bearer $WEBTERM_TOKEN";`.
+  oauth2-proxy's own `--upstream` mode *cannot* set a static header, so do not
+  pair `--token` with it. Without the injected header webterm answers `401` and
+  the browser prompts for HTTP Basic *after* the OAuth login.
 
 ## Troubleshooting
 
