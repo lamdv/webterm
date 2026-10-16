@@ -7,9 +7,7 @@ license.workspace = true
 
 [dependencies]
 serde.workspace = true
-
-[dev-dependencies]
-# Only tests need to turn values into JSON, so this stays a dev-dependency.
+# The store reads and writes JSON at runtime, so this is no longer test-only.
 serde_json.workspace = true
 
 [lints]

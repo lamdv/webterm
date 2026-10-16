@@ -115,6 +115,7 @@ crates/webterm-client/
   Cargo.toml
   src/lib.rs                    crate root; re-exports the public API
   src/profile.rs                Chapter 1: Profile + AuthKind
+  src/store.rs                  Chapter 2: ProfileStore + StoreError
 src-tauri/
   Cargo.toml
   build.rs                      generates Tauri's context at compile time

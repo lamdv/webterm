@@ -6,8 +6,11 @@
 //! `src-tauri` instead.
 //!
 //! The tutorial in `desktop/tutorial/` grows this crate one chapter at a time.
-//! Chapter 1 (this one) introduces [`Profile`] and [`AuthKind`].
+//! Chapter 1 introduces [`Profile`] and [`AuthKind`]; Chapter 2 adds
+//! [`ProfileStore`], which keeps them in a JSON file.
 
 pub mod profile;
+pub mod store;
 
 pub use profile::{AuthKind, Profile};
+pub use store::{ProfileStore, StoreError};

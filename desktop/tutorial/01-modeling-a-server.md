@@ -164,5 +164,6 @@ compile, and why `f64` fields would have made it impossible.
 - `cargo test -p webterm-client` passes, including the JSON-shape tests.
 - The model has no dependency on Tauri, files, or the network.
 
-Next: Chapter 2 turns this value into a persisted list — `Vec<Profile>`, the file
-system, and the `Result`/`?` error-handling style.
+Next: [Chapter 2 — Persisting the list](02-persisting-the-list.md) turns this
+value into a persisted `Vec<Profile>`, the file system, and the `Result`/`?`
+error-handling style.
