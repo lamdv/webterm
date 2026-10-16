@@ -243,6 +243,15 @@ wheels = [
 ]
 
 [[package]]
+name = "webterm"
+version = "0.1.0"
+source = { editable = "../" }
+
+[package.metadata]
+requires-dist = [{ name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" }]
+provides-extras = ["dev"]
+
+[[package]]
 name = "webterm-desktop"
 version = "0.1.0"
 source = { editable = "." }
@@ -251,6 +260,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pytauri" },
     { name = "pytauri-wheel" },
+    { name = "webterm" },
 ]
 
 [package.metadata]
@@ -259,6 +269,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2" },
     { name = "pytauri", specifier = "==0.8.*" },
     { name = "pytauri-wheel", specifier = "==0.8.*" },
+    { name = "webterm", editable = "../" },
 ]
 
 [[package]]

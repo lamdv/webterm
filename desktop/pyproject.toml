@@ -8,6 +8,7 @@ dependencies = [
     "pydantic>=2",
     "pytauri==0.8.*",
     "pytauri-wheel==0.8.*",
+    "webterm",
 ]
 
 [project.scripts]
@@ -23,6 +24,11 @@ packages = ["src/webterm_desktop"]
 [tool.hatch.build]
 # The placeholder/real frontend asset dir is not Python source.
 artifacts = ["src/webterm_desktop/frontend/"]
+
+[tool.uv.sources]
+# The desktop app embeds the real server; install it editable from the parent
+# package rather than duplicating it.
+webterm = { path = "..", editable = true }
 
 [tool.ruff]
 line-length = 100
