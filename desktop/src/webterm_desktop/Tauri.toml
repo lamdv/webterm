@@ -1,0 +1,21 @@
+"$schema" = "https://schema.tauri.app/config/2"
+productName = "webterm"
+version = "0.1.0"
+identifier = "dev.webterm.desktop"
+
+[build]
+# Replaced with the loopback webterm URL in step 2.  For step 1 this points at
+# the bundled placeholder page.
+frontendDist = "./frontend"
+
+[app]
+withGlobalTauri = false
+
+[[app.windows]]
+label = "main"
+title = "webterm"
+width = 1100
+height = 720
+
+[bundle]
+icon = ["icons/icon.png"]
