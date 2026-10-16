@@ -661,7 +661,7 @@
 
   // ---------------------------------------------------------------- actions
 
-  document.getElementById("new-session").addEventListener("click", () => createSession());
+  document.getElementById("new-session").addEventListener("click", openNewSessionPopover);
   document.getElementById("empty-new").addEventListener("click", () => createSession());
   document.getElementById("restart-server").addEventListener("click", () => {
     if (!window.confirm("Restart the server? All sessions will be closed.")) return;
@@ -678,8 +678,9 @@
     add.className = "launcher launcher-add";
     add.textContent = "+";
     add.title = "Add a command to run in a new session";
-    add.addEventListener("click", promptForCommand);
+    add.addEventListener("click", openLauncherPopover);
     launchersEl.appendChild(add);
+    addLauncherButton = add;
 
     for (const launcher of configuredLaunchers()) appendLauncher(launcher, false);
     for (const launcher of userLaunchers) appendLauncher(launcher, true);
@@ -805,19 +806,115 @@
     });
   }
 
-  function promptForCommand() {
-    const input = window.prompt("Command to run in a new session:");
-    if (!input || !input.trim()) return;
-    const command = input.trim();
-    const first = command.split(/\s+/)[0];
-    const name = window.prompt("Pill name (optional):", first);
-    const label = (name && name.trim()) || first;
-    userLaunchers.push({ label: label, command: command });
-    saveUserLaunchers();
-    renderLaunchers();
-    createSession(command, label);
-    launchersEl.scrollLeft = 0;
+  // ------------------------------------------------------------- popovers
+
+  const newSessionPopover = document.getElementById("new-session-popover");
+  const newSessionForm = document.getElementById("new-session-form");
+  const newSessionNameInput = document.getElementById("new-session-name");
+  const newSessionCommandInput = document.getElementById("new-session-command");
+  const newSessionButton = document.getElementById("new-session");
+
+  const launcherPopover = document.getElementById("launcher-popover");
+  const launcherForm = document.getElementById("launcher-form");
+  const launcherCommandInput = document.getElementById("launcher-command");
+  const launcherNameInput = document.getElementById("launcher-name");
+  let addLauncherButton = null;
+
+  // Show a popover beneath its anchor, flipping to stay inside the viewport.
+  function positionPopover(popover, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    popover.hidden = false;
+
+    // Measure after showing so the popover has its natural size.
+    const pop = popover.getBoundingClientRect();
+    let left = rect.left;
+    let top = rect.bottom + 6;
+    if (left + pop.width > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - pop.width - 8);
+    }
+    if (top + pop.height > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - pop.height - 6);
+    }
+    popover.style.left = left + "px";
+    popover.style.top = top + "px";
   }
+
+  function openNewSessionPopover() {
+    if (!newSessionPopover) return;
+    closeLauncherPopover();
+    positionPopover(newSessionPopover, newSessionButton || newSessionPopover.parentElement);
+    newSessionNameInput.value = "";
+    newSessionCommandInput.value = "";
+    newSessionNameInput.focus();
+  }
+
+  function closeNewSessionPopover() {
+    if (newSessionPopover) newSessionPopover.hidden = true;
+  }
+
+  function openLauncherPopover() {
+    if (!launcherPopover) return;
+    closeNewSessionPopover();
+    positionPopover(launcherPopover, addLauncherButton || launchersEl);
+    launcherCommandInput.value = "";
+    launcherNameInput.value = "";
+    launcherCommandInput.focus();
+  }
+
+  function closeLauncherPopover() {
+    if (launcherPopover) launcherPopover.hidden = true;
+  }
+
+  if (newSessionForm) {
+    newSessionForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const name = newSessionNameInput.value.trim();
+      const command = newSessionCommandInput.value.trim();
+      createSession(command || undefined, name || undefined);
+      closeNewSessionPopover();
+    });
+  }
+
+  const newSessionCancel = document.getElementById("new-session-cancel");
+  if (newSessionCancel) newSessionCancel.addEventListener("click", closeNewSessionPopover);
+
+  if (launcherForm) {
+    launcherForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const command = launcherCommandInput.value.trim();
+      if (!command) return;
+      const first = command.split(/\s+/)[0];
+      const label = launcherNameInput.value.trim() || first;
+      userLaunchers.push({ label: label, command: command });
+      saveUserLaunchers();
+      renderLaunchers();
+      createSession(command, label);
+      launchersEl.scrollLeft = 0;
+      closeLauncherPopover();
+    });
+  }
+
+  const launcherCancel = document.getElementById("launcher-cancel");
+  if (launcherCancel) launcherCancel.addEventListener("click", closeLauncherPopover);
+
+  document.addEventListener("pointerdown", (event) => {
+    const pairs = [
+      [newSessionPopover, newSessionButton],
+      [launcherPopover, addLauncherButton],
+    ];
+    for (const [pop, anchor] of pairs) {
+      if (!pop || pop.hidden) continue;
+      if (pop.contains(event.target)) continue;
+      if (anchor && anchor.contains(event.target)) continue;
+      pop.hidden = true;
+    }
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (newSessionPopover) newSessionPopover.hidden = true;
+    if (launcherPopover) launcherPopover.hidden = true;
+  });
 
   function saveUserLaunchers() {
     try {
@@ -854,7 +951,7 @@
   window.addEventListener("keydown", (event) => {
     if (event.ctrlKey && event.shiftKey && (event.key === "N" || event.key === "n")) {
       event.preventDefault();
-      createSession();
+      openNewSessionPopover();
     } else if (event.ctrlKey && event.shiftKey && (event.key === "B" || event.key === "b")) {
       event.preventDefault();
       setSidebarCollapsed(!isSidebarCollapsed());

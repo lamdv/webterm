@@ -244,6 +244,88 @@ body {
   color: #eaf2ff;
 }
 
+/* Popovers anchored to a button (add-command, new session). */
+.popover {
+  position: fixed;
+  z-index: 40;
+  width: 240px;
+  padding: 12px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.popover[hidden] {
+  display: none;
+}
+
+.popover label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.popover label .hint {
+  color: #5a6273;
+}
+
+.popover input {
+  display: block;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 5px 8px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.popover input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.popover-actions button {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+}
+
+.popover-actions button:hover {
+  border-color: var(--accent);
+  color: #eaf2ff;
+  background: var(--bg-elevated);
+}
+
+#launcher-create,
+#new-session-create {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+#launcher-create:hover,
+#new-session-create:hover {
+  background: #6cb0ff;
+  border-color: #6cb0ff;
+  color: #fff;
+}
+
 #sessions {
   list-style: none;
   margin: 0;
