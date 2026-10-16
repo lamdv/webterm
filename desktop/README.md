@@ -113,23 +113,23 @@ server keeping its own.
 
 ## Roadmap
 
-- [ ] **Test browser-login auth against a real oauth2-proxy.** Stand up
-  `oauth2-proxy` in front of a local `webterm` with a test OIDC issuer (Dex or
-  Keycloak), add a `browser` profile, and verify:
-  - the provider's login page renders in the webview — many IdPs (Google
-    included) refuse embedded user-agents, which would make this profile kind
-    unusable without a workaround;
-  - after login the proxy's session cookie is sent on the `/ws` upgrade and the
-    terminal connects;
-  - the session survives an app restart, or the limitation is documented;
-  - both deployment shapes work: proxy-only auth (webterm open behind the
-    proxy), and proxy plus webterm `--token` with the proxy injecting
-    `Authorization: Bearer <token>` upstream as `docs/remote-access.md`
-    describes.
-
-  Decide from the result whether to add a **Sign in again / Clear session**
-  menu action, a "login required" probe state (the discovery probe is
-  unauthenticated, so the pill stays green while logged out), and handling for
-  an OIDC popup flow.
+- [x] **oauth2-proxy integration test (automated half).**
+  `desktop/scripts/oauth2-proxy-test/run.sh` starts oauth2-proxy in front of a
+  local webterm with a stdlib mock OIDC provider and asserts: an unauthenticated
+  request redirects to the IdP, the sign-in page serves, the callback sets the
+  `_oauth2_proxy` cookie, the authenticated UI reaches webterm, and `/ws` is 302
+  without the cookie and 101 with it. All pass (curl; no webview involved).
+- [ ] **Watch the webview do that login.** The script cannot drive the Tauri
+  webview, so this half is manual: add a `browser` profile pointing at an
+  oauth2-proxy URL, click Connect, and confirm the provider's login page renders
+  and the terminal loads after sign-in. The main risk is IdPs that refuse
+  embedded user-agents (Google), which no local IdP will reproduce. Follow-ups
+  to decide afterwards: a **Sign in again / Clear session** menu action, a
+  "login required" probe state (the discovery probe is unauthenticated, so the
+  pill stays green while logged out), and OIDC popup handling.
+- [ ] **Proxy plus webterm `--token`.** The other deployment shape: oauth2-proxy
+  injecting `Authorization: Bearer <token>` upstream, as `docs/remote-access.md`
+  describes. The browser cookie alone authenticates the user to the proxy, not
+  to webterm.
 - [ ] **Package the app.** `cargo tauri build` bundles (deb/rpm/AppImage, macOS
   `.app`/`.dmg`, Windows `.msi`/NSIS) and macOS signing/notarization.

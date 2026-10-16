@@ -76,11 +76,13 @@ accepts Bearer for exactly that reason.
 identity-aware proxy (oauth2-proxy, Authelia), and letting the proxy run its own
 login in the window is the whole feature.
 
-> **Untested.** This is the one credential path that has not been run against a
-> real proxy. It depends on the provider's login page rendering in the embedded
-> webview, which several IdPs refuse. Testing it against oauth2-proxy is a
-> tracked roadmap item in `desktop/README.md`, along with the follow-ups it will
-decide (sign-in-again, a "login required" status, popup handling).
+> **Partially tested.** `desktop/scripts/oauth2-proxy-test/` runs oauth2-proxy
+> in front of a local webterm with a mock OIDC provider and verifies the whole
+> cookie flow from the outside: redirect to the IdP, sign-in page, callback
+> cookie, authenticated UI, and `/ws` 302 without the cookie / 101 with it. What
+> it cannot test is the webview rendering the login page — some IdPs (Google)
+> refuse embedded user-agents. The remaining manual check and follow-ups are in
+> the Roadmap in `desktop/README.md`.
 
 ## Editing, and the `update` method
 
