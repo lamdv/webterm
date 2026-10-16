@@ -117,6 +117,7 @@ crates/webterm-client/
   src/profile.rs                Chapter 1: Profile + AuthKind
   src/store.rs                  Chapter 2: ProfileStore + StoreError
   src/connect.rs                Chapter 4: connect_url
+  src/discovery.rs              Chapter 5: ServerInfo + discovery_url
 src-tauri/
   Cargo.toml
   build.rs                      generates Tauri's context at compile time

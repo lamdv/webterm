@@ -175,6 +175,6 @@ remembered window size, say), an edit will not orphan it. That is the promise
 - `connect_url` has unit tests for open, browser, token, encoding and invalid
   URLs.
 
-Next: Chapter 5 gives each server a **status** in the picker — probing the
-server's `/.well-known/webterm.json` discovery document so reachability and the
-version are visible before you connect.
+Next: [Chapter 5 — Server status](05-server-status.md) probes each server's
+`/.well-known/webterm.json` discovery document, so reachability, the version
+and protocol compatibility are visible before you connect.

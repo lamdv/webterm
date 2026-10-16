@@ -77,3 +77,12 @@ the picker; an edit keeps the profile's id.
 
 The URL-building rule lives in `crates/webterm-client/src/connect.rs` and is
 unit tested there.
+
+## Server status
+
+Each row is probed against the server's unauthenticated
+`/.well-known/webterm.json` document using the `reqwest` client re-exported by
+`tauri-plugin-http`. A probe that fails or a protocol this client does not know
+shows as offline or incompatible, with the reason in the tooltip. The document
+shape and the discovery URL rule live in
+`crates/webterm-client/src/discovery.rs`.

@@ -37,6 +37,9 @@ STATIC_ROOT = Path(__file__).parent / "static"
 WS_PATH = "/ws"
 #: Unauthenticated service-discovery document (see :func:`serve_discovery`).
 DISCOVERY_PATH = "/.well-known/webterm.json"
+#: Wire-protocol version advertised in the discovery document.  A client uses
+#: it to refuse a server whose protocol it does not understand.
+DISCOVERY_PROTOCOL = 1
 MAX_HTTP_HEADER = 64 * 1024
 
 CONTENT_TYPES = {
@@ -258,6 +261,7 @@ async def serve_discovery(
     payload = {
         "service": "webterm",
         "version": __version__,
+        "protocol": DISCOVERY_PROTOCOL,
         "auth_required": token is not None,
         "auth_methods": ["basic", "bearer", "cookie"] if token is not None else [],
         "websocket_path": WS_PATH,

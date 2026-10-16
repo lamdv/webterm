@@ -121,10 +121,10 @@ time. When none match, `handle_client` answers `401 Unauthorized` with a
 `WWW-Authenticate: Basic` challenge before routing anything.
 
 `serve_discovery` answers `GET`/`HEAD /.well-known/webterm.json` with a small
-unauthenticated document: the service name, the version, whether a token is
-required, and which credential types are accepted. It is served *before*
-`check_auth`, so a client can classify a server before it holds credentials,
-and `--no-discovery` removes it.
+unauthenticated document: the service name, the version, the wire-protocol
+version, whether a token is required, and which credential types are accepted.
+It is served *before* `check_auth`, so a client can classify a server before it
+holds credentials, and `--no-discovery` removes it.
 
 `handle_client` ties it together: parse the request, serve discovery, handle a
 `?bootstrap=` exchange, enforce auth, route a WebSocket upgrade on `/ws` (path

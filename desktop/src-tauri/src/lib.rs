@@ -11,6 +11,8 @@ use tauri::Manager;
 /// Build and run the application.  Called exactly once, from `main`.
 pub fn run() {
     tauri::Builder::default()
+        // The HTTP plugin gives us the `reqwest` client used to probe servers.
+        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // A second launch focuses the picker instead of starting a second
             // copy of the app.
@@ -24,6 +26,7 @@ pub fn run() {
             // `~/.config/dev.webterm.desktop/servers.json` on Linux.
             let path = app.path().app_config_dir()?.join("servers.json");
             app.manage(commands::Profiles::load(path)?);
+            app.manage(commands::HttpClient::new()?);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -32,6 +35,7 @@ pub fn run() {
             commands::update_profile,
             commands::remove_profile,
             commands::connect,
+            commands::probe_all,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the webterm desktop app");

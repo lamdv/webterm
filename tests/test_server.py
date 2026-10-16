@@ -179,6 +179,7 @@ class DiscoveryTests(ServerFixture):
         _, _, body = raw.partition(b"\r\n\r\n")
         doc = json.loads(body)
         self.assertEqual(doc["service"], "webterm")
+        self.assertEqual(doc["protocol"], 1)
         self.assertFalse(doc["auth_required"])
         self.assertEqual(doc["auth_methods"], [])
         self.assertEqual(doc["websocket_path"], "/ws")

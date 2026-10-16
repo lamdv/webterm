@@ -11,6 +11,7 @@ fn main() {
             "update_profile",
             "remove_profile",
             "connect",
+            "probe_all",
         ]),
     ))
     .expect("failed to run tauri-build");

@@ -9,6 +9,7 @@
     "allow-add-profile",
     "allow-update-profile",
     "allow-remove-profile",
-    "allow-connect"
+    "allow-connect",
+    "allow-probe-all"
   ]
 }
