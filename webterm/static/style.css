@@ -344,6 +344,7 @@ body {
   cursor: pointer;
   color: var(--text-dim);
   user-select: none;
+  -webkit-touch-callout: none;
   margin-bottom: 2px;
 }
 

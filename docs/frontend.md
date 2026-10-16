@@ -135,8 +135,10 @@ Unknown ids are ignored.
   `--depth` custom property, and a child whose parent is gone falls back to the
   root so nothing disappears. Agent sessions get a badge (`session.agent`) and,
   once dead, an `exit N` chip. Each tab has an inline-rename title
-  (double-click) and a `×` close button that sends `{"type":"kill"}` (which
-  cascades to the session's descendants server-side).
+  (double-click, or a ~600 ms long-press / right-click on touch, via
+  `attachLongPress` — the close button is excluded) and a `×` close button that
+  sends `{"type":"kill"}` (which cascades to the session's descendants
+  server-side).
 - A session created by an agent does **not** steal focus: only a session the
   user created (`activateNext`) is activated on arrival.
 - `activate(id)` persists the choice, toggles the `active` class on wrappers,

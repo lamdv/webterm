@@ -561,6 +561,13 @@
 
       tab.addEventListener("click", () => activate(session.id));
       tab.addEventListener("dblclick", () => startRename(tab, title, session));
+      // Touch-friendly rename: long-press the tab, matching the create button.
+      // The close button keeps its own tap behaviour.
+      attachLongPress(
+        tab,
+        () => startRename(tab, title, session),
+        (event) => !(event.target instanceof Element) || !event.target.closest(".tab-close")
+      );
       sessionsList.appendChild(tab);
     }
     updateActiveTab();
@@ -858,7 +865,8 @@
   }
 
   // Fire callback on a ~600ms press without movement, or on context-menu.
-  function attachLongPress(element, callback) {
+  // An optional `shouldStart(event)` predicate can veto a press by target.
+  function attachLongPress(element, callback, shouldStart) {
     let timer = null;
     let startX = 0;
     let startY = 0;
@@ -869,8 +877,10 @@
         timer = null;
       }
     };
+    const allowed = (event) => !shouldStart || shouldStart(event);
     element.addEventListener("pointerdown", (event) => {
       if (event.pointerType === "mouse" && event.button !== 0) return;
+      if (!allowed(event)) return;
       suppressClick = false;
       startX = event.clientX;
       startY = event.clientY;
@@ -900,11 +910,13 @@
       true
     );
     element.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
       if (suppressClick) {
         suppressClick = false;
+        event.preventDefault();
         return;
       }
+      if (!allowed(event)) return;
+      event.preventDefault();
       callback();
     });
   }
