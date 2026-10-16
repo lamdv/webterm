@@ -8,3 +8,6 @@
   terminal fitting, launchers, `localStorage`.
 - [Remote access](remote-access.md) — exposing webterm safely behind Tailscale
   or an OAuth2 reverse proxy (oauth2-proxy, nginx, Caddy).
+- [Sub-agents](agent-control.md) — proposal for a local Unix-socket control API,
+  CLI, and MCP tools so an agent can spawn visible sub-agents (lineage, tree
+  sidebar, recursion limits) and collect their results (draft for discussion).
