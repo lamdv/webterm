@@ -86,3 +86,11 @@ Each row is probed against the server's unauthenticated
 shows as offline or incompatible, with the reason in the tooltip. The document
 shape and the discovery URL rule live in
 `crates/webterm-client/src/discovery.rs`.
+
+## Menu and shortcuts
+
+A native menu (`src-tauri/src/menu.rs`) provides **New Server** (Cmd/Ctrl+N),
+**Reload Window** (Cmd/Ctrl+R), plus predefined Quit, Minimize, Fullscreen and
+Close Window items. It is native so it also appears in server windows showing a
+remote page. Copy/Paste items are deliberately absent: their default Ctrl+C /
+Ctrl+V accelerators would swallow the terminal's SIGINT and paste keys.

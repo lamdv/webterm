@@ -222,5 +222,5 @@ fresh status.
   than fail.
 - `connect_url` and `discovery_url` are both unit tested in `webterm-client`.
 
-Next: Chapter 6 gives the app a native menu bar and keyboard shortcuts — New
-Server, Connect, and Quit — delivered by the shell rather than the webview.
+Next: [Chapter 6 — Menus and shortcuts](06-menus.md) adds a native menu bar
+that works in the picker and in remote server windows alike.

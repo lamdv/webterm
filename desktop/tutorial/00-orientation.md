@@ -124,6 +124,7 @@ src-tauri/
   src/main.rs                   trivial: calls webterm_desktop_lib::run()
   src/lib.rs                    builds the app, registers state and commands
   src/commands.rs               Chapter 3: ProfileStore state + IPC commands
+  src/menu.rs                   Chapter 6: native menu bar and shortcuts
   tauri.conf.json               window + bundle configuration
   capabilities/default.json     IPC permissions — picker window only
 frontend/

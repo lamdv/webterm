@@ -5,12 +5,14 @@
 //! system, the profile store, the IPC commands and the plugins.
 
 mod commands;
+#[cfg(desktop)]
+mod menu;
 
 use tauri::Manager;
 
 /// Build and run the application.  Called exactly once, from `main`.
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // The HTTP plugin gives us the `reqwest` client used to probe servers.
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -36,7 +38,13 @@ pub fn run() {
             commands::remove_profile,
             commands::connect,
             commands::probe_all,
-        ])
+        ]);
+
+    // Menus are desktop-only; a future mobile build simply skips them.
+    #[cfg(desktop)]
+    let builder = builder.menu(menu::build).on_menu_event(menu::handle);
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running the webterm desktop app");
 }

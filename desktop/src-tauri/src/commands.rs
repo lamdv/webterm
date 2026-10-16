@@ -237,11 +237,20 @@ fn open_server_window(app: &tauri::AppHandle, profile: &Profile) -> Result<(), S
     let url = webterm_client::connect_url(profile)
         .map_err(|error| format!("{:?} is not a valid server URL: {error}", profile.url))?;
 
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title(&profile.name)
-        .inner_size(900.0, 600.0)
-        .build()
-        .map_err(|error| error.to_string())?;
+        .inner_size(900.0, 600.0);
+
+    // On Windows and Linux the menu belongs to each window, so a server window
+    // created at runtime must be given it explicitly.  On macOS the app-wide
+    // menu already applies.
+    #[cfg(desktop)]
+    let builder = match app.menu() {
+        Some(menu) => builder.menu(menu),
+        None => builder,
+    };
+
+    builder.build().map_err(|error| error.to_string())?;
     Ok(())
 }
 
