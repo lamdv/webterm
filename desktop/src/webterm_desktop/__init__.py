@@ -12,17 +12,21 @@ starting one in-process (handy for debugging against ``uv run webterm``).
 from __future__ import annotations
 
 import ctypes.util
+import json
 import logging
 import os
 import secrets
+import signal
+import socket
+import subprocess
 import sys
+import time
 from os import environ
+from pathlib import Path
 
 # pytauri requires this to be set before any pytauri import.  It selects the
 # prebuilt pytauri-wheel native libraries instead of the Cargo extension.
 environ["_PYTAURI_DIST"] = "pytauri-wheel"
-
-from pathlib import Path  # noqa: E402
 
 from anyio.from_thread import start_blocking_portal  # noqa: E402
 from pytauri import AppHandle, Commands, Manager  # noqa: E402
@@ -57,20 +61,21 @@ MENU_ACTIONS = {
     "toggle-sidebar": "window.__webterm && window.__webterm.toggleSidebar()",
 }
 
+#: True when the server was spawned as a detached daemon for this session.
+_DAEMON = False
+
 
 def _build_menu(app_handle: AppHandle) -> Menu:
     """Build the application menu (a no-op fallback if the platform ignores it)."""
-    file_menu = Submenu.with_items(
-        app_handle,
-        "File",
-        True,
-        [
-            MenuItem.with_id(app_handle, "new-session", "New Session", True),
-            MenuItem.with_id(app_handle, "close-session", "Close Session", True),
-            PredefinedMenuItem.separator(app_handle),
-            PredefinedMenuItem.quit(app_handle, "Quit"),
-        ],
-    )
+    file_items = [
+        MenuItem.with_id(app_handle, "new-session", "New Session", True),
+        MenuItem.with_id(app_handle, "close-session", "Close Session", True),
+        PredefinedMenuItem.separator(app_handle),
+    ]
+    if _DAEMON:
+        file_items.append(MenuItem.with_id(app_handle, "stop-server", "Stop Server", True))
+    file_items.append(PredefinedMenuItem.quit(app_handle, "Quit"))
+    file_menu = Submenu.with_items(app_handle, "File", True, file_items)
     edit_menu = Submenu.with_items(
         app_handle,
         "Edit",
@@ -113,6 +118,9 @@ def _setup_menu(app_handle: AppHandle) -> None:
         app_handle.set_menu(menu)
 
     def on_menu(handle: AppHandle, event_id: str) -> None:
+        if event_id == "stop-server":
+            _stop_daemon()
+            return
         script = MENU_ACTIONS.get(event_id)
         if script is None:
             return
@@ -219,14 +227,119 @@ async def _start_in_process(manager: SessionManager, token: str):
     return await start_server("127.0.0.1", 0, manager, {}, token=token)
 
 
+def _runtime_dir() -> Path:
+    base = environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    directory = Path(base) / "webterm"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return directory
+
+
+def _discovery_path() -> Path:
+    return _runtime_dir() / "desktop.json"
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _reachable(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def _read_discovery() -> dict | None:
+    try:
+        data = json.loads(_discovery_path().read_text())
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict) and {"host", "port", "token"} <= data.keys():
+        return data
+    return None
+
+
+def _spawn_daemon() -> dict:
+    """Attach to a live detached server, or start one that outlives this app."""
+    existing = _read_discovery()
+    if existing and _reachable(str(existing["host"]), int(existing["port"])):
+        log.info("attaching to the running webterm daemon")
+        return existing
+
+    token = secrets.token_urlsafe(32)
+    log_path = _runtime_dir() / "server.log"
+    for _ in range(5):
+        port = _free_port()
+        # ``--token=<value>``: a urlsafe token may start with ``-``, which
+        # argparse would otherwise treat as another option.
+        argv = [
+            sys.executable,
+            "-m",
+            "webterm",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            f"--token={token}",
+        ]
+        with open(log_path, "ab") as log_file:
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=log_file,
+                stderr=log_file,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if _reachable("127.0.0.1", port):
+                info = {"host": "127.0.0.1", "port": port, "token": token, "pid": proc.pid}
+                path = _discovery_path()
+                path.write_text(json.dumps(info))
+                path.chmod(0o600)
+                log.info("started detached webterm daemon on port %s", port)
+                return info
+            if proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        if proc.poll() is None:
+            proc.terminate()
+    raise RuntimeError("could not start the webterm daemon")
+
+
+def _stop_daemon() -> None:
+    info = _read_discovery()
+    if not info:
+        return
+    pid = info.get("pid")
+    if isinstance(pid, int):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    try:
+        _discovery_path().unlink()
+    except OSError:
+        pass
+
+
 def main() -> int:
     """Run the desktop app and return its exit code."""
+    global _DAEMON
     external_url = environ.get("WEBTERM_DESKTOP_URL")
+    daemon = environ.get("WEBTERM_DESKTOP_DAEMON") == "1" and not external_url
+    _DAEMON = daemon
 
     with start_blocking_portal("asyncio") as portal:
         handle = None
         if external_url:
             url = external_url
+        elif daemon:
+            info = _spawn_daemon()
+            url = f"http://{info['host']}:{info['port']}/?bootstrap={info['token']}"
         else:
             manager = SessionManager(
                 shell=_default_shell(),
