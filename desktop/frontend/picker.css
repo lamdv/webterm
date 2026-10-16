@@ -222,7 +222,8 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
-.add-form button[type="submit"] {
-  align-self: flex-start;
+.form-actions {
+  display: flex;
+  gap: 0.5rem;
   margin-top: 0.25rem;
 }

@@ -1,6 +1,6 @@
-// The picker: list the saved servers, add new ones, and open a window per
-// server.  All the data lives in Rust (the `ProfileStore`); this file only
-// translates between that data and the DOM.
+// The picker: list the saved servers, add, edit and remove them, and open a
+// window per server.  All the data lives in Rust (the `ProfileStore`); this
+// file only translates between that data and the DOM.
 
 import { invoke } from "./ipc.js";
 
@@ -10,6 +10,12 @@ const empty = document.querySelector("#empty");
 const form = document.querySelector("#add-form");
 const authSelect = document.querySelector("#auth");
 const tokenRow = document.querySelector("#token-row");
+const submitButton = document.querySelector("#submit");
+const cancelButton = document.querySelector("#cancel");
+
+/// The id being edited, or `null` when the form is adding a new profile.
+/// Module-level because the form and the list both need to see it.
+let editingId = null;
 
 function showError(error) {
   errorBox.textContent = error instanceof Error ? error.message : String(error);
@@ -52,6 +58,15 @@ function authLabel(auth) {
   }
 }
 
+function button(label, className, onClick) {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = className;
+  element.textContent = label;
+  element.addEventListener("click", onClick);
+  return element;
+}
+
 function serverRow(profile) {
   const item = document.createElement("li");
   item.className = "server";
@@ -76,26 +91,21 @@ function serverRow(profile) {
   const actions = document.createElement("div");
   actions.className = "server-actions";
 
-  const connect = document.createElement("button");
-  connect.type = "button";
-  connect.className = "primary";
-  connect.textContent = "Connect";
-  connect.addEventListener("click", () => {
+  const connect = button("Connect", "primary", () => {
     guard(() => invoke("connect", { id: profile.id }));
   });
-
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.className = "danger";
-  remove.textContent = "Remove";
-  remove.addEventListener("click", () => {
+  const edit = button("Edit", "", () => startEdit(profile));
+  const remove = button("Remove", "danger", () => {
     guard(async () => {
       await invoke("remove_profile", { id: profile.id });
+      if (editingId === profile.id) {
+        stopEdit();
+      }
       await refresh();
     });
   });
 
-  actions.append(connect, remove);
+  actions.append(connect, edit, remove);
   item.append(text, badge, actions);
   return item;
 }
@@ -108,9 +118,34 @@ async function refresh() {
   empty.hidden = profiles.length > 0;
 }
 
+/// Load a profile into the form and switch the form into "save" mode.
+function startEdit(profile) {
+  editingId = profile.id;
+  document.querySelector("#name").value = profile.name;
+  document.querySelector("#url").value = profile.url;
+  const kind = profile.auth?.kind ?? "none";
+  authSelect.value = kind;
+  tokenRow.hidden = kind !== "token";
+  document.querySelector("#token").value = profile.auth?.token ?? "";
+  submitButton.textContent = "Save changes";
+  cancelButton.hidden = false;
+  document.querySelector("#name").focus();
+}
+
+/// Leave edit mode and clear the form back to "add".
+function stopEdit() {
+  editingId = null;
+  form.reset();
+  tokenRow.hidden = true;
+  submitButton.textContent = "Add server";
+  cancelButton.hidden = true;
+}
+
 authSelect.addEventListener("change", () => {
   tokenRow.hidden = authSelect.value !== "token";
 });
+
+cancelButton.addEventListener("click", stopEdit);
 
 form.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -121,12 +156,15 @@ form.addEventListener("submit", (event) => {
     const token = document.querySelector("#token").value;
     const auth = kind === "token" ? { kind, token } : { kind };
 
-    await invoke("add_profile", {
-      profile: { id: newId(), name, url, auth },
-    });
+    // An edit keeps its id; a new profile gets a fresh one.
+    const profile = { id: editingId ?? newId(), name, url, auth };
+    if (editingId === null) {
+      await invoke("add_profile", { profile });
+    } else {
+      await invoke("update_profile", { profile });
+    }
 
-    form.reset();
-    tokenRow.hidden = true;
+    stopEdit();
     await refresh();
   });
 });

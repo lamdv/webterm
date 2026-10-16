@@ -65,6 +65,16 @@ pub fn remove_profile(state: State<'_, Profiles>, id: String) -> Result<bool, St
         .map_err(describe)
 }
 
+/// Replace an existing profile.  Returns whether one was found.
+#[tauri::command]
+pub fn update_profile(state: State<'_, Profiles>, profile: Profile) -> Result<bool, String> {
+    let mut store = state.0.lock().map_err(|_| poisoned())?;
+    store
+        .update(profile)
+        .map(|updated| updated.is_some())
+        .map_err(describe)
+}
+
 /// Open a window pointed at the profile's server.
 ///
 /// The window loads the server's own web client, not ours.  It is created
@@ -95,7 +105,7 @@ fn open_server_window(app: &tauri::AppHandle, profile: &Profile) -> Result<(), S
         return Ok(());
     }
 
-    let url = tauri::Url::parse(&profile.url)
+    let url = webterm_client::connect_url(profile)
         .map_err(|error| format!("{:?} is not a valid server URL: {error}", profile.url))?;
 
     WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))

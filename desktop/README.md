@@ -63,4 +63,17 @@ change the other.
 Saved servers live in the per-app config directory
 (`app_config_dir()/servers.json`, e.g. `~/.config/dev.webterm.desktop/` on
 Linux). The file is written atomically and chmodded to `0o600` because a token
-profile stores its secret there.
+profile stores its secret there. Profiles can be added, edited and removed from
+the picker; an edit keeps the profile's id.
+
+## Authentication
+
+- **Open** profiles navigate straight to the server.
+- **Token** profiles navigate once to `/?bootstrap=<token>`; the server trades
+  the secret for an `HttpOnly`, `SameSite=Strict` cookie and redirects to `/`,
+  so the WebSocket authenticates with the cookie rather than a token in its URL.
+- **Browser login** profiles send no credential and let an identity-aware proxy
+  (oauth2-proxy, Authelia) run its own login in the window.
+
+The URL-building rule lives in `crates/webterm-client/src/connect.rs` and is
+unit tested there.

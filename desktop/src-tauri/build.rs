@@ -8,6 +8,7 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "list_profiles",
             "add_profile",
+            "update_profile",
             "remove_profile",
             "connect",
         ]),

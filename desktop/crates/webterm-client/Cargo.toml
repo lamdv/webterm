@@ -9,6 +9,8 @@ license.workspace = true
 serde.workspace = true
 # The store reads and writes JSON at runtime, so this is no longer test-only.
 serde_json.workspace = true
+# Connecting a profile builds a URL; `url` owns that parsing and encoding.
+url.workspace = true
 
 [lints]
 workspace = true

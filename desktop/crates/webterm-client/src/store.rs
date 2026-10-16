@@ -151,6 +151,23 @@ impl ProfileStore {
         Ok(Some(removed))
     }
 
+    /// Replace the profile with the same id, returning the previous value.
+    ///
+    /// `Ok(None)` means no profile with that id exists.  Like `add` and
+    /// `remove`, a failed save restores the old profile so memory and disk
+    /// stay in step.
+    pub fn update(&mut self, profile: Profile) -> Result<Option<Profile>, StoreError> {
+        let Some(index) = self.profiles.iter().position(|p| p.id == profile.id) else {
+            return Ok(None);
+        };
+        let previous = std::mem::replace(&mut self.profiles[index], profile);
+        if let Err(error) = self.save() {
+            self.profiles[index] = previous;
+            return Err(error);
+        }
+        Ok(Some(previous))
+    }
+
     /// Write the current list back to disk.
     ///
     /// `&self`, not `&mut self`: saving reads the list, it does not change it.
@@ -299,6 +316,31 @@ mod tests {
 
         let reloaded = ProfileStore::load(&path).expect("reload");
         assert_eq!(reloaded.profiles(), &[profile("prod")]);
+    }
+
+    #[test]
+    fn update_replaces_by_id_and_persists() {
+        let dir = TempDir::new();
+        let path = dir.file();
+        let mut store = ProfileStore::load(&path).expect("load");
+        store.add(profile("dev")).expect("add");
+
+        let mut renamed = profile("dev");
+        renamed.name = "Renamed".to_string();
+        let previous = store.update(renamed).expect("update");
+        assert_eq!(previous.map(|p| p.name), Some("dev box".to_string()));
+
+        assert!(store
+            .update(profile("missing"))
+            .expect("update missing")
+            .is_none());
+
+        let reloaded = ProfileStore::load(&path).expect("reload");
+        assert_eq!(
+            reloaded.get("dev").map(|p| p.name.as_str()),
+            Some("Renamed")
+        );
+        assert_eq!(reloaded.profiles().len(), 1);
     }
 
     #[test]

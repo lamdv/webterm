@@ -24,6 +24,7 @@ serde_json = "1"
 tauri = "2"
 tauri-build = "2"
 tauri-plugin-single-instance = "2"
+url = "2"
 
 # Our own crates, referenced by path.
 webterm-client = { path = "crates/webterm-client" }

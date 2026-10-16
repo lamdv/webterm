@@ -258,5 +258,5 @@ visible message.
 - Server windows have no IPC capabilities.
 - `cargo test -p webterm-client` and `cargo test -p webterm-desktop` pass.
 
-Next: Chapter 4 turns saved URLs into *reachable* servers — probing each one,
-authenticating, and surfacing status before you click.
+Next: [Chapter 4 — Credentials](04-credentials.md) makes `AuthKind` matter:
+token profiles bootstrap a session cookie, and profiles can be edited in place.
