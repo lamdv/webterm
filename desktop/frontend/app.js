@@ -121,6 +121,7 @@ function serverRow(profile) {
   const url = document.createElement("span");
   url.className = "server-url";
   url.textContent = profile.url;
+  url.title = profile.url;
 
   text.append(name, url);
 

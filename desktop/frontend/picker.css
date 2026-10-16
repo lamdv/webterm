@@ -181,6 +181,12 @@ body {
   color: var(--text-dim);
   font-size: 0.8rem;
   overflow-wrap: anywhere;
+  /* At most three lines, then an ellipsis; the full URL is the title. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 
 .server-auth {
