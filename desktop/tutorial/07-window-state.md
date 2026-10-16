@@ -1,8 +1,9 @@
 # Chapter 7 — Remembering windows
 
-**Goal:** a window should come back where you left it. Move the picker to a
-second monitor, resize it, quit, relaunch — it should reappear in the same
-place. The same should hold for every server window you had open.
+**Goal:** the window should come back where you left it. Move it to a second
+monitor, resize it, quit, relaunch — it should reappear in the same place. With
+a single window (Chapter 6) that is the whole requirement; there is no separate
+per-server geometry to track.
 
 The code is one plugin registration in `src-tauri/src/lib.rs`.
 
@@ -46,25 +47,15 @@ The plugin:
 3. listens for `Moved` and `Resized` and keeps an in-memory copy current;
 4. writes the file back on `RunEvent::Exit`.
 
-The "for each window as it becomes ready" part is what makes this chapter more
-than a one-liner. The picker exists from `tauri.conf.json`, but server windows
-are created at runtime by `open_server_window` (Chapter 3). The plugin's
-`on_window_ready` hook fires for them too, keyed by their label:
+With a single window this is almost anticlimactic: one label, `main`, one saved
+geometry. The interesting property is a negative one — the picker and every
+server share that geometry, because they are the same window at different times.
+Move the window while a server is open, and the picker appears there next
+launch.
 
-```rust
-WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
-```
-
-That label is `server-<profile id>`, and Chapter 1 was explicit that a profile's
-id survives renames and is *not* derived from its name. So a server window
-opens at the remembered spot even after you rename the profile, and two
-different servers never share a window slot. If the id had been derived from the
-name, this chapter would have needed a migration.
-
-Removing a profile does not prune its state entry, so `.window-state.json` can
-accumulate a few stale labels. That file is an internal cache, not user data;
-leaving dead keys is harmless and much simpler than reconciling it on every
-delete.
+(The earlier multi-window design keyed state by `server-<profile id>`, so each
+server remembered its own spot. That `WebviewWindowBuilder` code is gone with the
+extra windows. The profile id still matters, but only for the store.)
 
 ## Choosing what to restore
 
@@ -99,22 +90,24 @@ The save happens on a clean exit, so the workflow is:
 2. Quit the app from the **Server → Quit** menu (Chapter 6), not `Ctrl+C` in the
    terminal — that kills the process before `RunEvent::Exit` fires.
 3. `cargo tauri dev` again; the window should return to where you put it.
-4. Connect to a server, move *that* window, quit, and re-connect.
+4. Connect to a server (the same window navigates), move it, quit, and relaunch.
 
 ## Exercise
 
 1. Restrict the flags to size, position and maximized, then verify that
    maximizing and quitting restores the maximized window.
-2. Use `skip_initial_state("main")` so the picker always opens at the size from
-   `tauri.conf.json`, while server windows are still restored.
+2. Use `with_state_flags(StateFlags::POSITION)` alone so the window always opens
+   at the size from `tauri.conf.json` but remembers where you put it.
 3. Read `~/.config/dev.webterm.desktop/.window-state.json` after a run. It is
    plain JSON keyed by window label; explain why `prev_x`/`prev_y` exist.
 4. Run `cargo fmt`, `cargo clippy`, and both test suites.
 
 ## Checkpoint
 
-- The picker and every server window restore their geometry across launches.
-- Repeated connects to the same profile reuse one remembered position.
+- The window restores its geometry across launches, whichever view it was
+  showing when it quit.
+- The picker and every server share that one geometry, because they are the same
+  window.
 - The state file lives beside `servers.json` in the app config directory.
 - The plugin is compiled out on mobile targets.
 

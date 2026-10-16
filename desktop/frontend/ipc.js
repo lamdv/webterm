@@ -7,8 +7,9 @@
  * need.  Calling it directly keeps this frontend buildless: no npm install, no
  * bundler, no vendored megabyte of API surface.
  *
- * The bridge is present in server windows too, but those windows are not listed
- * in `capabilities/default.json`, so Tauri rejects every command they try.
+ * The bridge is present even after the window navigates to a server, but the
+ * capability in `capabilities/default.json` has no `remote` scope, so Tauri
+ * rejects every command from a remote origin.
  */
 export function invoke(command, args = {}) {
   const internals = window.__TAURI_INTERNALS__;

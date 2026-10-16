@@ -1,5 +1,5 @@
 // The picker: list the saved servers, add, edit and remove them, probe each
-// one's status, and open a window per server.  All the data lives in Rust (the
+// one's status, and navigate to a server.  All the data lives in Rust (the
 // `ProfileStore`); this file only translates between that data and the DOM.
 
 import { invoke } from "./ipc.js";

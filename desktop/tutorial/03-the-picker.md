@@ -46,8 +46,9 @@ pub struct Profiles(Mutex<ProfileStore>);
 ```
 
 Why a `Mutex`? Commands can arrive at the same time — a fast double-click, or
-two windows — and `ProfileStore::add` takes `&mut self`. The mutex serialises
-them, exactly as it would in any multi-threaded program. Each command locks,
+a menu action landing while a click is in flight — and `ProfileStore::add`
+takes `&mut self`. The mutex serialises them, exactly as it would in any
+multi-threaded program. Each command locks,
 does its work, and drops the guard before returning, so no borrow is held across
 calls.
 
@@ -102,32 +103,40 @@ synchronous function in an async task on its runtime, so a small file write
 never freezes the window. For genuinely long work you would reach for an
 `async fn` or `#[tauri::command(blocking)]`.
 
-### Opening a window to a server
+### Opening a server in the main window
 
-`connect` looks the profile up and builds a window whose URL is the server:
+`connect` looks the profile up and navigates the app's **one** window to the
+server:
 
 ```rust
-let url = tauri::Url::parse(&profile.url)?;
-WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
-    .title(&profile.name)
-    .inner_size(900.0, 600.0)
-    .build()?;
+let window = app.get_webview_window("main").ok_or("the main window is missing")?;
+
+// This command runs in the picker, so the window's current URL is the picker's.
+// Remember it before we navigate away, so the Servers menu can come back.
+if let Ok(url) = window.url() {
+    app.state::<PickerUrl>().0.lock()?.replace(url);
+}
+
+let url = webterm_client::connect_url(&profile)?;
+window.navigate(url)?;
 ```
 
-`WebviewUrl::External` means "load this remote origin", as opposed to
-`WebviewUrl::App`, which would load a file we ship. The window is created from
-Rust, so the remote page never gets to choose its own URL.
+There are three ways to show a server, and only one of them works here:
 
-Two details are load-bearing:
+- **Navigate the existing window** (what we do). The webview's top-level document
+  becomes the server origin, so its cookie and WebSocket are first-party and an
+  OAuth2 proxy can run its normal login. The cost is that the picker is replaced
+  while you are connected, which is exactly why `PickerUrl` exists and why the
+  native **Servers** menu (Chapter 6) is the way back.
+- **An `<iframe>` in the picker.** It would keep the list visible, but a
+  third-party iframe cannot use the `SameSite=Strict` bootstrap cookie, and
+  proxies commonly send `X-Frame-Options: DENY`. It would break the
+  authentication built in Chapter 4.
+- **A second window per server** (the previous design). Handy for watching two
+  servers at once, but the point of this change is a single window.
 
-- The label must be unique. We derive it from the profile id and sanitise it,
-  because the id arrives from JavaScript and Tauri rejects labels with
-  characters outside `[A-Za-z0-9-_.:]`. Clicking Connect on an already-open
-  server focuses the existing window instead of opening a second one.
-- The server window is deliberately **not** in `capabilities/default.json`. That
-  file lists `"windows": ["main"]`, so the remote page has no IPC access at all.
-  This is the security boundary from the README: the picker can talk to Rust,
-  the page loaded from a server cannot.
+The URL is chosen by Rust from the profile, so the remote page never gets to
+choose its own origin.
 
 ### Making "no IPC" actually true
 
@@ -164,9 +173,12 @@ names the allowed ones:
 ]
 ```
 
-Now the `"windows": ["main"]` scope does real work: a server window is in no
-capability, so all four commands are denied there, while still reachable from
-the picker. This is the difference between a comment about security and an
+Crucially, the capability has no `remote` scope, so it applies only to the
+app's **local** origin. The picker is local and can call every allowed command;
+the moment the window navigates to a server it is a remote origin, and Tauri has
+no matching context, so every command is denied. The remote page is not "a
+window we left out of the capability" any more — it is an origin the capability
+was never for. This is the difference between a comment about security and an
 enforced one.
 
 ## How JavaScript reaches those commands
@@ -253,9 +265,9 @@ visible message.
 ## Checkpoint
 
 - The picker lists every saved server and can add and remove one.
-- Connect opens the server's own client in a new window; a second click focuses
-  it instead of duplicating it.
-- Server windows have no IPC capabilities.
+- Connect navigates the main window to the server's own client; the native
+  **Servers** menu comes back to the picker.
+- Once the window is on a server origin, the page has no IPC capabilities.
 - `cargo test -p webterm-client` and `cargo test -p webterm-desktop` pass.
 
 Next: [Chapter 4 — Credentials](04-credentials.md) makes `AuthKind` matter:

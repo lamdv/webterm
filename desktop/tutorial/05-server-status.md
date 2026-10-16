@@ -223,4 +223,5 @@ fresh status.
 - `connect_url` and `discovery_url` are both unit tested in `webterm-client`.
 
 Next: [Chapter 6 — Menus and shortcuts](06-menus.md) adds a native menu bar
-that works in the picker and in remote server windows alike.
+that works whether the main window is showing the picker or a remote server
+page.

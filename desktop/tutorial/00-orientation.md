@@ -12,17 +12,17 @@ architecture, skip to `README.md`.
 
 A **remote-only client**. The previous version of this app bundled the whole
 Python webterm server and ran it in-process. That is gone. Now the app is a thin
-shell around the browser client that already exists: it stores server
-profiles, and when you pick one it opens a window pointed at that server.
+shell around the browser client that already exists: it stores server profiles,
+and when you pick one it navigates its one window to that server.
 
 Two consequences follow, and they shape every decision after this:
 
-1. **The terminal UI is not ours.** The client window navigates to the server's
-   origin and loads the server's own `index.html` / `app.js`. There is no
-   terminal code in this app. What the browser sees and what the app shows are
-   the same files.
+1. **The terminal UI is not ours.** The window navigates to the server's origin
+   and loads the server's own `index.html` / `app.js`. There is no terminal code
+   in this app. What the browser sees and what the app shows are the same files.
 2. **The app's own UI is only the picker** — the list of servers. That is the
-   only thing in `frontend/`.
+   only thing in `frontend/`. The native menu is what gets you back to it once
+   the window is showing a server.
 
 ## Why a workspace, not one crate
 

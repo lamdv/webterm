@@ -29,6 +29,7 @@ pub fn run() {
             let path = app.path().app_config_dir()?.join("servers.json");
             app.manage(commands::Profiles::load(path)?);
             app.manage(commands::HttpClient::new()?);
+            app.manage(commands::PickerUrl::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

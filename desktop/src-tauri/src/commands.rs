@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde::Serialize;
-use tauri::{Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, State};
 use tauri_plugin_http::reqwest;
 use webterm_client::{Profile, ProfileStore, ServerInfo, StoreError};
 
@@ -61,6 +61,21 @@ impl HttpClient {
 /// safe way to continue.
 fn poisoned() -> String {
     "the profile store could not be locked".to_string()
+}
+
+/// Where the picker lives.
+///
+/// It is recorded just before the main window navigates to a server, so the
+/// Servers menu can navigate back.  The picker's URL is platform-specific
+/// (`tauri://localhost` or `http://tauri.localhost`), so it is captured rather
+/// than reconstructed.
+#[derive(Debug, Default)]
+pub struct PickerUrl(Mutex<Option<tauri::Url>>);
+
+impl PickerUrl {
+    pub fn new() -> Self {
+        Self::default()
+    }
 }
 
 /// Return every saved server, in the order it was added.
@@ -204,10 +219,16 @@ async fn fetch_server_info(
     serde_json::from_str(&body).map_err(|error| format!("unexpected discovery document: {error}"))
 }
 
-/// Open a window pointed at the profile's server.
+/// Open a profile's server **in the main window**.
 ///
-/// The window loads the server's own web client, not ours.  It is created
-/// without a capability, so the remote page cannot call any of these commands.
+/// The window navigates to the server's own web client, not ours.  Reusing the
+/// one window (rather than creating one) is what keeps the app single-window,
+/// and because it is a top-level navigation the server's session cookie and
+/// WebSocket stay first-party, so OAuth2 proxies still work.
+///
+/// Once the window is on the server origin the page is remote, and Tauri's ACL
+/// denies it every command in `capabilities/default.json`; `show_picker` brings
+/// the picker back.
 #[tauri::command]
 pub fn connect(
     app: tauri::AppHandle,
@@ -221,62 +242,45 @@ pub fn connect(
             .cloned()
             .ok_or_else(|| format!("no server with id {id:?}"))?
     };
-    open_server_window(&app, &profile)
-}
 
-fn open_server_window(app: &tauri::AppHandle, profile: &Profile) -> Result<(), String> {
-    let label = server_label(&profile.id);
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "the main window is missing".to_string())?;
 
-    // Clicking Connect twice should focus the existing window, not stack a
-    // second copy of the same server.
-    if let Some(window) = app.get_webview_window(&label) {
-        window.set_focus().map_err(|error| error.to_string())?;
-        return Ok(());
+    // This command runs in the picker, so the window's current URL is the
+    // picker's.  Remember it before we leave it behind.
+    if let Ok(url) = window.url() {
+        if let Ok(mut picker) = app.state::<PickerUrl>().0.lock() {
+            picker.replace(url);
+        }
     }
 
-    let url = webterm_client::connect_url(profile)
+    let url = webterm_client::connect_url(&profile)
         .map_err(|error| format!("{:?} is not a valid server URL: {error}", profile.url))?;
+    window.navigate(url).map_err(|error| error.to_string())
+}
 
-    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
-        .title(&profile.name)
-        .inner_size(900.0, 600.0);
-
-    // On Windows and Linux the menu belongs to each window, so a server window
-    // created at runtime must be given it explicitly.  On macOS the app-wide
-    // menu already applies.
-    #[cfg(desktop)]
-    let builder = match app.menu() {
-        Some(menu) => builder.menu(menu),
-        None => builder,
+/// Navigate the main window back to the picker.
+///
+/// The picker is also where servers are added, so there is no separate
+/// "new server" action: returning to the list is enough.
+pub fn show_picker<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Err("the main window is missing".to_string());
     };
 
-    builder.build().map_err(|error| error.to_string())?;
-    Ok(())
-}
+    let remembered = app
+        .state::<PickerUrl>()
+        .0
+        .lock()
+        .map_err(|_| poisoned())?
+        .clone();
 
-/// Tauri window labels may only contain letters, digits, `-`, `_`, `.` and
-/// `:`. Profile ids come from the webview, so sanitise rather than trust them.
-fn server_label(id: &str) -> String {
-    let safe: String = id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    format!("server-{safe}")
-}
+    let Some(mut url) = remembered else {
+        // No server has been opened yet, so the picker is already on screen.
+        return Ok(());
+    };
 
-#[cfg(test)]
-mod tests {
-    use super::server_label;
-
-    #[test]
-    fn server_labels_are_sanitised() {
-        assert_eq!(server_label("ok-1_2.3"), "server-ok-1_2.3");
-        assert_eq!(server_label("a/b c"), "server-a-b-c");
-    }
+    url.set_fragment(None);
+    window.navigate(url).map_err(|error| error.to_string())
 }
