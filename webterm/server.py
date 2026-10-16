@@ -13,6 +13,7 @@ import ssl
 import struct
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from .session import SessionManager
 from .websocket import (
@@ -56,17 +57,40 @@ def _nonneg_int(value: object) -> int:
     return max(number, 0)
 
 
-def check_auth(headers: dict[str, str], token: str | None) -> bool:
-    """Return True when a request is allowed to proceed.
+#: Cookie carrying the browser session established by the ``?bootstrap=`` flow.
+COOKIE_NAME = "webterm_session"
 
-    With no configured token every request is allowed, preserving webterm's
-    historical localhost-only behaviour.  With a token set, HTTP Basic
-    credentials must match: the username is ignored and either the username or
-    the password field may carry the secret.  Comparison is constant-time.
+
+def _constant_time_equals(a: str, b: str) -> bool:
+    """Compare two strings without leaking their contents via timing.
+
+    ``hmac.compare_digest`` only accepts ASCII text, so encode first; the
+    surrogateescape handler keeps arbitrary header bytes from raising.
     """
-    if token is None:
-        return True
-    scheme, _, encoded = headers.get("authorization", "").partition(" ")
+    return hmac.compare_digest(
+        a.encode("utf-8", "surrogateescape"), b.encode("utf-8", "surrogateescape")
+    )
+
+
+def session_cookie_value(token: str) -> str:
+    """Derive the opaque ``COOKIE_NAME`` value for *token*.
+
+    One-way and deterministic, so the browser cookie never exposes the shared
+    secret even though it grants the same access.
+    """
+    return hmac.new(token.encode("utf-8"), b"webterm-session", "sha256").hexdigest()
+
+
+def _cookie(headers: dict[str, str], name: str) -> str | None:
+    for chunk in headers.get("cookie", "").split(";"):
+        key, _, value = chunk.strip().partition("=")
+        if key == name and value:
+            return value
+    return None
+
+
+def _check_basic(header: str, token: str) -> bool:
+    scheme, _, encoded = header.partition(" ")
     if scheme.lower() != "basic" or not encoded:
         return False
     try:
@@ -74,13 +98,34 @@ def check_auth(headers: dict[str, str], token: str | None) -> bool:
     except (ValueError, UnicodeDecodeError):
         return False
     username, _, password = decoded.partition(":")
-    return hmac.compare_digest(username, token) or hmac.compare_digest(password, token)
+    return _constant_time_equals(username, token) or _constant_time_equals(password, token)
+
+
+def check_auth(headers: dict[str, str], token: str | None) -> bool:
+    """Return True when a request is allowed to proceed.
+
+    With no configured token every request is allowed, preserving webterm's
+    historical localhost-only behaviour.  With a token set, either HTTP Basic
+    credentials (the username is ignored; either field may carry the secret) or
+    a ``COOKIE_NAME`` cookie from the bootstrap flow is accepted.  All
+    comparisons are constant-time.
+    """
+    if token is None:
+        return True
+    if _check_basic(headers.get("authorization", ""), token):
+        return True
+    cookie = _cookie(headers, COOKIE_NAME)
+    return cookie is not None and _constant_time_equals(cookie, session_cookie_value(token))
 
 
 async def read_http_request(
     reader: asyncio.StreamReader,
-) -> tuple[str, str, dict[str, str]]:
-    """Read an HTTP request line + headers.  Returns (method, path, headers)."""
+) -> tuple[str, str, dict[str, str], dict[str, str]]:
+    """Read an HTTP request line + headers.
+
+    Returns ``(method, path, query, headers)``.  *path* excludes the query
+    string; *query* holds the decoded single-valued parameters.
+    """
     raw = await asyncio.wait_for(
         reader.readuntil(b"\r\n\r\n"), timeout=30
     )
@@ -91,14 +136,19 @@ async def read_http_request(
     if len(parts) < 2:
         raise WebSocketError("malformed request line")
     method, target = parts[0], parts[1]
-    path = target.split("?", 1)[0]
+    path, _, query_string = target.partition("?")
+    query = {
+        key: values[0]
+        for key, values in parse_qs(query_string, keep_blank_values=True).items()
+        if values
+    }
     headers: dict[str, str] = {}
     for line in lines[1:]:
         if not line:
             continue
         name, _, value = line.partition(":")
         headers[name.strip().lower()] = value.strip()
-    return method, path, headers
+    return method, path, query, headers
 
 
 def _http_response(
@@ -424,13 +474,38 @@ async def handle_client(
 ) -> None:
     try:
         try:
-            method, path, headers = await read_http_request(reader)
+            method, path, query, headers = await read_http_request(reader)
         except (
             TimeoutError,
             asyncio.IncompleteReadError,
             WebSocketError,
             asyncio.LimitOverrunError,
         ):
+            return
+
+        # The desktop app navigates once to /?bootstrap=<token>; exchange it
+        # for an HttpOnly cookie and strip the secret from the URL.  Only
+        # document/asset requests are eligible, not the WebSocket upgrade.
+        bootstrap = query.get("bootstrap")
+        if (
+            token is not None
+            and path != WS_PATH
+            and bootstrap is not None
+            and _constant_time_equals(bootstrap, token)
+        ):
+            writer.write(
+                _http_response(
+                    "302 Found",
+                    extra_headers=(
+                        "Location: /\r\n"
+                        f"Set-Cookie: {COOKIE_NAME}={session_cookie_value(token)}; "
+                        "HttpOnly; SameSite=Strict; Path=/\r\n"
+                        "Cache-Control: no-store\r\n"
+                    ),
+                )
+            )
+            with contextlib.suppress(Exception):
+                await writer.drain()
             return
 
         if not check_auth(headers, token):

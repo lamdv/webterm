@@ -15,7 +15,13 @@ import tempfile
 import unittest
 
 from webterm.__main__ import build_ssl_context
-from webterm.server import handle_client, serve, start_server
+from webterm.server import (
+    check_auth,
+    handle_client,
+    serve,
+    session_cookie_value,
+    start_server,
+)
 from webterm.session import SessionManager
 
 from .wsclient import WSClient
@@ -495,6 +501,88 @@ class StartServerTests(unittest.IsolatedAsyncioTestCase):
         restart = await asyncio.wait_for(waiter, 5)
         self.assertFalse(restart)
         self.assertTrue(handle.control.shutdown.is_set())
+
+
+class CheckAuthTests(unittest.TestCase):
+    def test_no_token_allows_everything(self) -> None:
+        self.assertTrue(check_auth({}, None))
+
+    def test_basic_credentials(self) -> None:
+        token = "hunter2"
+        encoded = base64.b64encode(f"ignored:{token}".encode()).decode()
+        self.assertTrue(check_auth({"authorization": f"Basic {encoded}"}, token))
+        self.assertFalse(check_auth({"authorization": "Basic bm9wZTpub3Bl"}, token))
+
+    def test_session_cookie(self) -> None:
+        token = "hunter2"
+        good = session_cookie_value(token)
+        self.assertTrue(check_auth({"cookie": f"webterm_session={good}"}, token))
+        self.assertFalse(check_auth({"cookie": "webterm_session=deadbeef"}, token))
+        self.assertFalse(check_auth({}, token))
+
+    def test_cookie_value_does_not_expose_the_token(self) -> None:
+        self.assertNotIn("hunter2", session_cookie_value("hunter2"))
+
+
+class BootstrapAuthTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.manager = SessionManager(shell="/bin/sh", cwd="/tmp")
+        self.token = "bootstrap-secret"
+        self.handle = await start_server("127.0.0.1", 0, self.manager, token=self.token)
+
+    async def asyncTearDown(self) -> None:
+        await self.handle.stop()
+
+    async def _get(self, target: str, cookie: str | None = None) -> tuple[str, str, str]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.handle.port)
+        request = f"GET {target} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+        if cookie:
+            request += f"Cookie: {cookie}\r\n"
+        request += "\r\n"
+        writer.write(request.encode())
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        head, _, body = raw.partition(b"\r\n\r\n")
+        text = head.decode("latin-1")
+        return text.split("\r\n", 1)[0], text, body.decode("latin-1")
+
+    async def test_unauthenticated_request_is_401(self) -> None:
+        status, _, _ = await self._get("/")
+        self.assertIn("401", status)
+
+    async def test_bootstrap_redirects_and_sets_cookie(self) -> None:
+        status, head, _ = await self._get(f"/?bootstrap={self.token}")
+        self.assertIn("302", status)
+        self.assertIn("Set-Cookie: webterm_session=", head)
+        self.assertIn("HttpOnly", head)
+        self.assertIn("SameSite=Strict", head)
+        self.assertIn("Location: /", head)
+
+    async def test_wrong_bootstrap_token_is_rejected(self) -> None:
+        status, _, _ = await self._get("/?bootstrap=wrong")
+        self.assertIn("401", status)
+
+    async def test_cookie_grants_access(self) -> None:
+        value = session_cookie_value(self.token)
+        status, _, body = await self._get("/", cookie=f"webterm_session={value}")
+        self.assertIn("200", status)
+        self.assertIn("webterm", body)
+
+    async def test_websocket_upgrade_with_cookie(self) -> None:
+        value = session_cookie_value(self.token)
+        client = await WSClient.connect(
+            "127.0.0.1",
+            self.handle.port,
+            headers={"Cookie": f"webterm_session={value}"},
+        )
+        message = await client.recv_json_until(lambda m: m.get("type") == "sessions")
+        self.assertIn("sessions", message)
+        await client.close()
+
+    async def test_websocket_upgrade_without_cookie_is_refused(self) -> None:
+        with self.assertRaises(AssertionError):
+            await WSClient.connect("127.0.0.1", self.handle.port)
 
 
 class ReaperShutdownTests(unittest.IsolatedAsyncioTestCase):
