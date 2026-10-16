@@ -35,6 +35,22 @@ def _command_title(command: list[str] | str | None) -> str | None:
     return os.path.basename(command[0]) if command else None
 
 
+def _single_argv(shell: str, command: list[str] | str) -> list[str]:
+    """Build the argv for a one-shot run.
+
+    A command string is handed to ``$SHELL -c`` so pipes, globs, and ``&&``
+    work; an argv list is executed directly.  Empty commands are rejected.
+    """
+    if isinstance(command, str):
+        if not command.strip():
+            raise ValueError("command must not be empty")
+        return [shell, "-c", command]
+    argv = list(command)
+    if not argv:
+        raise ValueError("command must not be empty")
+    return argv
+
+
 @runtime_checkable
 class Subscriber(Protocol):
     """Receives output from a session it is attached to."""
@@ -59,6 +75,7 @@ class Session:
         loop: asyncio.AbstractEventLoop,
         scrollback: int = DEFAULT_SCROLLBACK,
         on_exit: Callable[[Session], None] | None = None,
+        retain_on_exit: bool = False,
     ) -> None:
         self.id = session_id
         self.pid = pid
@@ -68,6 +85,12 @@ class Session:
         self.rows = rows
         self.exit_code: int | None = None
         self.dead = False
+        # When True the session is kept (with its scrollback and exit code)
+        # after the child exits so a caller can read the finished output.  A
+        # plain interactive shell clears this and is removed on exit.
+        self.retain_on_exit = retain_on_exit
+        self._eof = False
+        self._reaped = False
 
         self._loop = loop
         self._scrollback = max(scrollback, 0)
@@ -144,19 +167,46 @@ class Session:
             except BlockingIOError:
                 return
             except OSError:
-                self._mark_dead()
+                self._on_eof()
                 return
             if not data:
-                self._mark_dead()
+                self._on_eof()
                 return
             offset = self._total
             self._append(data)
             for subscriber in list(self._subscribers):
                 subscriber.offer_output(self, data, offset)
 
+    def _on_eof(self) -> None:
+        """The master reported EOF/EIO: every writer has closed the slave.
+
+        Stop the read callback -- the EOF condition is persistent and would
+        otherwise busy-loop -- but wait for the SIGCHLD-driven
+        :meth:`_on_child_exit` before tearing down, so the exit code is
+        recorded and no final bytes are dropped.
+        """
+        self._eof = True
+        self._remove_reader()
+        if self._reaped:
+            self._mark_dead()
+
     def _on_child_exit(self, returncode: int) -> None:
+        self._reaped = True
         self.exit_code = returncode
+        if self.dead:
+            return
+        if not self._eof:
+            # SIGCHLD can arrive before the readable callback has consumed the
+            # final bytes.  Drain the master now rather than closing the fd and
+            # losing the tail of a fast command's output.
+            self._on_readable()
         self._mark_dead()
+
+    def _remove_reader(self) -> None:
+        try:
+            self._loop.remove_reader(self.fd)
+        except (ValueError, OSError):
+            pass
 
     def _append(self, data: bytes) -> None:
         self._buffer.extend(data)
@@ -174,10 +224,7 @@ class Session:
         if self.dead:
             return
         self.dead = True
-        try:
-            self._loop.remove_reader(self.fd)
-        except (ValueError, OSError):
-            pass
+        self._remove_reader()
         try:
             self._loop.remove_writer(self.fd)
         except (ValueError, OSError):
@@ -328,6 +375,36 @@ class SessionManager:
     def get(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
 
+    def _register(
+        self,
+        pid: int,
+        fd: int,
+        title: str,
+        *,
+        cols: int,
+        rows: int,
+        loop: asyncio.AbstractEventLoop,
+        retain_on_exit: bool = False,
+    ) -> Session:
+        """Wrap a freshly forked PTY in a :class:`Session` and publish it."""
+        session_id = f"{self._counter}-{pid}"
+        session = Session(
+            session_id,
+            pid,
+            fd,
+            title,
+            cols=cols,
+            rows=rows,
+            loop=loop,
+            scrollback=self.scrollback,
+            on_exit=self._on_session_exit,
+            retain_on_exit=retain_on_exit,
+        )
+        self.sessions[session_id] = session
+        self._by_pid[pid] = session
+        self.notify()
+        return session
+
     def create(
         self,
         *,
@@ -348,20 +425,7 @@ class SessionManager:
             self._exec_child()
             os._exit(127)
 
-        session_id = f"{self._counter}-{pid}"
-        session = Session(
-            session_id,
-            pid,
-            fd,
-            title,
-            cols=cols,
-            rows=rows,
-            loop=loop,
-            scrollback=self.scrollback,
-            on_exit=self._on_session_exit,
-        )
-        self.sessions[session_id] = session
-        self._by_pid[pid] = session
+        session = self._register(pid, fd, title, cols=cols, rows=rows, loop=loop)
         if command:
             # Type the command into the interactive shell so it behaves exactly
             # as if the user entered it: errors are reported by the shell and
@@ -370,10 +434,45 @@ class SessionManager:
             # keeps working; an argv list is quoted argument by argument.
             line = (command if isinstance(command, str) else shlex.join(command)) + "\n"
             loop.call_later(0.2, session.write, line.encode())
-        self.notify()
         return session
 
-    def _exec_child(self) -> None:  # pragma: no cover - runs in the child process
+    def create_single(
+        self,
+        command: list[str] | str,
+        *,
+        cwd: str | None = None,
+        title: str | None = None,
+        cols: int = 80,
+        rows: int = 24,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> Session:
+        """Run *command* to completion in its own PTY, with no lingering shell.
+
+        Unlike :meth:`create`, the command is executed directly (``$SHELL -c``
+        for a string, ``execvpe`` for an argv list) so the session exits when
+        the command does.  The finished session is retained with its scrollback
+        and exit code until :meth:`kill` closes it, so a caller can still read
+        the output.  This is the primitive behind one-shot runs and
+        agent/orchestrator workflows.
+        """
+        argv = _single_argv(self.shell, command)
+        loop = loop or asyncio.get_running_loop()
+        self._install_reaper(loop)
+        self._counter += 1
+        if title is None:
+            title = _command_title(command) or f"shell {self._counter}"
+
+        pid, fd = pty.fork()
+        if pid == 0:  # pragma: no cover - runs in the child process
+            self._exec_single(argv, cwd)
+            os._exit(127)
+
+        return self._register(
+            pid, fd, title, cols=cols, rows=rows, loop=loop, retain_on_exit=True
+        )
+
+    def _prepare_child(self, cwd: str) -> dict[str, str]:
+        """Reset signals and build the child environment (runs in the child)."""
         # The server blocks SIGCHLD (for its reaper) and Python ignores SIGPIPE;
         # a child inheriting that state can misbehave (broken subprocess handling
         # in Node/TUI apps).  Give the new process a clean signal setup.
@@ -391,15 +490,39 @@ class SessionManager:
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("COLORTERM", "truecolor")
         try:
-            os.chdir(self.cwd)
+            os.chdir(cwd)
         except OSError:
             pass
+        return env
+
+    def _exec_child(self) -> None:  # pragma: no cover - runs in the child process
+        env = self._prepare_child(self.cwd)
         try:
             os.execvpe(self.shell, [os.path.basename(self.shell)], env)
         except OSError:
             os._exit(127)
 
+    def _exec_single(
+        self, argv: list[str], cwd: str | None
+    ) -> None:  # pragma: no cover - runs in the child process
+        env = self._prepare_child(cwd or self.cwd)
+        try:
+            os.execvpe(argv[0], argv, env)
+        except OSError:
+            os._exit(127)
+
     def _on_session_exit(self, session: Session) -> None:
+        if session.retain_on_exit:
+            # A one-shot run: keep the record, scrollback, and exit code around
+            # so a caller can read the finished output until it is closed.
+            log.info(
+                "session %s (%s) finished with code %s (retained)",
+                session.id,
+                session.title,
+                session.exit_code,
+            )
+            self.notify()
+            return
         self.sessions.pop(session.id, None)
         log.info(
             "session %s (%s) exited with code %s",
@@ -413,6 +536,14 @@ class SessionManager:
         session = self.sessions.get(session_id)
         if session is None:
             return False
+        if session.dead:
+            # A finished one-shot session: closing its tab drops the record.
+            self.sessions.pop(session_id, None)
+            self.notify()
+            return True
+        # Never retain a session the caller is actively terminating, even if
+        # it was created as a one-shot run.
+        session.retain_on_exit = False
         session.close()
         return True
 
