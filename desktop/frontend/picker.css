@@ -26,6 +26,9 @@
   --warn: #d29922;
   --sidebar-width: 20rem;
   font-size: 14px;
+  /* Tell the browser to render native widgets — selects, scrollbars, the
+     caret — in dark mode, so they match the palette instead of the OS. */
+  color-scheme: dark;
 }
 
 * {
@@ -291,6 +294,25 @@ button.ghost:hover {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg);
+  color: var(--text);
+}
+
+/* A native select ignores `background`/`color` on some platforms, so drop the
+   native chrome and draw our own chevron. */
+.field select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 1.9rem;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2016'%3E%3Cpath%20fill='none'%20stroke='%237d8799'%20stroke-width='1.5'%20d='M4%206l4%204%204-4'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.6rem center;
+  background-size: 0.7rem;
+}
+
+/* The popup list is drawn by the platform; setting these helps where it is
+   honoured and is harmless where it is not. */
+.field option {
+  background: var(--bg-elevated);
   color: var(--text);
 }
 
