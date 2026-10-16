@@ -3,6 +3,10 @@
 A :class:`Session` owns a pseudo-terminal master fd and the shell process
 attached to it.  Output is fanned out to any number of subscribers and kept in
 a bounded scrollback buffer so a browser can reattach and replay history.
+
+Sessions also carry *lineage* (``parent_id`` / ``depth``) and role metadata, so
+an agent running in one session can spawn sub-agents that stay visible in the
+client's session tree and can be collected by their parent.
 """
 
 from __future__ import annotations
@@ -12,17 +16,41 @@ import fcntl
 import logging
 import os
 import pty
+import re
 import shlex
 import signal
 import struct
 import termios
+import time
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
+from .ansi import remove_ansi
+
 DEFAULT_SCROLLBACK = 100_000
+DEFAULT_MAX_AGENT_DEPTH = 5
+DEFAULT_MAX_SESSIONS = 64
+DEFAULT_MAX_RETAINED = 32
+DEFAULT_RETAINED_TTL = 600.0
+#: How often finished one-shot sessions are swept for TTL / count limits.
+GC_INTERVAL = 30.0
 READ_SIZE = 65_536
+#: How much decoded output a text waiter keeps for cross-chunk matching.
+WAIT_WINDOW = 65_536
 
 log = logging.getLogger("webterm")
+
+
+class SessionError(Exception):
+    """A session operation was rejected (unknown parent, limit, ...)."""
+
+
+class DepthExceededError(SessionError):
+    """Spawning a child would exceed the configured agent nesting depth."""
+
+
+class SessionLimitError(SessionError):
+    """The manager is at its session cap."""
 
 
 def _command_title(command: list[str] | str | None) -> str | None:
@@ -60,6 +88,55 @@ class Subscriber(Protocol):
     def offer_exit(self, session: Session) -> None: ...
 
 
+class _TextWaiter:
+    """Subscriber that resolves as soon as a chunk matches a regex.
+
+    Matches against a decoded, optionally ANSI-stripped rolling window so a
+    pattern may span the boundary between two PTY reads.
+    """
+
+    def __init__(self, regex: re.Pattern[str], strip_ansi: bool) -> None:
+        self.regex = regex
+        self.strip_ansi = strip_ansi
+        self.event = asyncio.Event()
+        self.matched = False
+        self.match: str | None = None
+        self.offset = 0
+        self._window = ""
+
+    def offer_output(self, session: Session, data: bytes, offset: int) -> None:
+        if self.event.is_set():
+            return
+        raw = remove_ansi(data) if self.strip_ansi else data
+        self._window = (self._window + raw.decode("utf-8", "replace"))[-WAIT_WINDOW:]
+        found = self.regex.search(self._window)
+        if found is not None:
+            self.matched = True
+            self.match = found.group(0)
+            self.offset = offset + len(data)
+            self.event.set()
+
+    def offer_exit(self, session: Session) -> None:
+        self.event.set()
+
+
+class _IdleWaiter:
+    """Subscriber that records when output last arrived."""
+
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+        self.last = time.monotonic()
+        self.closed = False
+
+    def offer_output(self, session: Session, data: bytes, offset: int) -> None:
+        self.last = time.monotonic()
+        self.event.set()
+
+    def offer_exit(self, session: Session) -> None:
+        self.closed = True
+        self.event.set()
+
+
 class Session:
     """A single PTY + child process with scrollback and fan-out."""
 
@@ -76,6 +153,13 @@ class Session:
         scrollback: int = DEFAULT_SCROLLBACK,
         on_exit: Callable[[Session], None] | None = None,
         retain_on_exit: bool = False,
+        origin: str = "user",
+        parent_id: str | None = None,
+        depth: int = 0,
+        role: str = "shell",
+        agent: str | None = None,
+        task: str | None = None,
+        visibility: str = "public",
     ) -> None:
         self.id = session_id
         self.pid = pid
@@ -89,6 +173,15 @@ class Session:
         # after the child exits so a caller can read the finished output.  A
         # plain interactive shell clears this and is removed on exit.
         self.retain_on_exit = retain_on_exit
+        # Lineage and role, surfaced in ``info()`` for the client's session tree.
+        self.origin = origin
+        self.parent_id = parent_id
+        self.depth = depth
+        self.role = role
+        self.agent = agent
+        self.task = task
+        self.visibility = visibility
+        self.created_at = time.time()
         self._eof = False
         self._reaped = False
 
@@ -103,6 +196,7 @@ class Session:
         self._out = bytearray()
         self._subscribers: set[Subscriber] = set()
         self._on_exit = on_exit
+        self._exit_event = asyncio.Event()
 
         os.set_blocking(fd, False)
         loop.add_reader(fd, self._on_readable)
@@ -150,6 +244,14 @@ class Session:
             "pid": self.pid,
             "alive": not self.dead,
             "exit_code": self.exit_code,
+            "origin": self.origin,
+            "parent_id": self.parent_id,
+            "depth": self.depth,
+            "role": self.role,
+            "agent": self.agent,
+            "task": self.task,
+            "visibility": self.visibility,
+            "created_at": self.created_at,
         }
 
     # ------------------------------------------------------------- lifecycle
@@ -233,6 +335,7 @@ class Session:
             os.close(self.fd)
         except OSError:
             pass
+        self._exit_event.set()
         for subscriber in list(self._subscribers):
             subscriber.offer_exit(self)
         if self._on_exit is not None:
@@ -247,6 +350,101 @@ class Session:
         except ProcessLookupError:
             pass
         self._mark_dead()
+
+    # ------------------------------------------------------------- blocking
+
+    async def wait(self, timeout: float | None = None) -> int | None:
+        """Wait for the child to exit.
+
+        Returns the exit code, or ``None`` if *timeout* elapsed first.  Returns
+        immediately (with the recorded code) for a dead session.
+        """
+        if self.dead:
+            return self.exit_code
+        try:
+            await asyncio.wait_for(self._exit_event.wait(), timeout)
+        except TimeoutError:
+            return None
+        return self.exit_code
+
+    def capture(
+        self, since: int = 0, *, strip_ansi: bool = False
+    ) -> tuple[int, int, bytes]:
+        """Return ``(start, end, data)`` for output at or after *since*.
+
+        *end* is the absolute offset just past the returned bytes, ready to be
+        passed back as ``since`` for the next call.
+        """
+        start, data = self.replay_since(since)
+        end = start + len(data)
+        if strip_ansi:
+            data = remove_ansi(data)
+        return start, end, data
+
+    async def wait_for_text(
+        self,
+        pattern: str | re.Pattern[str],
+        *,
+        since: int = 0,
+        timeout: float | None = None,
+        strip_ansi: bool = True,
+        flags: int = 0,
+    ) -> tuple[bool, int, str | None]:
+        """Wait until *pattern* appears in the output stream.
+
+        Returns ``(matched, offset, match)`` where *offset* is the absolute byte
+        offset just past the chunk that matched.  The retained window is scanned
+        first, so a pattern already on screen matches immediately.
+        """
+        regex = pattern if isinstance(pattern, re.Pattern) else re.compile(pattern, flags)
+        _, data = self.replay_since(since)
+        window = remove_ansi(data) if strip_ansi else data
+        found = regex.search(window.decode("utf-8", "replace"))
+        if found is not None:
+            return True, self._total, found.group(0)
+
+        waiter = _TextWaiter(regex, strip_ansi)
+        self.attach(waiter)
+        try:
+            try:
+                await asyncio.wait_for(waiter.event.wait(), timeout)
+            except TimeoutError:
+                return False, self._total, None
+            return waiter.matched, waiter.offset or self._total, waiter.match
+        finally:
+            self.detach(waiter)
+
+    async def wait_for_idle(self, quiet_ms: int, *, timeout: float | None = None) -> bool:
+        """Wait until the session has produced no output for *quiet_ms*.
+
+        Returns ``True`` when the quiet period (or the session's exit) is
+        reached, ``False`` if *timeout* elapsed first.  This is the robust way
+        to detect that an interactive agent has paused.
+        """
+        quiet = max(int(quiet_ms), 0) / 1000.0
+        deadline = None if timeout is None else time.monotonic() + timeout
+        waiter = _IdleWaiter()
+        self.attach(waiter)
+        try:
+            while True:
+                waiter.event.clear()
+                now = time.monotonic()
+                if waiter.closed:
+                    return True
+                quiet_left = quiet - (now - waiter.last)
+                if quiet_left <= 0:
+                    return True
+                if deadline is not None:
+                    overall_left = deadline - now
+                    if overall_left <= 0:
+                        return False
+                    quiet_left = min(quiet_left, overall_left)
+                try:
+                    await asyncio.wait_for(waiter.event.wait(), quiet_left)
+                except TimeoutError:
+                    return True
+        finally:
+            self.detach(waiter)
 
     # ------------------------------------------------------------------- I/O
 
@@ -300,11 +498,26 @@ class SessionManager:
         *,
         scrollback: int = DEFAULT_SCROLLBACK,
         env: dict[str, str] | None = None,
+        child_env: dict[str, str] | None = None,
+        max_agent_depth: int = DEFAULT_MAX_AGENT_DEPTH,
+        max_sessions: int = DEFAULT_MAX_SESSIONS,
+        max_retained: int = DEFAULT_MAX_RETAINED,
+        retained_ttl: float | None = DEFAULT_RETAINED_TTL,
     ) -> None:
         self.shell = shell
         self.cwd = cwd
         self.scrollback = scrollback
         self.env = env
+        # Extra variables merged into every child (e.g. WEBTERM_URL); the
+        # per-session WEBTERM_* identity is added at fork time.
+        self.child_env = dict(child_env or {})
+        self.max_agent_depth = max_agent_depth
+        self.max_sessions = max_sessions
+        self.max_retained = max_retained
+        self.retained_ttl = retained_ttl
+        # Filled in once the server/socket is listening (see set_control_env).
+        self.control_socket: str | None = None
+        self.public_url: str | None = None
         self.sessions: dict[str, Session] = {}
         self._counter = 0
         self._listeners: list[Callable[[], None]] = []
@@ -312,6 +525,20 @@ class SessionManager:
         self._reaper_installed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reap_task: asyncio.Task | None = None
+        self._gc_task: asyncio.Task | None = None
+
+    # ------------------------------------------------------------ maintenance
+
+    def set_control_env(self, *, socket: str | None = None, url: str | None = None) -> None:
+        """Record the control socket / URL exported to child processes."""
+        if socket is not None:
+            self.control_socket = socket
+        if url is not None:
+            self.public_url = url
+
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Install signal reaping and the retention sweep for *loop*."""
+        self._install_reaper(loop)
 
     def _install_reaper(self, loop: asyncio.AbstractEventLoop) -> None:
         """Start reaping child processes.
@@ -329,12 +556,43 @@ class SessionManager:
         except (NotImplementedError, RuntimeError, ValueError):
             self._reap_task = loop.create_task(self._reap_forever())
         self._reaper_installed = True
+        if self._gc_task is None:
+            self._gc_task = loop.create_task(self._gc_forever())
 
     async def _reap_forever(self) -> None:
         """Fallback reaper: poll for exited children on an interval."""
         while True:
             await asyncio.sleep(self.REAP_POLL_INTERVAL)
             self._reap_children()
+
+    async def _gc_forever(self) -> None:
+        """Periodically close finished one-shot sessions past TTL or cap."""
+        while True:
+            await asyncio.sleep(GC_INTERVAL)
+            self.sweep()
+
+    def sweep(self) -> None:
+        """Close finished retained sessions that outlived TTL or the cap."""
+        now = time.time()
+        finished = sorted(
+            (s for s in self.sessions.values() if s.dead and s.retain_on_exit),
+            key=lambda s: s.created_at,
+        )
+        doomed: list[Session] = []
+        if self.retained_ttl is not None:
+            doomed.extend(s for s in finished if now - s.created_at >= self.retained_ttl)
+            remaining = [s for s in finished if s not in doomed]
+        else:
+            remaining = finished
+        if self.max_retained is not None and len(remaining) > self.max_retained:
+            doomed.extend(remaining[: len(remaining) - self.max_retained])
+        for session in doomed:
+            self._drop(session)
+
+    def _drop(self, session: Session) -> None:
+        if self.sessions.pop(session.id, None) is not None:
+            log.info("dropping finished session %s (%s)", session.id, session.title)
+            self.notify()
 
     def _remove_reaper(self) -> None:
         """Stop reaping children before the event loop closes.
@@ -344,6 +602,9 @@ class SessionManager:
         Python reports as an ignored ``OSError: [Errno 9] Bad file descriptor``.
         A fallback poll task is cancelled instead.
         """
+        if self._gc_task is not None:
+            self._gc_task.cancel()
+            self._gc_task = None
         if not self._reaper_installed:
             return
         self._reaper_installed = False
@@ -377,6 +638,8 @@ class SessionManager:
                     code = -1
                 session._on_child_exit(code)
 
+    # ---------------------------------------------------------------- queries
+
     def add_listener(self, callback: Callable[[], None]) -> None:
         self._listeners.append(callback)
 
@@ -390,11 +653,49 @@ class SessionManager:
         for callback in list(self._listeners):
             callback()
 
-    def list_info(self) -> list[dict[str, object]]:
-        return [session.info() for session in self.sessions.values()]
+    def list_info(self, *, include_private: bool = True) -> list[dict[str, object]]:
+        return [
+            session.info()
+            for session in self.sessions.values()
+            if include_private or session.visibility != "private"
+        ]
 
     def get(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
+
+    def children_of(self, session_id: str) -> list[Session]:
+        """Sessions whose ``parent_id`` is *session_id* (one level)."""
+        return [s for s in self.sessions.values() if s.parent_id == session_id]
+
+    def descendants_of(self, session_id: str) -> list[Session]:
+        """Every session below *session_id*, any depth, excluding it."""
+        found: list[Session] = []
+        stack = [session_id]
+        while stack:
+            for child in self.children_of(stack.pop()):
+                found.append(child)
+                stack.append(child.id)
+        return found
+
+    # -------------------------------------------------------------- lifecycle
+
+    def _guard(self, parent_id: str | None) -> int:
+        """Validate limits and return the child's depth (raises on refusal)."""
+        if self.max_sessions is not None and len(self.sessions) >= self.max_sessions:
+            raise SessionLimitError(
+                f"session limit reached ({self.max_sessions}); close one first"
+            )
+        if not parent_id:
+            return 0
+        parent = self.sessions.get(parent_id)
+        if parent is None:
+            return 0
+        depth = parent.depth + 1
+        if self.max_agent_depth is not None and depth > self.max_agent_depth:
+            raise DepthExceededError(
+                f"agent nesting depth {depth} exceeds the limit of {self.max_agent_depth}"
+            )
+        return depth
 
     def _register(
         self,
@@ -402,13 +703,21 @@ class SessionManager:
         fd: int,
         title: str,
         *,
+        counter: int,
         cols: int,
         rows: int,
         loop: asyncio.AbstractEventLoop,
         retain_on_exit: bool = False,
+        origin: str = "user",
+        parent_id: str | None = None,
+        depth: int = 0,
+        role: str = "shell",
+        agent: str | None = None,
+        task: str | None = None,
+        visibility: str = "public",
     ) -> Session:
         """Wrap a freshly forked PTY in a :class:`Session` and publish it."""
-        session_id = f"{self._counter}-{pid}"
+        session_id = f"{counter}-{pid}"
         session = Session(
             session_id,
             pid,
@@ -420,6 +729,13 @@ class SessionManager:
             scrollback=self.scrollback,
             on_exit=self._on_session_exit,
             retain_on_exit=retain_on_exit,
+            origin=origin,
+            parent_id=parent_id,
+            depth=depth,
+            role=role,
+            agent=agent,
+            task=task,
+            visibility=visibility,
         )
         self.sessions[session_id] = session
         self._by_pid[pid] = session
@@ -433,20 +749,45 @@ class SessionManager:
         rows: int = 24,
         title: str | None = None,
         command: list[str] | str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        parent_id: str | None = None,
+        origin: str = "user",
+        role: str = "shell",
+        agent: str | None = None,
+        task: str | None = None,
+        visibility: str = "public",
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> Session:
         loop = loop or asyncio.get_running_loop()
         self._install_reaper(loop)
+        depth = self._guard(parent_id)
         self._counter += 1
+        counter = self._counter
         if title is None:
-            title = _command_title(command) or f"shell {self._counter}"
+            title = task or _command_title(command) or f"shell {counter}"
 
         pid, fd = pty.fork()
         if pid == 0:  # pragma: no cover - runs in the child process
-            self._exec_child()
+            self._exec_child(cwd or self.cwd, env, counter, parent_id, depth, agent)
             os._exit(127)
 
-        session = self._register(pid, fd, title, cols=cols, rows=rows, loop=loop)
+        session = self._register(
+            pid,
+            fd,
+            title,
+            counter=counter,
+            cols=cols,
+            rows=rows,
+            loop=loop,
+            origin=origin,
+            parent_id=parent_id,
+            depth=depth,
+            role=role,
+            agent=agent,
+            task=task,
+            visibility=visibility,
+        )
         if command:
             # Type the command into the interactive shell so it behaves exactly
             # as if the user entered it: errors are reported by the shell and
@@ -462,9 +803,16 @@ class SessionManager:
         command: list[str] | str,
         *,
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
         title: str | None = None,
         cols: int = 80,
         rows: int = 24,
+        parent_id: str | None = None,
+        origin: str = "user",
+        role: str = "shell",
+        agent: str | None = None,
+        task: str | None = None,
+        visibility: str = "public",
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> Session:
         """Run *command* to completion in its own PTY, with no lingering shell.
@@ -474,25 +822,90 @@ class SessionManager:
         the command does.  The finished session is retained with its scrollback
         and exit code until :meth:`kill` closes it, so a caller can still read
         the output.  This is the primitive behind one-shot runs and
-        agent/orchestrator workflows.
+        agent/sub-agent workflows.
         """
         argv = _single_argv(self.shell, command)
         loop = loop or asyncio.get_running_loop()
         self._install_reaper(loop)
+        depth = self._guard(parent_id)
         self._counter += 1
+        counter = self._counter
         if title is None:
-            title = _command_title(command) or f"shell {self._counter}"
+            title = task or _command_title(command) or f"shell {counter}"
 
         pid, fd = pty.fork()
         if pid == 0:  # pragma: no cover - runs in the child process
-            self._exec_single(argv, cwd)
+            self._exec_single(argv, cwd or self.cwd, env, counter, parent_id, depth, agent)
             os._exit(127)
 
         return self._register(
-            pid, fd, title, cols=cols, rows=rows, loop=loop, retain_on_exit=True
+            pid,
+            fd,
+            title,
+            counter=counter,
+            cols=cols,
+            rows=rows,
+            loop=loop,
+            retain_on_exit=True,
+            origin=origin,
+            parent_id=parent_id,
+            depth=depth,
+            role=role,
+            agent=agent,
+            task=task,
+            visibility=visibility,
         )
 
-    def _prepare_child(self, cwd: str) -> dict[str, str]:
+    def spawn(
+        self,
+        argv: list[str],
+        *,
+        interactive: bool = False,
+        agent: str | None = None,
+        task: str | None = None,
+        title: str | None = None,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        parent_id: str | None = None,
+        visibility: str = "public",
+        cols: int = 80,
+        rows: int = 24,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> Session:
+        """Start an agent session (a sub-agent) from a resolved argv.
+
+        *interactive* keeps a shell around the agent (a TUI the human can take
+        over); otherwise the agent runs to completion as a retained one-shot.
+        """
+        common = dict(
+            cwd=cwd,
+            env=env,
+            title=title or task or _command_title(argv),
+            cols=cols,
+            rows=rows,
+            parent_id=parent_id,
+            origin="agent",
+            role="agent",
+            agent=agent,
+            task=task,
+            visibility=visibility,
+            loop=loop,
+        )
+        if interactive:
+            return self.create(command=argv, **common)
+        return self.create_single(argv, **common)
+
+    # ------------------------------------------------------------- child exec
+
+    def _prepare_child(
+        self,
+        cwd: str,
+        extra_env: dict[str, str] | None,
+        session_id: str,
+        parent_id: str | None,
+        depth: int,
+        agent: str | None,
+    ) -> dict[str, str]:
         """Reset signals and build the child environment (runs in the child)."""
         # The server blocks SIGCHLD (for its reaper) and Python ignores SIGPIPE;
         # a child inheriting that state can misbehave (broken subprocess handling
@@ -508,29 +921,62 @@ class SessionManager:
                 pass
 
         env = dict(os.environ if self.env is None else self.env)
+        env.update(self.child_env)
+        if extra_env:
+            env.update({key: str(value) for key, value in extra_env.items()})
         env.setdefault("TERM", "xterm-256color")
         env.setdefault("COLORTERM", "truecolor")
+        # Discovery for nested agents: a process can find the control socket and
+        # its own place in the session tree without any configuration.
+        if self.control_socket:
+            env["WEBTERM_SOCKET"] = self.control_socket
+        if self.public_url:
+            env["WEBTERM_URL"] = self.public_url
+        env["WEBTERM_SESSION_ID"] = session_id
+        env["WEBTERM_PARENT_SESSION"] = parent_id or ""
+        env["WEBTERM_DEPTH"] = str(depth)
+        if agent:
+            env["WEBTERM_AGENT"] = agent
         try:
             os.chdir(cwd)
         except OSError:
             pass
         return env
 
-    def _exec_child(self) -> None:  # pragma: no cover - runs in the child process
-        env = self._prepare_child(self.cwd)
+    def _exec_child(
+        self,
+        cwd: str,
+        extra_env: dict[str, str] | None,
+        counter: int,
+        parent_id: str | None,
+        depth: int,
+        agent: str | None,
+    ) -> None:  # pragma: no cover - runs in the child process
+        session_id = f"{counter}-{os.getpid()}"
+        env = self._prepare_child(cwd, extra_env, session_id, parent_id, depth, agent)
         try:
             os.execvpe(self.shell, [os.path.basename(self.shell)], env)
         except OSError:
             os._exit(127)
 
     def _exec_single(
-        self, argv: list[str], cwd: str | None
+        self,
+        argv: list[str],
+        cwd: str,
+        extra_env: dict[str, str] | None,
+        counter: int,
+        parent_id: str | None,
+        depth: int,
+        agent: str | None,
     ) -> None:  # pragma: no cover - runs in the child process
-        env = self._prepare_child(cwd or self.cwd)
+        session_id = f"{counter}-{os.getpid()}"
+        env = self._prepare_child(cwd, extra_env, session_id, parent_id, depth, agent)
         try:
             os.execvpe(argv[0], argv, env)
         except OSError:
             os._exit(127)
+
+    # ---------------------------------------------------------------- teardown
 
     def _on_session_exit(self, session: Session) -> None:
         if session.retain_on_exit:
@@ -553,13 +999,11 @@ class SessionManager:
         )
         self.notify()
 
-    def kill(self, session_id: str) -> bool:
-        session = self.sessions.get(session_id)
-        if session is None:
-            return False
+    def _close_one(self, session: Session) -> bool:
+        """Close or drop a single session, reporting whether it changed."""
         if session.dead:
-            # A finished one-shot session: closing its tab drops the record.
-            self.sessions.pop(session_id, None)
+            if self.sessions.pop(session.id, None) is None:
+                return False
             self.notify()
             return True
         # Never retain a session the caller is actively terminating, even if
@@ -567,6 +1011,28 @@ class SessionManager:
         session.retain_on_exit = False
         session.close()
         return True
+
+    def kill(self, session_id: str, *, tree: bool = True) -> list[str]:
+        """Terminate a session; by default its whole subtree.
+
+        Returns the ids actually closed.  With ``tree=True`` descendants are
+        closed before the session itself; with ``tree=False`` children are
+        orphaned to the root.
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            return []
+        targets: list[Session] = []
+        if tree:
+            targets = sorted(
+                self.descendants_of(session_id), key=lambda s: s.depth, reverse=True
+            )
+        targets.append(session)
+        killed: list[str] = []
+        for target in targets:
+            if self._close_one(target):
+                killed.append(target.id)
+        return killed
 
     def close_all(self) -> None:
         for session in list(self.sessions.values()):
