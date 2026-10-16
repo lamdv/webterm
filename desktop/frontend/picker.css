@@ -4,9 +4,12 @@
  * This file is deliberately self-contained: the picker runs on the app's own
  * origin and cannot fetch the server's stylesheet (different origin, no CORS).
  * The palette below intentionally mirrors `:root` in
- * webterm/static/style.css so that the picker and the terminal it launches look
- * like one application. The terminal UI itself is not restyled here — it is the
- * server's own UI, loaded verbatim when a window navigates to a server.
+ * `webterm/static/style.css` so that the picker and the terminal it launches
+ * look like one application. The terminal UI itself is not restyled here — it
+ * is the server's own UI, loaded verbatim when a window navigates to a server.
+ *
+ * Layout: a fixed sidebar holds the add/edit form; the server list fills the
+ * rest of the window and scrolls independently.
  */
 
 :root {
@@ -21,6 +24,7 @@
   --danger: #e5534b;
   --ok: #3fb950;
   --warn: #d29922;
+  --sidebar-width: 20rem;
   font-size: 14px;
 }
 
@@ -38,29 +42,33 @@ body {
     sans-serif;
 }
 
-body {
+/* --- shell ------------------------------------------------------------- */
+
+.layout {
   display: grid;
-  place-items: center;
-  padding: 1.5rem;
+  grid-template-columns: var(--sidebar-width) 1fr;
+  height: 100vh;
 }
 
-.picker {
-  width: 100%;
-  max-width: 30rem;
-}
-
-.picker-head {
+.sidebar {
   display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  margin-bottom: 1.5rem;
+  flex-direction: column;
+  gap: 1.5rem;
+  padding: 1.25rem;
+  border-right: 1px solid var(--border);
+  background: var(--bg-alt);
+  overflow-y: auto;
 }
 
-.picker-head button {
-  margin-left: auto;
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.5rem 1.75rem;
+  overflow-y: auto;
 }
 
-.picker-head h1 {
+.brand h1 {
   margin: 0;
   font-size: 1.4rem;
   font-weight: 600;
@@ -68,10 +76,38 @@ body {
 }
 
 .dim {
-  margin: 0;
+  margin: 0.15rem 0 0;
   color: var(--text-dim);
   font-size: 0.85rem;
 }
+
+.content-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.content-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+/* Keep the sidebar usable if the window is narrow. */
+@media (max-width: 40rem) {
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+/* --- messages ---------------------------------------------------------- */
 
 .note {
   margin: 0;
@@ -84,7 +120,7 @@ body {
 }
 
 .error {
-  margin: 0 0 1rem;
+  margin: 0;
   padding: 0.75rem 1rem;
   border: 1px solid var(--danger);
   border-radius: 8px;
@@ -98,7 +134,7 @@ body {
 
 .servers {
   list-style: none;
-  margin: 0 0 1.5rem;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -113,7 +149,7 @@ body {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.7rem 0.85rem;
+  padding: 0.75rem 0.9rem;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-alt);
@@ -144,8 +180,7 @@ body {
   border-radius: 999px;
   color: var(--text-dim);
   font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  white-space: nowrap;
 }
 
 .server-status {
@@ -208,6 +243,11 @@ button.primary {
   color: var(--accent);
 }
 
+button.danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  color: var(--danger);
+}
+
 button.ghost {
   background: transparent;
   border-color: transparent;
@@ -219,21 +259,12 @@ button.ghost:hover {
   color: var(--text);
 }
 
-button.danger {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
-  color: var(--danger);
-}
-
 /* --- add form ---------------------------------------------------------- */
 
 .add-form {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding: 1rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-alt);
 }
 
 .add-form h2 {

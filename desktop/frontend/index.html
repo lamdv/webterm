@@ -7,64 +7,72 @@
     <link rel="stylesheet" href="picker.css" />
   </head>
   <body>
-    <main class="picker">
-      <header class="picker-head">
-        <h1>webterm</h1>
-        <p class="dim">connect to a server</p>
-        <button
-          id="refresh"
-          type="button"
-          class="ghost"
-          title="Re-probe every server"
-        >
-          Refresh
-        </button>
-      </header>
+    <main class="layout">
+      <aside class="sidebar">
+        <header class="brand">
+          <h1>webterm</h1>
+          <p class="dim">connect to a server</p>
+        </header>
 
-      <p id="error" class="error" role="alert" hidden></p>
+        <form id="add-form" class="add-form" autocomplete="off">
+          <h2>Add a server</h2>
 
-      <ul id="servers" class="servers" aria-label="saved servers"></ul>
-      <p id="empty" class="note" hidden>
-        No servers yet. Add the address of a webterm server below.
-      </p>
+          <label class="field">
+            <span>Name</span>
+            <input id="name" type="text" placeholder="Dev box" required />
+          </label>
 
-      <form id="add-form" class="add-form" autocomplete="off">
-        <h2>Add a server</h2>
+          <label class="field">
+            <span>URL</span>
+            <input
+              id="url"
+              type="url"
+              placeholder="https://webterm.example.com"
+              required
+            />
+          </label>
 
-        <label class="field">
-          <span>Name</span>
-          <input id="name" type="text" placeholder="Dev box" required />
-        </label>
+          <label class="field">
+            <span>Authentication</span>
+            <select id="auth">
+              <option value="none">No auth</option>
+              <option value="token">Shared token</option>
+              <option value="browser">Browser login</option>
+            </select>
+          </label>
 
-        <label class="field">
-          <span>URL</span>
-          <input
-            id="url"
-            type="url"
-            placeholder="https://webterm.example.com"
-            required
-          />
-        </label>
+          <label id="token-row" class="field" hidden>
+            <span>Token</span>
+            <input id="token" type="password" autocomplete="off" />
+          </label>
 
-        <label class="field">
-          <span>Authentication</span>
-          <select id="auth">
-            <option value="none">None</option>
-            <option value="token">Shared token</option>
-            <option value="browser">Browser login</option>
-          </select>
-        </label>
+          <div class="form-actions">
+            <button type="submit" class="primary" id="submit">Add server</button>
+            <button type="button" id="cancel" hidden>Cancel</button>
+          </div>
+        </form>
+      </aside>
 
-        <label id="token-row" class="field" hidden>
-          <span>Token</span>
-          <input id="token" type="password" autocomplete="off" />
-        </label>
+      <section class="content">
+        <header class="content-head">
+          <h2>Servers</h2>
+          <button
+            id="refresh"
+            type="button"
+            class="ghost"
+            title="Re-probe every server"
+          >
+            Refresh
+          </button>
+        </header>
 
-        <div class="form-actions">
-          <button type="submit" class="primary" id="submit">Add server</button>
-          <button type="button" id="cancel" hidden>Cancel</button>
-        </div>
-      </form>
+        <p id="error" class="error" role="alert" hidden></p>
+
+        <ul id="servers" class="servers" aria-label="saved servers"></ul>
+        <p id="empty" class="note" hidden>
+          No servers yet. Add the address of a webterm server on the left.
+        </p>
+      </section>
     </main>
 
     <script type="module" src="app.js"></script>
