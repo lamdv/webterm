@@ -18,7 +18,12 @@
         <header id="sidebar-header">
           <span class="brand">webterm</span>
           <div id="sidebar-actions">
-            <button id="new-session" title="New session (Ctrl+Shift+N)">+ new</button>
+            <button
+              id="new-session"
+              title="New session (Ctrl+Shift+N) · long-press or right-click to name it and add a precommand"
+            >
+              + new
+            </button>
             <button
               id="sidebar-collapse"
               title="Collapse sidebar (Ctrl+Shift+B)"
@@ -67,6 +72,30 @@
           <button id="empty-new">Start a shell</button>
         </div>
       </main>
+    </div>
+    <div id="new-session-popover" class="popover" role="dialog" aria-label="New session" hidden>
+      <form id="new-session-form">
+        <label for="new-session-name">Name <span class="hint">(optional)</span></label>
+        <input
+          id="new-session-name"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Session name"
+        />
+        <label for="new-session-command">Precommand <span class="hint">(optional)</span></label>
+        <input
+          id="new-session-command"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="e.g. cd ~/src && ls"
+        />
+        <div class="popover-actions">
+          <button type="button" id="new-session-cancel">Cancel</button>
+          <button type="submit" id="new-session-create">Create</button>
+        </div>
+      </form>
     </div>
     <div id="launcher-popover" class="popover" role="dialog" aria-label="Add a command" hidden>
       <form id="launcher-form">

@@ -143,7 +143,10 @@ scheme, so no extra configuration is needed.
 
 ## Usage
 
-- **New session** — click `+ new` (or press `Ctrl` `Shift` `N`) to spawn a shell.
+- **New session** — click `+ new` (or press `Ctrl` `Shift` `N`) to spawn a
+  shell. Long-press (touch) or right-click `+ new` to open a popover where you
+  can name the shell and give it a **precommand** — a command typed into the
+  new shell once it starts, so it runs with a normal prompt waiting afterwards.
 - **Launchers** — the sidebar shows a button per `--launcher`, in a horizontally
   scrollable row. The leading **`+`** pill prompts for a command and an optional
   name, runs it in a new shell session, and keeps it as a pill (saved in

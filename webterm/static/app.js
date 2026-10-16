@@ -757,7 +757,14 @@
 
   // ---------------------------------------------------------------- actions
 
-  document.getElementById("new-session").addEventListener("click", () => createSession());
+  const newSessionButton = document.getElementById("new-session");
+  newSessionButton.addEventListener("click", () => {
+    closeNewSessionPopover();
+    createSession();
+  });
+  // Long-press (touch) or right-click opens a popover to name the shell and
+  // type a precommand into it; a plain click still starts a shell immediately.
+  attachLongPress(newSessionButton, openNewSessionPopover);
   document.getElementById("empty-new").addEventListener("click", () => createSession());
   document.getElementById("restart-server").addEventListener("click", () => {
     if (!window.confirm("Restart the server? All sessions will be closed.")) return;
@@ -908,6 +915,10 @@
   const launcherForm = document.getElementById("launcher-form");
   const launcherCommandInput = document.getElementById("launcher-command");
   const launcherNameInput = document.getElementById("launcher-name");
+  const newSessionPopover = document.getElementById("new-session-popover");
+  const newSessionForm = document.getElementById("new-session-form");
+  const newSessionNameInput = document.getElementById("new-session-name");
+  const newSessionCommandInput = document.getElementById("new-session-command");
   let addLauncherButton = null;
 
   // Show a popover beneath its anchor, flipping to stay inside the viewport.
@@ -929,8 +940,22 @@
     popover.style.top = top + "px";
   }
 
+  function openNewSessionPopover() {
+    if (!newSessionPopover) return;
+    closeLauncherPopover();
+    positionPopover(newSessionPopover, newSessionButton || newSessionPopover.parentElement);
+    newSessionNameInput.value = "";
+    newSessionCommandInput.value = "";
+    newSessionNameInput.focus();
+  }
+
+  function closeNewSessionPopover() {
+    if (newSessionPopover) newSessionPopover.hidden = true;
+  }
+
   function openLauncherPopover() {
     if (!launcherPopover) return;
+    closeNewSessionPopover();
     positionPopover(launcherPopover, addLauncherButton || launchersEl);
     launcherCommandInput.value = "";
     launcherNameInput.value = "";
@@ -940,6 +965,19 @@
   function closeLauncherPopover() {
     if (launcherPopover) launcherPopover.hidden = true;
   }
+
+  if (newSessionForm) {
+    newSessionForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const name = newSessionNameInput.value.trim();
+      const command = newSessionCommandInput.value.trim();
+      createSession(command || undefined, name || undefined);
+      closeNewSessionPopover();
+    });
+  }
+
+  const newSessionCancel = document.getElementById("new-session-cancel");
+  if (newSessionCancel) newSessionCancel.addEventListener("click", closeNewSessionPopover);
 
   if (launcherForm) {
     launcherForm.addEventListener("submit", (event) => {
@@ -961,7 +999,10 @@
   if (launcherCancel) launcherCancel.addEventListener("click", closeLauncherPopover);
 
   document.addEventListener("pointerdown", (event) => {
-    const pairs = [[launcherPopover, addLauncherButton]];
+    const pairs = [
+      [newSessionPopover, newSessionButton],
+      [launcherPopover, addLauncherButton],
+    ];
     for (const [pop, anchor] of pairs) {
       if (!pop || pop.hidden) continue;
       if (pop.contains(event.target)) continue;
@@ -972,6 +1013,7 @@
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (newSessionPopover) newSessionPopover.hidden = true;
     if (launcherPopover) launcherPopover.hidden = true;
   });
 

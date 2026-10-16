@@ -200,6 +200,15 @@ typed into the shell), while config launchers use an argv list.
 `createSession(command, title)` sizes the new session to the active terminal's
 grid and sends `{"type":"create", ...}`.
 
+### New session
+
+A plain click on `+ new` (or `Ctrl+Shift+N`, or the empty-state button) starts a
+shell immediately. A long-press or right-click on `+ new` opens the new-session
+popover (`attachLongPress`), which takes an optional name and an optional
+**precommand**. Submitting it calls `createSession(precommand, name)`; the
+server starts an interactive shell and types the precommand into it, so shell
+syntax (`&&`, pipes, globs) works and the user lands at a prompt when it exits.
+
 The `⟳` button in the sidebar header asks for confirmation (restarting closes
 all sessions), then sends `{"type":"restart"}`. The server acks with
 `restarting`, the socket drops, and the normal reconnect loop attaches to the

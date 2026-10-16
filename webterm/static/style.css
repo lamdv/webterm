@@ -244,7 +244,7 @@ body {
   color: #eaf2ff;
 }
 
-/* Popover anchored to the add-command button. */
+/* Popovers anchored to a button (new session, add-command). */
 .popover {
   position: fixed;
   z-index: 40;
@@ -312,13 +312,15 @@ body {
   background: var(--bg-elevated);
 }
 
-#launcher-create {
+#launcher-create,
+#new-session-create {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
 
-#launcher-create:hover {
+#launcher-create:hover,
+#new-session-create:hover {
   background: #6cb0ff;
   border-color: #6cb0ff;
   color: #fff;
