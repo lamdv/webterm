@@ -97,16 +97,23 @@ body {
   font-weight: 600;
 }
 
-/* Keep the sidebar usable if the window is narrow. */
+/* Narrow windows become one scrolling document: the add form scrolls away
+   with the list instead of holding a fixed band of the viewport. */
 @media (max-width: 40rem) {
   .layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
+    display: block;
+    height: auto;
+    min-height: 100vh;
   }
 
   .sidebar {
     border-right: none;
     border-bottom: 1px solid var(--border);
+    overflow: visible;
+  }
+
+  .content {
+    overflow: visible;
   }
 }
 
