@@ -35,6 +35,7 @@
 
   /** @type {Map<string, {term: any, wrapper: HTMLElement}>} */
   const terminals = new Map();
+  const piViews = new Map();
   const subscribed = new Set();
   let activeId = localStorage.getItem("webterm.active") || null;
   let sessionsMeta = [];
@@ -45,6 +46,8 @@
   let restarting = false;
   let editingTabId = null;
   const userLaunchers = loadUserLaunchers();
+  const pendingRequests = new Map();
+  let requestCounter = 0;
 
   const CONFIG = window.WEBTERM_CONFIG || {};
   const DEFAULT_FONT_FAMILY =
@@ -267,6 +270,28 @@
     }
   }
 
+  function request(message, timeout = 30000) {
+    return new Promise((resolve, reject) => {
+      const id = "ui-" + ++requestCounter;
+      const timer = setTimeout(() => {
+        pendingRequests.delete(id);
+        reject(new Error("request timed out"));
+      }, timeout);
+      pendingRequests.set(id, { resolve, reject, timer });
+      send({ ...message, id });
+    });
+  }
+
+  function sendPiCommand(sessionId, command) {
+    return request({ type: "pi", session_id: sessionId, command }).then((result) => {
+      const response = result && result.pi_response;
+      if (response && response.success === false) {
+        throw new Error(response.error || "pi command failed");
+      }
+      return response;
+    });
+  }
+
   // ----------------------------------------------------------- control plane
 
   function handleControl(message) {
@@ -276,9 +301,34 @@
         break;
       case "attached":
         break;
+      case "pi_resync":
+      case "pi_event": {
+        const entry = piViews.get(message.session_id);
+        if (entry && entry.view) entry.view.handle(message);
+        break;
+      }
       case "exit":
         handleExit(message.session_id);
         break;
+      case "result": {
+        const pending = pendingRequests.get(message.id);
+        if (pending) {
+          pendingRequests.delete(message.id);
+          clearTimeout(pending.timer);
+          pending.resolve(message.result || {});
+        }
+        break;
+      }
+      case "error": {
+        const pending = pendingRequests.get(message.id);
+        if (pending) {
+          pendingRequests.delete(message.id);
+          clearTimeout(pending.timer);
+          const error = message.error || {};
+          pending.reject(new Error(error.message || "request failed"));
+        }
+        break;
+      }
       case "restarting":
         // Broadcast to every client when the server is about to re-exec.
         restarting = true;
@@ -291,11 +341,19 @@
 
   function reconcileSessions(sessions) {
     sessionsMeta = sessions;
-    const knownBefore = new Set(terminals.keys());
+    const knownBefore = new Set([...terminals.keys(), ...piViews.keys()]);
     const seen = new Set();
 
     for (const session of sessions) {
       seen.add(session.id);
+      if (session.kind === "pi") {
+        ensurePiView(session);
+        if (!subscribed.has(session.id)) {
+          subscribed.add(session.id);
+          send({ type: "subscribe", session_id: session.id });
+        }
+        continue;
+      }
       const entry = ensureTerminal(session);
       if (!subscribed.has(session.id)) {
         subscribed.add(session.id);
@@ -311,6 +369,14 @@
         entry.term.dispose();
         entry.wrapper.remove();
         terminals.delete(id);
+        subscribed.delete(id);
+      }
+    }
+    for (const [id, entry] of Array.from(piViews)) {
+      if (!seen.has(id)) {
+        if (entry.view) entry.view.destroy();
+        entry.wrapper.remove();
+        piViews.delete(id);
         subscribed.delete(id);
       }
     }
@@ -541,6 +607,30 @@
     return 1;
   }
 
+  function ensurePiView(session) {
+    let entry = piViews.get(session.id);
+    if (entry) return entry;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "pi-wrapper";
+    wrapper.dataset.sessionId = session.id;
+    terminalArea.appendChild(wrapper);
+
+    let view = null;
+    if (window.WebtermPi) {
+      view = window.WebtermPi.create(session, {
+        onCommand: (command) => sendPiCommand(session.id, command),
+      });
+      wrapper.appendChild(view.element);
+    } else {
+      wrapper.textContent = "Failed to load the pi view.";
+    }
+
+    entry = { wrapper, view };
+    piViews.set(session.id, entry);
+    return entry;
+  }
+
   function ensureTerminal(session) {
     if (terminals.has(session.id)) return terminals.get(session.id);
 
@@ -652,6 +742,12 @@
   }
 
   function handleExit(sessionId) {
+    const piEntry = piViews.get(sessionId);
+    if (piEntry) {
+      if (piEntry.view) piEntry.view.setExited();
+      subscribed.delete(sessionId);
+      return;
+    }
     const entry = terminals.get(sessionId);
     if (entry) {
       entry.term.write("\r\n\x1b[2m[process exited]\x1b[0m\r\n");
@@ -696,6 +792,7 @@
       const tab = document.createElement("li");
       tab.className = "tab";
       if (depth > 0) tab.classList.add("nested");
+      if (session.kind === "pi") tab.classList.add("pi");
       if (session.role === "agent") tab.classList.add("agent");
       if (!session.alive) tab.classList.add("exited");
       tab.dataset.id = session.id;
@@ -810,10 +907,21 @@
     for (const [sessionId, entry] of terminals) {
       entry.wrapper.classList.toggle("active", sessionId === id);
     }
+    for (const [sessionId, entry] of piViews) {
+      entry.wrapper.classList.toggle("active", sessionId === id);
+    }
     updateActiveTab();
     // On a narrow viewport, choosing a shell gets the switcher out of the way.
     if (isNarrow()) {
       applySidebarCollapsed(true);
+    }
+    const piEntry = id ? piViews.get(id) : null;
+    if (piEntry && piEntry.view) {
+      requestAnimationFrame(() => {
+        if (editingTabId !== null) return;
+        piEntry.view.activate();
+      });
+      return;
     }
     const entry = id ? terminals.get(id) : null;
     if (entry) {
@@ -1032,8 +1140,19 @@
     launchersEl.appendChild(add);
     addLauncherButton = add;
 
+    if (CONFIG.pi && CONFIG.pi.available) appendPiLauncher();
+
     for (const launcher of configuredLaunchers()) appendLauncher(launcher, false);
     for (const launcher of userLaunchers) appendLauncher(launcher, true);
+  }
+
+  function appendPiLauncher() {
+    const pill = document.createElement("button");
+    pill.className = "launcher launcher-pi";
+    pill.textContent = "pi chat";
+    pill.title = "Start a structured pi session (RPC)";
+    pill.addEventListener("click", createPiSession);
+    launchersEl.appendChild(pill);
   }
 
   function configuredLaunchers() {
@@ -1287,6 +1406,80 @@
       /* ignore malformed storage */
     }
     return [];
+  }
+
+  function showPiTrustDialog(cwd, onChoose) {
+    const overlay = document.createElement("div");
+    overlay.className = "pi-trust-overlay";
+    const dialog = document.createElement("div");
+    dialog.className = "pi-trust-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", "Start pi session");
+
+    const heading = document.createElement("h2");
+    heading.textContent = "Start pi?";
+    const copy = document.createElement("p");
+    copy.textContent =
+      "Project settings and extensions in this folder run with your user privileges. " +
+      "Choose whether pi should load them.";
+    const path = document.createElement("code");
+    path.className = "pi-trust-path";
+    path.textContent = cwd || "server default directory";
+
+    const actions = document.createElement("div");
+    actions.className = "pi-trust-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    const deny = document.createElement("button");
+    deny.type = "button";
+    deny.textContent = "Start without project settings";
+    const allow = document.createElement("button");
+    allow.type = "button";
+    allow.className = "trust";
+    allow.textContent = "Start with project settings";
+    actions.append(cancel, deny, allow);
+    dialog.append(heading, copy, path, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    let settled = false;
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      onChoose(value);
+    }
+    function onKey(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(null);
+      }
+    }
+    cancel.addEventListener("click", () => finish(null));
+    deny.addEventListener("click", () => finish("deny"));
+    allow.addEventListener("click", () => finish("allow"));
+    overlay.addEventListener("pointerdown", (event) => {
+      if (event.target === overlay) finish(null);
+    });
+    document.addEventListener("keydown", onKey, true);
+    deny.focus();
+  }
+
+  function createPiSession() {
+    const pi = CONFIG.pi;
+    if (!pi || !pi.available) {
+      window.alert("pi is not installed on the server.");
+      return;
+    }
+    const cwd = pi.cwd || "";
+    showPiTrustDialog(cwd, (trust) => {
+      if (!trust) return;
+      activateNext = true;
+      send({ type: "create", mode: "pi", cwd: pi.cwd, title: "pi", trust });
+    });
   }
 
   function createSession(command, title) {

@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlencode
 
 from . import __version__
 from .control import ControlServer, default_control_socket, looks_like_tcp
+from .pi import PiError, PiSession, PiSessionClosed
 from .session import (
     DepthExceededError,
     Session,
@@ -333,7 +334,10 @@ class ClientConnection:
         self.control = control
         self.peer = peer
         self.profiles = profiles or {}
-        self.out_queue: asyncio.Queue[tuple[str, int, bytes | None]] = asyncio.Queue(maxsize=2048)
+        # Items are tagged: ("output", (session_id, offset, bytes)),
+        # ("exit", session_id), or ("json", message).  One queue keeps
+        # terminal bytes and pi events in the order they were produced.
+        self.out_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue(maxsize=2048)
         self.subscriptions = set()
         self.closed = False
         self._backpressure = False
@@ -342,16 +346,24 @@ class ClientConnection:
     # ---------------------------------------------------- Subscriber protocol
 
     def offer_output(self, session, data: bytes, offset: int) -> None:
-        self._offer((session.id, offset, data))
+        self._offer(("output", (session.id, offset, data)))
 
     def offer_exit(self, session) -> None:
-        self._offer((session.id, 0, None))
+        self._offer(("exit", session.id))
+
+    def offer_pi_event(self, session, seq: int, record: dict) -> None:
+        self._offer_json(
+            {"type": "pi_event", "session_id": session.id, "seq": seq, "record": record}
+        )
+
+    def _offer_json(self, message: dict) -> None:
+        self._offer(("json", message))
 
     def request_close(self) -> None:
         """Ask the connection loop to shut down (used during server stop)."""
         self._closed_event.set()
 
-    def _offer(self, item: tuple[str, int, bytes | None]) -> None:
+    def _offer(self, item: tuple[str, object]) -> None:
         if self.closed:
             return
         try:
@@ -413,16 +425,20 @@ class ClientConnection:
 
     async def _send_loop(self) -> None:
         while True:
-            session_id, offset, payload = await self.out_queue.get()
-            if payload is None:
-                await self.transport.send_json({"type": "exit", "session_id": session_id})
+            kind, payload = await self.out_queue.get()
+            if kind == "exit":
+                await self.transport.send_json({"type": "exit", "session_id": payload})
                 continue
+            if kind == "json":
+                await self.transport.send_json(payload)
+                continue
+            session_id, offset, data = payload
             sid = session_id.encode("utf-8")
             # The 8-byte big-endian offset marks where this payload begins in
             # the session's absolute output stream, so the client can resume
             # exactly (skipping overlap or detecting a gap) after a reconnect.
             await self.transport.send_binary(
-                bytes([len(sid)]) + sid + struct.pack(">Q", offset) + payload
+                bytes([len(sid)]) + sid + struct.pack(">Q", offset) + data
             )
 
     async def _read_loop(self) -> None:
@@ -498,6 +514,8 @@ class ClientConnection:
         if kind == "resize":
             self._resize(message)
             return {"ok": True}
+        if kind == "pi":
+            return await self._pi_command(message)
         if kind == "list":
             result = {
                 "sessions": self.manager.list_info(include_private=self.peer == "agent")
@@ -536,16 +554,23 @@ class ClientConnection:
             await self.send_sessions()
             return None
         if session not in self.subscriptions:
+            self.subscriptions.add(session)
+            session.attach(self)
+            if session.kind == "pi":
+                # Queue the attach and snapshot through the send loop so live
+                # events cannot overtake them.  Events produced during the
+                # snapshot carry a higher seq and are applied by the client.
+                self._offer_json({"type": "attached", "session": session.info()})
+                await self._send_pi_snapshot(session)
+                return session.info()
             # Attach and enqueue the replay without awaiting in between so no
             # live output can slip ahead of the replayed scrollback.  When the
             # client's ``since`` offset has been evicted the replay starts at
             # the earliest retained byte; the client notices the gap from the
             # frame offset and resets its terminal.
-            self.subscriptions.add(session)
-            session.attach(self)
             start, replay = session.replay_since(since)
             if replay:
-                self._offer((session.id, start, replay))
+                self._offer(("output", (session.id, start, replay)))
         await self.transport.send_json(
             {
                 "type": "attached",
@@ -554,13 +579,29 @@ class ClientConnection:
         )
         return session.info()
 
+    async def _send_pi_snapshot(self, session: PiSession) -> None:
+        try:
+            snapshot = await session.snapshot()
+        except (PiError, PiSessionClosed, TimeoutError) as exc:
+            log.warning("pi session %s: snapshot failed: %s", session.id, exc)
+            return
+        self._offer_json(
+            {
+                "type": "pi_resync",
+                "session_id": session.id,
+                **snapshot,
+            }
+        )
+
     def _unsubscribe(self, session_id: str) -> None:
         session = self.manager.get(session_id)
         if session is not None:
             session.detach(self)
             self.subscriptions.discard(session)
 
-    def _create(self, message: dict) -> Session:
+    def _create(self, message: dict) -> Session | PiSession:
+        if message.get("mode") == "pi" or message.get("kind") == "pi":
+            return self._create_pi(message)
         command = _valid_command(message.get("command"))
         try:
             return self.manager.create(
@@ -580,6 +621,66 @@ class ClientConnection:
         except SessionError as exc:
             raise _request_error(exc) from exc
 
+    def _create_pi(self, message: dict) -> PiSession:
+        trust = message.get("trust")
+        if trust not in (None, "allow", "deny"):
+            raise RequestError("bad_request", "trust must be 'allow' or 'deny'")
+        trusted = trust == "allow"
+        argv = list(self.manager.pi_command)
+        argv.extend(["--mode", "rpc", "--no-session"])
+        argv.append("--approve" if trusted else "--no-approve")
+        provider = message.get("provider")
+        model = message.get("model")
+        if provider:
+            argv.extend(["--provider", str(provider)])
+        if model:
+            argv.extend(["--model", str(model)])
+        try:
+            session = self.manager.create_pi(
+                argv,
+                cwd=message.get("cwd"),
+                env=message.get("env"),
+                title=message.get("title"),
+                parent_id=message.get("parent_id"),
+                origin=str(message.get("origin", "user")),
+                role=str(message.get("role", "agent")),
+                agent=message.get("agent"),
+                task=message.get("task"),
+                visibility=str(message.get("visibility", "public")),
+                trusted=trusted,
+            )
+        except SessionError as exc:
+            raise _request_error(exc) from exc
+        except (OSError, ValueError) as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        prompt = message.get("prompt")
+        if isinstance(prompt, str) and prompt:
+            try:
+                session.send_command({"type": "prompt", "message": prompt})
+            except PiSessionClosed:
+                pass
+        return session
+
+    async def _pi_command(self, message: dict) -> dict:
+        session = self._require(message)
+        if session.kind != "pi":
+            raise RequestError("bad_request", "session is not a pi session")
+        command = message.get("command")
+        if not isinstance(command, dict):
+            raise RequestError("bad_request", "command must be an object")
+        timeout = _optional_float(message.get("timeout"))
+        try:
+            response = await session.rpc(
+                command, timeout=timeout if timeout is not None else 30.0
+            )
+        except TimeoutError as exc:
+            raise RequestError("timeout", "pi command timed out") from exc
+        except PiSessionClosed as exc:
+            raise RequestError("not_found", str(exc)) from exc
+        except PiError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        return {"pi_response": response}
+
     def _rename(self, message: dict) -> dict:
         session = self._require(message)
         session.title = str(message.get("title", session.title))[:200]
@@ -590,6 +691,8 @@ class ClientConnection:
         session = self.manager.get(str(message.get("session_id", "")))
         if session is None:
             return
+        if session.kind != "shell":
+            raise RequestError("bad_request", "pi sessions take RPC commands, not input")
         data = message.get("data", "")
         if isinstance(data, str) and data:
             session.write(data.encode("utf-8"))
@@ -597,6 +700,8 @@ class ClientConnection:
     def _resize(self, message: dict) -> None:
         session = self.manager.get(str(message.get("session_id", "")))
         if session is not None:
+            if session.kind != "shell":
+                raise RequestError("bad_request", "pi sessions do not have a terminal size")
             session.resize(
                 int(message.get("cols", session.cols)),
                 int(message.get("rows", session.rows)),
@@ -604,7 +709,7 @@ class ClientConnection:
 
     # -------------------------------------------------------- agent verbs
 
-    def _require(self, message: dict) -> Session:
+    def _require(self, message: dict) -> Session | PiSession:
         session = self.manager.get(str(message.get("session_id", "")))
         if session is None:
             raise RequestError("not_found", f"unknown session {message.get('session_id')!r}")
@@ -702,6 +807,8 @@ class ClientConnection:
 
     def _send(self, message: dict) -> dict:
         session = self._require(message)
+        if session.kind != "shell":
+            raise RequestError("bad_request", "pi sessions take RPC commands, not input")
         data = message.get("data", "")
         if not isinstance(data, str):
             raise RequestError("bad_request", "data must be a string")
@@ -713,6 +820,8 @@ class ClientConnection:
 
     def _capture(self, message: dict) -> dict:
         session = self._require(message)
+        if session.kind != "shell":
+            raise RequestError("bad_request", "pi sessions have no byte stream to capture")
         fmt = str(message.get("format", "base64"))
         start, end, data = session.capture(
             _nonneg_int(message.get("since")), strip_ansi=bool(message.get("strip_ansi", False))
@@ -728,6 +837,8 @@ class ClientConnection:
         session = self._require(message)
         until = str(message.get("until", "exit"))
         timeout = _optional_float(message.get("timeout"))
+        if until != "exit" and session.kind != "shell":
+            raise RequestError("bad_request", "only until=exit is available for pi sessions")
         if until == "text":
             pattern = message.get("pattern")
             if not isinstance(pattern, str) or not pattern:

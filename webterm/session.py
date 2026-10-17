@@ -26,6 +26,7 @@ from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from .ansi import remove_ansi
+from .pi import PiSession, fork_pi
 
 DEFAULT_SCROLLBACK = 100_000
 DEFAULT_MAX_AGENT_DEPTH = 5
@@ -140,6 +141,8 @@ class _IdleWaiter:
 class Session:
     """A single PTY + child process with scrollback and fan-out."""
 
+    kind = "shell"
+
     def __init__(
         self,
         session_id: str,
@@ -169,6 +172,7 @@ class Session:
         self.rows = rows
         self.exit_code: int | None = None
         self.dead = False
+        self.closing = False
         # When True the session is kept (with its scrollback and exit code)
         # after the child exits so a caller can read the finished output.  A
         # plain interactive shell clears this and is removed on exit.
@@ -239,10 +243,12 @@ class Session:
         return {
             "id": self.id,
             "title": self.title,
+            "kind": self.kind,
             "cols": self.cols,
             "rows": self.rows,
             "pid": self.pid,
             "alive": not self.dead,
+            "closing": self.closing,
             "exit_code": self.exit_code,
             "origin": self.origin,
             "parent_id": self.parent_id,
@@ -503,6 +509,7 @@ class SessionManager:
         max_sessions: int = DEFAULT_MAX_SESSIONS,
         max_retained: int = DEFAULT_MAX_RETAINED,
         retained_ttl: float | None = DEFAULT_RETAINED_TTL,
+        pi_command: list[str] | None = None,
     ) -> None:
         self.shell = shell
         self.cwd = cwd
@@ -515,13 +522,14 @@ class SessionManager:
         self.max_sessions = max_sessions
         self.max_retained = max_retained
         self.retained_ttl = retained_ttl
+        self.pi_command = list(pi_command) if pi_command else ["pi"]
         # Filled in once the server/socket is listening (see set_control_env).
         self.control_socket: str | None = None
         self.public_url: str | None = None
-        self.sessions: dict[str, Session] = {}
+        self.sessions: dict[str, Session | PiSession] = {}
         self._counter = 0
         self._listeners: list[Callable[[], None]] = []
-        self._by_pid: dict[int, Session] = {}
+        self._by_pid: dict[int, Session | PiSession] = {}
         self._reaper_installed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reap_task: asyncio.Task | None = None
@@ -575,10 +583,14 @@ class SessionManager:
         """Close finished retained sessions that outlived TTL or the cap."""
         now = time.time()
         finished = sorted(
-            (s for s in self.sessions.values() if s.dead and s.retain_on_exit),
+            (
+                s
+                for s in self.sessions.values()
+                if s.dead and s.retain_on_exit and getattr(s, "kind", "shell") != "pi"
+            ),
             key=lambda s: s.created_at,
         )
-        doomed: list[Session] = []
+        doomed: list[Session | PiSession] = []
         if self.retained_ttl is not None:
             doomed.extend(s for s in finished if now - s.created_at >= self.retained_ttl)
             remaining = [s for s in finished if s not in doomed]
@@ -589,7 +601,7 @@ class SessionManager:
         for session in doomed:
             self._drop(session)
 
-    def _drop(self, session: Session) -> None:
+    def _drop(self, session: Session | PiSession) -> None:
         if self.sessions.pop(session.id, None) is not None:
             log.info("dropping finished session %s (%s)", session.id, session.title)
             self.notify()
@@ -660,16 +672,16 @@ class SessionManager:
             if include_private or session.visibility != "private"
         ]
 
-    def get(self, session_id: str) -> Session | None:
+    def get(self, session_id: str) -> Session | PiSession | None:
         return self.sessions.get(session_id)
 
-    def children_of(self, session_id: str) -> list[Session]:
+    def children_of(self, session_id: str) -> list[Session | PiSession]:
         """Sessions whose ``parent_id`` is *session_id* (one level)."""
         return [s for s in self.sessions.values() if s.parent_id == session_id]
 
-    def descendants_of(self, session_id: str) -> list[Session]:
+    def descendants_of(self, session_id: str) -> list[Session | PiSession]:
         """Every session below *session_id*, any depth, excluding it."""
-        found: list[Session] = []
+        found: list[Session | PiSession] = []
         stack = [session_id]
         while stack:
             for child in self.children_of(stack.pop()):
@@ -856,6 +868,70 @@ class SessionManager:
             visibility=visibility,
         )
 
+    def create_pi(
+        self,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        title: str | None = None,
+        parent_id: str | None = None,
+        origin: str = "user",
+        role: str = "agent",
+        agent: str | None = None,
+        task: str | None = None,
+        visibility: str = "public",
+        trusted: bool | None = None,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> PiSession:
+        """Start a pi RPC session from a fully resolved argv.
+
+        The caller supplies ``--mode rpc`` and trust/session flags; the manager
+        owns lineage, limits, environment preparation, and reaping.
+        """
+        loop = loop or asyncio.get_running_loop()
+        self._install_reaper(loop)
+        depth = self._guard(parent_id)
+        self._counter += 1
+        counter = self._counter
+        session_cwd = os.path.abspath(os.path.expanduser(cwd or self.cwd))
+        pid, stdin_fd, stdout_fd, stderr_fd = fork_pi(
+            self,
+            argv,
+            cwd=session_cwd,
+            env=env,
+            counter=counter,
+            parent_id=parent_id,
+            depth=depth,
+            agent=agent,
+        )
+        session_id = f"{counter}-{pid}"
+        session = PiSession(
+            session_id,
+            pid,
+            stdin_fd,
+            stdout_fd,
+            stderr_fd,
+            title or task or _command_title(argv) or f"pi {counter}",
+            cwd=session_cwd,
+            loop=loop,
+            on_exit=self._on_session_exit,
+            on_change=self.notify,
+            retain_on_exit=True,
+            origin=origin,
+            parent_id=parent_id,
+            depth=depth,
+            role=role,
+            agent=agent,
+            task=task,
+            visibility=visibility,
+            trusted=trusted,
+        )
+        self.sessions[session_id] = session
+        self._by_pid[pid] = session
+        self.notify()
+        return session
+
     def spawn(
         self,
         argv: list[str],
@@ -978,10 +1054,10 @@ class SessionManager:
 
     # ---------------------------------------------------------------- teardown
 
-    def _on_session_exit(self, session: Session) -> None:
+    def _on_session_exit(self, session: Session | PiSession) -> None:
         if session.retain_on_exit:
-            # A one-shot run: keep the record, scrollback, and exit code around
-            # so a caller can read the finished output until it is closed.
+            # A one-shot run or pi conversation: keep the record and output
+            # around so a caller can read it until the session is closed.
             log.info(
                 "session %s (%s) finished with code %s (retained)",
                 session.id,
@@ -999,13 +1075,15 @@ class SessionManager:
         )
         self.notify()
 
-    def _close_one(self, session: Session) -> bool:
+    def _close_one(self, session: Session | PiSession) -> bool:
         """Close or drop a single session, reporting whether it changed."""
         if session.dead:
             if self.sessions.pop(session.id, None) is None:
                 return False
             self.notify()
             return True
+        if session.closing:
+            return False
         # Never retain a session the caller is actively terminating, even if
         # it was created as a one-shot run.
         session.retain_on_exit = False
@@ -1022,7 +1100,7 @@ class SessionManager:
         session = self.sessions.get(session_id)
         if session is None:
             return []
-        targets: list[Session] = []
+        targets: list[Session | PiSession] = []
         if tree:
             targets = sorted(
                 self.descendants_of(session_id), key=lambda s: s.depth, reverse=True
@@ -1036,5 +1114,9 @@ class SessionManager:
 
     def close_all(self) -> None:
         for session in list(self.sessions.values()):
-            session.close()
+            force_close = getattr(session, "force_close", None)
+            if force_close is not None:
+                force_close()
+            else:
+                session.close()
         self._remove_reaper()

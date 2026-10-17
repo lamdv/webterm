@@ -13,6 +13,7 @@ for the client see [frontend.md](frontend.md).
 | `webterm/__main__.py` | CLI entry point: argument parsing, config assembly, `asyncio.run`. |
 | `webterm/server.py` | HTTP static serving, WebSocket upgrade, `ClientConnection` command loop and fan-out, shutdown. |
 | `webterm/session.py` | `Session` (PTY + scrollback + subscribers + lineage) and `SessionManager` (spawn, reap, list, kill, limits, GC). |
+| `webterm/pi.py` | `PiSession`: a `pi --mode rpc` child over three pipes, JSONL event fan-out, snapshot/resync, and two-phase close. |
 | `webterm/websocket.py` | Minimal RFC 6455 server: handshake, framing, fragmentation, ping/pong/close. |
 | `webterm/transport.py` | `Transport` protocol and `FramedTransport` (length-prefixed frames for the control socket). |
 | `webterm/control.py` | Local `AF_UNIX` control listener, discovery file, peer-credential check. |

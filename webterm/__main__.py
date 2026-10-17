@@ -251,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         max_sessions=args.max_sessions,
         max_retained=args.max_retained,
         retained_ttl=None if args.retained_ttl < 0 else args.retained_ttl,
+        pi_command=[shutil.which("pi") or "pi"],
     )
 
     config: dict[str, object] = {}
@@ -288,6 +289,10 @@ def main(argv: list[str] | None = None) -> int:
             launchers.append({"label": "pi agent", "command": [pi]})
     if launchers:
         config["launchers"] = launchers
+    config["pi"] = {
+        "available": shutil.which("pi") is not None,
+        "cwd": os.path.abspath(os.path.expanduser(cwd)),
+    }
 
     profiles = parse_agents(args.agent, args.agent_interactive, parser.error)
     if not profiles:

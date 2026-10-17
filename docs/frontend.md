@@ -14,6 +14,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/index.html` | Document shell and DOM skeleton. |
 | `webterm/static/style.css` | All styling and CSS custom properties. |
 | `webterm/static/app.js` | Client logic (a single IIFE). |
+| `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
 
 ### Load order
@@ -24,7 +25,8 @@ layout and the structure of `app.js`. For the server side see
 2. `/style.css`.
 3. `xterm.js` from jsDelivr (pinned, `integrity`, `crossorigin`).
 4. `/config.js` (generated).
-5. `/app.js`.
+5. `/pi.js`.
+6. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -49,6 +51,7 @@ sections:
 | Socket | `connect`, `send`, `setStatus`, reconnect backoff. |
 | Control plane | `handleControl`, `reconcileSessions`, `ensureTerminal`. |
 | Tab / view | `renderTabs`, `activate`, `startRename` (inline tab rename). |
+| Pi view | `ensurePiView`, pi trust dialog, `createPiSession` launcher. |
 | Resize | `fit`, `cellSize`, `domCellSize`, `refitAll`. |
 | Actions | Launchers, `createSession`, keyboard shortcuts. |
 | Boot | Feature check, initial render, `connect()`. |
