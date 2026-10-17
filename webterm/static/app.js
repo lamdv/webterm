@@ -5,6 +5,7 @@
   const terminalArea = document.getElementById("terminal-area");
   const sessionsList = document.getElementById("sessions");
   const launchersEl = document.getElementById("launchers");
+  const sidebarActionsEl = document.getElementById("sidebar-actions");
   const emptyState = document.getElementById("empty-state");
   const statusDot = document.getElementById("status-dot");
   const statusText = document.getElementById("status-text");
@@ -1169,6 +1170,9 @@
   function renderLaunchers() {
     if (!launchersEl) return;
     launchersEl.innerHTML = "";
+    if (sidebarActionsEl) {
+      for (const old of sidebarActionsEl.querySelectorAll(".launcher-pi-header")) old.remove();
+    }
 
     const add = document.createElement("button");
     add.className = "launcher launcher-add";
@@ -1179,7 +1183,6 @@
     addLauncherButton = add;
 
     if (CONFIG.pi && CONFIG.pi.available) appendPiLauncher();
-    if (CONFIG.pi && CONFIG.pi.available && CONFIG.pi.sessionDir) appendPiResumeLauncher();
 
     for (const launcher of configuredLaunchers()) appendLauncher(launcher, false);
     for (const launcher of userLaunchers) appendLauncher(launcher, true);
@@ -1187,20 +1190,16 @@
 
   function appendPiLauncher() {
     const pill = document.createElement("button");
-    pill.className = "launcher launcher-pi";
+    pill.className = "launcher launcher-pi launcher-pi-header";
     pill.textContent = "pi chat";
-    pill.title = "Start a structured pi session (RPC)";
+    const canResume = Boolean(CONFIG.pi && CONFIG.pi.sessionDir);
+    pill.title = canResume
+      ? "Click: new pi chat · Long-press or right-click: resume"
+      : "Start a structured pi session (RPC)";
     pill.addEventListener("click", createPiSession);
-    launchersEl.appendChild(pill);
-  }
-
-  function appendPiResumeLauncher() {
-    const pill = document.createElement("button");
-    pill.className = "launcher launcher-pi launcher-pi-resume";
-    pill.textContent = "pi resume";
-    pill.title = "Resume a persisted pi session";
-    pill.addEventListener("click", createPiResumeSession);
-    launchersEl.appendChild(pill);
+    if (canResume) attachLongPress(pill, createPiResumeSession);
+    if (sidebarActionsEl) sidebarActionsEl.appendChild(pill);
+    else launchersEl.appendChild(pill);
   }
 
   function configuredLaunchers() {
@@ -1586,25 +1585,23 @@
       : "Project settings and extensions in this folder run with your user privileges. " +
         "Choose whether pi should load them.";
 
-    const pathRow = document.createElement("div");
-    pathRow.className = "pi-trust-path-row";
+    const pathWrap = document.createElement("div");
+    pathWrap.className = "pi-trust-path-wrap";
     const path = document.createElement("input");
     path.type = "text";
     path.className = "pi-trust-path";
-    path.value = cwd || "";
+    path.value = cwd ? cwd.replace(/\/+$/, "") + "/" : "";
     path.placeholder = "Server directory";
     path.setAttribute("aria-label", "Session directory");
-    const go = document.createElement("button");
-    go.type = "button";
-    go.textContent = "Go";
-    const up = document.createElement("button");
-    up.type = "button";
-    up.textContent = "Up";
-    up.disabled = true;
-    pathRow.append(path, go, up);
-
-    const browser = document.createElement("div");
-    browser.className = "pi-trust-browser";
+    path.setAttribute("aria-autocomplete", "list");
+    path.setAttribute("aria-expanded", "false");
+    path.setAttribute("autocomplete", "off");
+    path.setAttribute("spellcheck", "false");
+    const suggestions = document.createElement("div");
+    suggestions.className = "pi-trust-suggestions";
+    suggestions.setAttribute("role", "listbox");
+    suggestions.hidden = true;
+    pathWrap.append(path, suggestions);
 
     const actions = document.createElement("div");
     actions.className = "pi-trust-actions";
@@ -1619,70 +1616,134 @@
     allow.className = "trust";
     allow.textContent = "Start with project settings";
     actions.append(cancel, deny, allow);
-    dialog.append(heading, copy, pathRow, browser, actions);
-    if (opts.resume) {
-      path.disabled = true;
-      go.hidden = true;
-      up.hidden = true;
-      browser.hidden = true;
-    }
+    dialog.append(heading, copy, pathWrap, actions);
+    if (opts.resume) path.disabled = true;
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
     let settled = false;
     let choosing = false;
-    let current = { path: cwd || "", parent: null };
+    let selectedPath = cwd || "";
     let listSeq = 0;
+    let suggestionItems = [];
+    let activeIndex = -1;
 
-    function directoryButton(label, target) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "pi-trust-dir";
-      button.textContent = label;
-      button.title = target;
-      button.addEventListener("click", () => navigate(target));
-      return button;
+    function splitPath(value) {
+      if (value === "~") return { dir: "~", prefix: "" };
+      const slash = value.lastIndexOf("/");
+      if (slash < 0) return { dir: "", prefix: value };
+      return {
+        dir: slash === 0 ? "/" : value.slice(0, slash),
+        prefix: value.slice(slash + 1),
+      };
     }
 
-    function renderDirs(result) {
-      browser.replaceChildren();
-      if (result.parent) browser.appendChild(directoryButton("../", result.parent));
-      for (const dir of result.dirs || []) {
-        browser.appendChild(directoryButton(dir.name + "/", dir.path));
+    function hideSuggestions() {
+      suggestions.hidden = true;
+      suggestions.replaceChildren();
+      suggestionItems = [];
+      activeIndex = -1;
+      path.setAttribute("aria-expanded", "false");
+    }
+
+    function showPathError(text) {
+      suggestionItems = [];
+      activeIndex = -1;
+      suggestions.replaceChildren();
+      const row = document.createElement("div");
+      row.className = "pi-trust-suggestion pi-trust-suggestion-empty";
+      row.textContent = text || "Cannot open directory";
+      suggestions.appendChild(row);
+      suggestions.hidden = false;
+      path.setAttribute("aria-expanded", "true");
+    }
+
+    function setActive(index) {
+      if (index === activeIndex) return;
+      activeIndex = index;
+      const nodes = suggestions.querySelectorAll(".pi-trust-suggestion");
+      nodes.forEach((node, nodeIndex) => {
+        node.classList.toggle("active", nodeIndex === index);
+      });
+      const active = nodes[index];
+      if (active && typeof active.scrollIntoView === "function") {
+        active.scrollIntoView({ block: "nearest" });
       }
-      if (result.truncated) {
-        const more = document.createElement("div");
-        more.className = "pi-trust-empty";
-        more.textContent = "More entries not shown";
-        browser.appendChild(more);
-      }
-      if (!browser.children.length) {
+    }
+
+    function selectSuggestion(dir) {
+      selectedPath = dir.path;
+      path.value = dir.path === "/" ? "/" : dir.path + "/";
+      hideSuggestions();
+      path.focus();
+    }
+
+    function renderSuggestions(items) {
+      suggestionItems = items;
+      activeIndex = -1;
+      suggestions.replaceChildren();
+      if (!items.length) {
         const empty = document.createElement("div");
-        empty.className = "pi-trust-empty";
-        empty.textContent = "No subdirectories";
-        browser.appendChild(empty);
+        empty.className = "pi-trust-suggestion pi-trust-suggestion-empty";
+        empty.textContent = "No matching subfolders";
+        suggestions.appendChild(empty);
+      } else {
+        items.forEach((dir, index) => {
+          const item = document.createElement("button");
+          item.type = "button";
+          item.className = "pi-trust-suggestion";
+          item.textContent = dir.name + "/";
+          item.title = dir.path;
+          item.setAttribute("role", "option");
+          item.addEventListener("mousedown", (event) => event.preventDefault());
+          item.addEventListener("click", () => selectSuggestion(dir));
+          item.addEventListener("pointermove", () => setActive(index));
+          suggestions.appendChild(item);
+        });
       }
+      suggestions.hidden = false;
+      path.setAttribute("aria-expanded", "true");
     }
 
-    async function navigate(target) {
+    async function loadSuggestions(value) {
+      if (opts.resume) return;
       const seq = ++listSeq;
-      browser.textContent = "Loading…";
+      const { dir, prefix } = splitPath(value);
       try {
-        const result = await request({ type: "list_dirs", path: String(target || "") });
+        const result = await request({ type: "list_dirs", path: dir });
         if (settled || seq !== listSeq) return;
-        current = result;
-        path.value = result.path;
-        up.disabled = !result.parent;
-        renderDirs(result);
+        const needle = prefix.toLowerCase();
+        const items = (result.dirs || []).filter((entry) =>
+          entry.name.toLowerCase().startsWith(needle)
+        );
+        renderSuggestions(items);
       } catch (error) {
         if (settled || seq !== listSeq) return;
-        browser.replaceChildren();
-        const failure = document.createElement("div");
-        failure.className = "pi-trust-empty";
-        failure.textContent =
-          error && error.message ? error.message : "Cannot open directory";
-        browser.appendChild(failure);
-        up.disabled = true;
+        hideSuggestions();
+      }
+    }
+
+    async function acceptPath() {
+      const target = path.value.trim();
+      if (!target) {
+        hideSuggestions();
+        return;
+      }
+      const seq = ++listSeq;
+      try {
+        const result = await request({ type: "list_dirs", path: target });
+        if (settled || seq !== listSeq) return;
+        selectedPath = result.path;
+        path.value = result.path;
+        hideSuggestions();
+        path.blur();
+      } catch (error) {
+        if (settled || seq !== listSeq) return;
+        if (suggestionItems.length) {
+          selectSuggestion(suggestionItems[Math.max(0, activeIndex)]);
+        } else {
+          showPathError(error && error.message ? error.message : "Cannot open directory");
+        }
       }
     }
 
@@ -1691,13 +1752,17 @@
       settled = true;
       document.removeEventListener("keydown", onKey, true);
       overlay.remove();
-      onChoose(value, path.value.trim());
+      onChoose(value, selectedPath);
     }
 
     async function choose(value) {
       if (settled || choosing) return;
-      const target = path.value.trim();
-      if (!target || target === current.path) {
+      if (opts.resume) {
+        finish(value);
+        return;
+      }
+      const target = path.value.trim() || selectedPath;
+      if (!target || target === selectedPath) {
         finish(value);
         return;
       }
@@ -1705,36 +1770,62 @@
       try {
         const result = await request({ type: "list_dirs", path: target });
         if (settled) return;
+        selectedPath = result.path;
         path.value = result.path;
         finish(value);
       } catch (error) {
         if (settled) return;
-        browser.replaceChildren();
-        const failure = document.createElement("div");
-        failure.className = "pi-trust-empty";
-        failure.textContent =
-          error && error.message ? error.message : "Cannot open directory";
-        browser.appendChild(failure);
+        showPathError(error && error.message ? error.message : "Cannot open directory");
+        path.focus();
       } finally {
         choosing = false;
       }
     }
 
     function onKey(event) {
-      if (event.key === "Escape") {
+      if (event.key !== "Escape") return;
+      if (!suggestions.hidden) {
         event.preventDefault();
-        finish(null);
+        event.stopPropagation();
+        hideSuggestions();
+        path.focus();
+        return;
       }
+      event.preventDefault();
+      finish(null);
     }
-    path.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        navigate(path.value);
-      }
+
+    path.addEventListener("focus", () => loadSuggestions(path.value));
+    path.addEventListener("input", () => loadSuggestions(path.value));
+    path.addEventListener("blur", () => {
+      setTimeout(() => {
+        if (document.activeElement !== path) hideSuggestions();
+      }, 120);
     });
-    go.addEventListener("click", () => navigate(path.value));
-    up.addEventListener("click", () => {
-      if (current.parent) navigate(current.parent);
+    path.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (suggestions.hidden) {
+          loadSuggestions(path.value);
+        } else if (suggestionItems.length) {
+          setActive((activeIndex + 1) % suggestionItems.length);
+        }
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (suggestions.hidden) {
+          loadSuggestions(path.value);
+        } else if (suggestionItems.length) {
+          const next = activeIndex < 0 ? suggestionItems.length - 1 : activeIndex - 1;
+          setActive((next + suggestionItems.length) % suggestionItems.length);
+        }
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        if (!suggestions.hidden && activeIndex >= 0 && suggestionItems[activeIndex]) {
+          selectSuggestion(suggestionItems[activeIndex]);
+        } else {
+          acceptPath();
+        }
+      }
     });
     cancel.addEventListener("click", () => finish(null));
     deny.addEventListener("click", () => choose("deny"));
@@ -1743,8 +1834,13 @@
       if (event.target === overlay) finish(null);
     });
     document.addEventListener("keydown", onKey, true);
-    navigate(path.value);
-    deny.focus();
+    if (opts.resume) {
+      deny.focus();
+    } else {
+      path.focus();
+      const end = path.value.length;
+      if (typeof path.setSelectionRange === "function") path.setSelectionRange(end, end);
+    }
   }
 
   function createPiSession() {

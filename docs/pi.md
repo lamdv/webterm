@@ -222,10 +222,10 @@ Pi keeps its grouping under the root
 parses only the first `session` header line per file, sorting newest first.
 Paths from the browser are resolved with `realpath` and rejected unless they
 are under the root. `create(mode:"pi", resume:<path>)` reopens one with
-`--session <path>`; the browser's **pi resume** launcher lists those files and
-then asks the same explicit project-trust question as a fresh launch. The raw
-RPC channel is still equivalent to shell access, so root validation is
-accident prevention rather than a security boundary.
+`--session <path>`; the browser's **pi chat** button opens the resume picker on
+long-press or right-click, then asks the same explicit project-trust question as
+a fresh launch. The raw RPC channel is still equivalent to shell access, so
+root validation is accident prevention rather than a security boundary.
 
 `pi_export` writes HTML into `<root>/exports/` and can also resolve the live
 JSONL session file. Both are fetched through the authenticated `/pi/download`

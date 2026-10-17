@@ -73,16 +73,24 @@ body {
 
 #sidebar-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
-  padding: 12px 12px;
+  padding: 10px;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 
+.sidebar-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 #sidebar-actions {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 6px;
 }
@@ -104,9 +112,14 @@ body {
   color: #eaf2ff;
   border: 1px solid var(--accent);
   border-radius: 6px;
-  padding: 3px 10px;
+  padding: 3px 8px;
   font-size: 12px;
   cursor: pointer;
+}
+
+#sidebar-actions .launcher-pi-header {
+  padding: 3px 8px;
+  font-size: 12px;
 }
 
 #new-session:hover {
@@ -1060,15 +1073,13 @@ button,
   line-height: 1.45;
 }
 
-.pi-trust-path-row {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 8px;
+.pi-trust-path-wrap {
+  position: relative;
+  margin-bottom: 12px;
 }
 
 .pi-trust-path {
-  flex: 1 1 auto;
-  min-width: 0;
+  width: 100%;
   padding: 7px 9px;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -1083,25 +1094,55 @@ button,
   border-color: var(--accent);
 }
 
-.pi-trust-path-row button {
-  padding: 6px 10px;
+.pi-trust-path:disabled {
+  opacity: 0.6;
+}
+
+.pi-trust-suggestions {
+  max-height: 180px;
+  margin-top: 4px;
+  padding: 4px;
+  overflow-y: auto;
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 5px;
+}
+
+.pi-trust-suggestions[hidden] {
+  display: none;
+}
+
+.pi-trust-suggestion {
+  display: block;
+  width: 100%;
+  padding: 5px 7px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 4px;
   background: transparent;
   color: var(--text);
   font: inherit;
   font-size: 12px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.pi-trust-path-row button:hover:not(:disabled) {
-  border-color: var(--accent);
+.pi-trust-suggestion:hover,
+.pi-trust-suggestion.active {
   background: var(--bg-elevated);
+  color: #eaf2ff;
 }
 
-.pi-trust-path-row button:disabled {
-  opacity: 0.4;
+.pi-trust-suggestion-empty {
+  color: var(--text-dim);
   cursor: default;
+}
+
+.pi-trust-suggestion-empty:hover {
+  background: transparent;
+  color: var(--text-dim);
 }
 
 .pi-trust-browser {
@@ -1112,24 +1153,6 @@ button,
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 5px;
-}
-
-.pi-trust-dir {
-  display: block;
-  width: 100%;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.pi-trust-dir:hover {
-  background: var(--bg-elevated);
 }
 
 .pi-trust-empty {
@@ -1166,6 +1189,8 @@ button,
 }
 
 @media (hover: none), (pointer: coarse) {
+  .pi-trust-path,
+  .pi-trust-suggestion,
   .pi-input,
   .pi-command-name {
     font-size: 16px;
