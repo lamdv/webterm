@@ -27,6 +27,27 @@
     return textFromContent(message.content);
   }
 
+  const HIGHLIGHT = window.WebtermHighlight || null;
+
+  function renderPlain(parent, text) {
+    parent.appendChild(el("div", "pi-text", String(text || "")));
+  }
+
+  function renderText(parent, text) {
+    if (HIGHLIGHT) HIGHLIGHT.renderText(parent, text);
+    else renderPlain(parent, text);
+  }
+
+  function renderCode(parent, text, lang, options) {
+    if (HIGHLIGHT) HIGHLIGHT.renderCode(parent, text, lang, options);
+    else parent.appendChild(el("pre", "pi-pre", String(text || "")));
+  }
+
+  function renderOutput(parent, text, options) {
+    if (HIGHLIGHT) HIGHLIGHT.renderOutput(parent, text, options);
+    else parent.appendChild(el("pre", "pi-pre", String(text || "")));
+  }
+
   const BUILTIN_COMMANDS = [
     { name: "new", description: "Start a new session", source: "webterm" },
     { name: "compact", description: "Compact the conversation", source: "webterm" },
@@ -49,6 +70,12 @@
     const banner = el("div", "pi-banner");
     banner.hidden = true;
     const messagesEl = el("div", "pi-messages");
+    let stickToBottom = true;
+    messagesEl.addEventListener("scroll", () => {
+      const distance =
+        messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+      stickToBottom = distance < 40;
+    });
     const queueEl = el("div", "pi-queue");
     queueEl.hidden = true;
     const paletteEl = el("div", "pi-command-palette");
@@ -170,7 +197,7 @@
     function appendBlock(parent, block) {
       if (!block || typeof block !== "object") return;
       if (block.type === "text") {
-        parent.appendChild(el("div", "pi-text", block.text || ""));
+        renderText(parent, block.text || "");
       } else if (block.type === "thinking") {
         if (block.redacted && !block.thinking) return;
         parent.appendChild(el("div", "pi-text pi-thinking", block.thinking || ""));
@@ -198,9 +225,9 @@
         } catch (e) {
           args = String((execution && execution.args) || block.arguments || "");
         }
-        details.appendChild(el("pre", "pi-pre", args));
+        renderCode(details, args, "json", { header: false });
         if (execution && execution.output) {
-          details.appendChild(el("pre", "pi-pre", execution.output));
+          renderOutput(details, execution.output, { toolName: name });
         }
         parent.appendChild(details);
       } else if (block.type === "image") {
@@ -218,7 +245,7 @@
           (message.toolName || "tool") + (message.isError ? " result · error" : " result"),
           false
         );
-        details.appendChild(el("pre", "pi-pre", messageText(message)));
+        renderOutput(details, messageText(message), { toolName: message.toolName });
         messagesEl.appendChild(details);
         return;
       }
@@ -229,12 +256,12 @@
           row.appendChild(el("div", "pi-error", message.errorMessage));
         }
         if (!content.length && messageText(message)) {
-          row.appendChild(el("div", "pi-text", messageText(message)));
+          renderText(row, messageText(message));
         }
         for (const block of content) appendBlock(row, block);
       } else {
         row.appendChild(el("div", "pi-role", role));
-        row.appendChild(el("div", "pi-text", messageText(message)));
+        renderText(row, messageText(message));
       }
       messagesEl.appendChild(row);
     }
@@ -247,8 +274,8 @@
         (tool.toolName || "tool") + " · " + status,
         true
       );
-      if (tool.args) details.appendChild(el("pre", "pi-pre", tool.args));
-      if (tool.output) details.appendChild(el("pre", "pi-pre", tool.output));
+      if (tool.args) renderCode(details, tool.args, "json", { header: false });
+      if (tool.output) renderOutput(details, tool.output, { toolName: tool.toolName });
       messagesEl.appendChild(details);
     }
 
@@ -614,6 +641,8 @@
 
     function render() {
       renderHeader();
+      const previousTop = messagesEl.scrollTop;
+      const followBottom = stickToBottom;
       for (const tool of state.liveTools.values()) tool.rendered = false;
       messagesEl.replaceChildren();
       for (const item of state.messages) appendMessage(item.message, false);
@@ -628,7 +657,7 @@
       }
       renderQueue();
       renderUiWidgets();
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      messagesEl.scrollTop = followBottom ? messagesEl.scrollHeight : previousTop;
     }
 
     let renderQueued = false;

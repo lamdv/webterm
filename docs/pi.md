@@ -8,8 +8,8 @@ messages, tool calls, and agent status without emulating the TUI in xterm.
 Status: **P0–P2 and the core P4 work implemented; P3 started.** The server,
 browser chat view, queue/steer controls, slash commands, managed session
 storage, resume picker, export, tree/fork/clone, extension UI, and pi subagent
-orchestration are in place. Transcript search, image paste, and further mobile
-polish remain. Tracking issue: #10. For the existing PTY-based pi launcher,
+orchestration plus safe fenced-code and unified-diff highlighting (#11) are in
+place. Transcript search, image paste, and further mobile polish remain. Tracking issue: #10. For the existing PTY-based pi launcher,
 nothing changes: it stays as the escape hatch for TUI-only features.
 
 ## Goals

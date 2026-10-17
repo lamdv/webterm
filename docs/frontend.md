@@ -14,6 +14,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/index.html` | Document shell and DOM skeleton. |
 | `webterm/static/style.css` | All styling and CSS custom properties. |
 | `webterm/static/app.js` | Client logic (a single IIFE). |
+| `webterm/static/highlight.js` | Safe fenced-code and diff highlighter, exposed as `window.WebtermHighlight`. |
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
 
@@ -25,8 +26,9 @@ layout and the structure of `app.js`. For the server side see
 2. `/style.css`.
 3. `xterm.js` from jsDelivr (pinned, `integrity`, `crossorigin`).
 4. `/config.js` (generated).
-5. `/pi.js`.
-6. `/app.js`.
+5. `/highlight.js`.
+6. `/pi.js`.
+7. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -174,6 +176,15 @@ generic RPC envelope (`onCommand`), an explicit snapshot refresh (`onRefresh`),
 and `pi_export` (`onExport`). The composer recognizes webterm built-ins
 (`/new`, `/compact`, `/reload`, `/fork`, `/clone`, `/tree`, `/export`) and
 merges pi's `get_commands` results for extension/template/skill commands.
+
+Model text is rendered through `WebtermHighlight.renderText()`, which splits
+fenced code blocks into DOM-only highlighted `<pre>` nodes. Tool arguments are
+highlighted as JSON, and tool output is classified as a unified diff when
+possible (`@@`, `+++`/`---`, `+`/`-` lines) with line-level colors. Unknown
+languages fall back to plain preformatted text. The highlighter never uses
+`innerHTML`; token spans are built with `textContent`. Token arrays are cached
+by language+content to keep streaming re-renders cheap, and the transcript
+keeps its scroll position unless the viewer is already near the bottom.
 
 Before a pi process starts, the trust dialog always asks whether project
 settings/extensions may load. The resume launcher lists persisted sessions via
