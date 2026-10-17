@@ -37,6 +37,8 @@
     const banner = el("div", "pi-banner");
     banner.hidden = true;
     const messagesEl = el("div", "pi-messages");
+    const queueEl = el("div", "pi-queue");
+    queueEl.hidden = true;
 
     const form = el("form", "pi-composer");
     const input = el("textarea", "pi-input");
@@ -44,20 +46,29 @@
     input.placeholder = "Message pi… (Enter to send, Shift+Enter for a newline)";
     input.setAttribute("aria-label", "Message pi");
     const actions = el("div", "pi-composer-actions");
+    const modeSelect = el("select", "pi-queue-mode");
+    modeSelect.setAttribute("aria-label", "Queued message behavior");
+    const steerOption = el("option", "", "Steer");
+    steerOption.value = "steer";
+    const followOption = el("option", "", "Follow up");
+    followOption.value = "followUp";
+    modeSelect.append(steerOption, followOption);
+    modeSelect.value = "steer";
     const stopButton = el("button", "pi-stop", "Stop");
     stopButton.type = "button";
     const sendButton = el("button", "pi-send", "Send");
     sendButton.type = "submit";
-    actions.append(stopButton, sendButton);
+    actions.append(modeSelect, stopButton, sendButton);
     form.append(input, actions);
 
-    root.append(header, banner, messagesEl, form);
+    root.append(header, banner, messagesEl, queueEl, form);
 
     const state = {
       seq: -1,
       messages: [],
       live: null,
       liveTools: new Map(),
+      queues: { steering: [], followUp: [] },
       state: {},
       busy: false,
       exited: false,
@@ -83,20 +94,29 @@
       if (model) bits.push(model);
       if (info.thinkingLevel) bits.push("thinking " + info.thinkingLevel);
       if (info.messageCount) bits.push(info.messageCount + " messages");
+      if (info.pendingMessageCount) bits.push(info.pendingMessageCount + " queued");
       statusEl.textContent = bits.join(" · ");
       statusEl.classList.toggle("busy", state.busy);
       statusEl.classList.toggle("exited", state.exited);
       input.disabled = state.exited;
-      sendButton.disabled = state.exited || state.busy;
+      sendButton.disabled = state.exited;
       stopButton.disabled = state.exited || !state.busy;
+      modeSelect.disabled = state.exited;
+      modeSelect.hidden = !state.busy || state.exited;
+      sendButton.textContent = state.busy
+        ? modeSelect.value === "followUp"
+          ? "Follow up"
+          : "Steer"
+        : "Send";
       input.placeholder = state.busy
-        ? "pi is working… (Stop to abort)"
+        ? "pi is working… (Enter to queue, Shift+Enter for a newline, Esc to stop)"
         : "Message pi… (Enter to send, Shift+Enter for a newline)";
     }
 
     const openState = new Map();
     const objectKeys = new WeakMap();
     let nextObjectKey = 0;
+    let queueKey = "";
 
     function keyFor(object, prefix) {
       let key = objectKeys.get(object);
@@ -200,6 +220,37 @@
       messagesEl.appendChild(details);
     }
 
+    function appendQueueChip(parent, kind, text) {
+      const chip = el("div", "pi-queue-chip " + kind);
+      chip.appendChild(el("span", "pi-queue-kind", kind === "steer" ? "steer" : "follow-up"));
+      chip.appendChild(el("span", "pi-queue-text", String(text || "")));
+      chip.title = String(text || "");
+      parent.appendChild(chip);
+    }
+
+    function renderQueue() {
+      const steering = state.queues.steering || [];
+      const followUp = state.queues.followUp || [];
+      const total = steering.length + followUp.length;
+      const key = JSON.stringify([steering, followUp]);
+      if (key === queueKey) return;
+      queueKey = key;
+      queueEl.replaceChildren();
+      queueEl.hidden = total === 0;
+      if (!total) return;
+      const head = el("div", "pi-queue-head");
+      head.appendChild(el("span", "pi-queue-title", total + " queued"));
+      const clearButton = el("button", "pi-queue-clear", "Clear");
+      clearButton.type = "button";
+      clearButton.addEventListener("click", clearQueue);
+      head.appendChild(clearButton);
+      queueEl.appendChild(head);
+      const list = el("div", "pi-queue-list");
+      for (const text of steering) appendQueueChip(list, "steer", text);
+      for (const text of followUp) appendQueueChip(list, "follow-up", text);
+      queueEl.appendChild(list);
+    }
+
     function render() {
       renderHeader();
       for (const tool of state.liveTools.values()) tool.rendered = false;
@@ -214,6 +265,7 @@
           el("div", "pi-empty", "No messages yet. Create a pi session and send a prompt.")
         );
       }
+      renderQueue();
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -232,6 +284,7 @@
       state.state = message.state || {};
       state.live = null;
       state.liveTools.clear();
+      state.queues = { steering: [], followUp: [] };
       openState.clear();
       state.busy = Boolean(state.state.isStreaming);
       state.error = "";
@@ -338,6 +391,8 @@
           if (message && message.role === "assistant") {
             state.messages.push({ message });
             state.live = null;
+          } else if (message && message.role === "user") {
+            state.messages.push({ message });
           }
           break;
         }
@@ -388,11 +443,17 @@
         case "extension_error":
           setBanner("extension error: " + (record.error || "unknown"));
           break;
-        case "queue_update":
-          if (typeof record.pendingMessageCount === "number") {
+        case "queue_update": {
+          if (Array.isArray(record.steering) || Array.isArray(record.followUp)) {
+            const steering = Array.isArray(record.steering) ? record.steering : [];
+            const followUp = Array.isArray(record.followUp) ? record.followUp : [];
+            state.queues = { steering, followUp };
+            state.state.pendingMessageCount = steering.length + followUp.length;
+          } else if (typeof record.pendingMessageCount === "number") {
             state.state.pendingMessageCount = record.pendingMessageCount;
           }
           break;
+        }
         default:
           break;
       }
@@ -410,27 +471,70 @@
       }
     }
 
-    function commandError(error) {
-      state.busy = false;
+    function commandError(error, keepBusy) {
+      if (!keepBusy) state.busy = false;
       setBanner(error && error.message ? error.message : "pi command failed");
       render();
+    }
+
+    function restoreQueuedText(data) {
+      if (!data) return;
+      const parts = [];
+      for (const key of ["steering", "followUp"]) {
+        const items = Array.isArray(data[key]) ? data[key] : [];
+        for (const item of items) {
+          if (typeof item === "string" && item) parts.push(item);
+        }
+      }
+      if (!parts.length) return;
+      const current = input.value.replace(/\s+$/, "");
+      input.value = current ? current + "\n" + parts.join("\n") : parts.join("\n");
+      if (!state.exited) input.focus();
+    }
+
+    function clearQueue() {
+      const result = options.onCommand({ type: "clear_queue" });
+      Promise.resolve(result)
+        .then((response) => {
+          restoreQueuedText(response && response.data);
+          state.queues = { steering: [], followUp: [] };
+          state.state.pendingMessageCount = 0;
+          render();
+        })
+        .catch((error) => commandError(error, true));
     }
 
     function sendPrompt() {
       const text = input.value.trim();
       if (!text || state.exited) return;
-      state.messages.push({ message: { role: "user", content: text } });
-      state.busy = true;
+      const wasBusy = state.busy;
+      const command = { type: "prompt", message: text };
+      if (wasBusy) command.streamingBehavior = modeSelect.value;
       input.value = "";
       setBanner("");
-      const result = options.onCommand({ type: "prompt", message: text });
-      if (result && typeof result.catch === "function") result.catch(commandError);
+      if (!wasBusy) state.busy = true;
+      const result = options.onCommand(command);
+      if (result && typeof result.catch === "function") {
+        result.catch((error) => {
+          if (!input.value.trim()) input.value = text;
+          commandError(error, wasBusy);
+        });
+      }
       render();
     }
 
     function abort() {
-      const result = options.onCommand({ type: "abort" });
-      if (result && typeof result.catch === "function") result.catch(commandError);
+      if (state.exited || !state.busy) return;
+      const result = options.onCommand({ type: "clear_queue" });
+      Promise.resolve(result)
+        .then((response) => {
+          restoreQueuedText(response && response.data);
+          state.queues = { steering: [], followUp: [] };
+          state.state.pendingMessageCount = 0;
+          render();
+          return options.onCommand({ type: "abort" });
+        })
+        .catch((error) => commandError(error, true));
     }
 
     function setExited() {
@@ -438,6 +542,8 @@
       state.busy = false;
       state.live = null;
       state.liveTools.clear();
+      state.queues = { steering: [], followUp: [] };
+      state.state.pendingMessageCount = 0;
       render();
     }
 
@@ -454,6 +560,7 @@
         abort();
       }
     });
+    modeSelect.addEventListener("change", renderHeader);
     stopButton.addEventListener("click", abort);
 
     render();

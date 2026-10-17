@@ -812,6 +812,80 @@ button,
   color: var(--danger);
 }
 
+.pi-queue {
+  padding: 8px 16px;
+  background: var(--bg-alt);
+}
+
+.pi-queue[hidden] {
+  display: none;
+}
+
+.pi-queue-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.pi-queue-title {
+  flex: 1 1 auto;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pi-queue-clear {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pi-queue-clear:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.pi-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.pi-queue-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.pi-queue-kind {
+  flex: 0 0 64px;
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pi-queue-chip.follow-up .pi-queue-kind {
+  color: var(--warn);
+}
+
+.pi-queue-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .pi-composer {
   display: flex;
   gap: 8px;
@@ -842,6 +916,21 @@ button,
 .pi-composer-actions {
   display: flex;
   gap: 6px;
+}
+
+.pi-queue-mode {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pi-queue-mode[hidden] {
+  display: none;
 }
 
 .pi-composer button {
