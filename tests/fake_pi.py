@@ -148,7 +148,70 @@ def main() -> int:
             )
         elif kind == "prompt":
             respond(request_id, "prompt", {"disposition": "started"})
-            emit_prompt_events(str(command.get("message", "hello")))
+            message = str(command.get("message", "hello"))
+            if "ask" in message.lower():
+                send(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "ui-1",
+                        "method": "confirm",
+                        "title": "Continue?",
+                        "message": "The fake extension wants a decision.",
+                    }
+                )
+            elif "notify" in message.lower():
+                send(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "ui-notify",
+                        "method": "notify",
+                        "message": "fake notification",
+                        "notifyType": "warning",
+                    }
+                )
+                send(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "ui-status",
+                        "method": "setStatus",
+                        "statusKey": "fake",
+                        "statusText": "working",
+                    }
+                )
+                send(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "ui-widget",
+                        "method": "setWidget",
+                        "widgetKey": "fake",
+                        "widgetLines": ["widget line"],
+                        "widgetPlacement": "aboveEditor",
+                    }
+                )
+                send(
+                    {
+                        "type": "extension_ui_request",
+                        "id": "ui-title",
+                        "method": "setTitle",
+                        "title": "fake title",
+                    }
+                )
+                send({"type": "agent_settled"})
+            else:
+                emit_prompt_events(message)
+        elif kind == "extension_ui_response":
+            ack_file = os.environ.get("FAKE_PI_UI_ACK_FILE")
+            if ack_file:
+                with open(ack_file, "w", encoding="utf-8") as handle:
+                    json.dump(command, handle)
+            send(
+                {
+                    "type": "extension_ui_response",
+                    "id": command.get("id"),
+                    "response": command,
+                }
+            )
+            send({"type": "agent_settled"})
         elif kind == "set_session_name":
             name = str(command.get("name", "")).strip()
             respond(request_id, "set_session_name", {})

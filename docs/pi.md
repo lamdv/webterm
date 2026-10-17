@@ -5,12 +5,12 @@ webterm, alongside ordinary shell sessions. The goal is a browser chat client
 for a headless `pi --mode rpc` process: remote, persistent, and able to show
 messages, tool calls, and agent status without emulating the TUI in xterm.
 
-Status: **P0–P2 implemented.** The server, browser chat view, queue/steer
-controls, slash commands, managed session storage, resume picker, export, and
-tree/fork/clone are in place. Extension dialogs, notifications, image paste,
-and subagents remain P3/P4 work. Tracking issue: #10. For the existing
-PTY-based pi launcher, nothing changes: it stays as the escape hatch for
-TUI-only features.
+Status: **P0–P2 implemented; P3 started.** The server, browser chat view,
+queue/steer controls, slash commands, managed session storage, resume picker,
+export, tree/fork/clone, and extension UI dialogs/widgets/notifications are in
+place. Transcript search, image paste, and subagents remain. Tracking issue:
+#10. For the existing PTY-based pi launcher, nothing changes: it stays as the
+escape hatch for TUI-only features.
 
 ## Goals
 
@@ -232,7 +232,8 @@ age or count, never a file backing a live session.
 
 ## Extension dialogs
 
-Dialog state is server-owned, not client-local:
+Implemented in `PiSession` and `webterm/static/pi.js`. Dialog state is
+server-owned, not client-local:
 
 - Queue `extension_ui_request` items per session with the pi request id,
   method, text, options, timeout, and creation time.
@@ -254,9 +255,12 @@ Unattended policy:
 | `deny` | Cancel immediately when no client is attached | Agent-origin sessions |
 | `auto` | Wait a configurable grace period, then cancel | Optional |
 
-On a webterm timeout, send `cancelled: true` for select/input/editor and
-`confirmed: false` for confirm. Post a visible system note; never deny
-silently.
+On a webterm timeout, remove the queued dialog and broadcast
+`pi_ui_resolved` with `reason: "timeout"`; pi resolves its own side. The
+browser shows a warning toast rather than denying silently. Agent-origin
+sessions with no attached viewer are cancelled immediately. Responses are
+validated server-side (`confirm` booleans, `select` values must be one of the
+offered options) and the raw response envelope is never exposed to browsers.
 
 Fire-and-forget methods are session state. `notify` is broadcast; `setStatus`,
 `setWidget`, `setTitle`, and `setEditorText` keep the latest value per key and

@@ -396,6 +396,21 @@ class ClientConnection:
             {"type": "pi_event", "session_id": session.id, "seq": seq, "record": record}
         )
 
+    def offer_pi_ui_request(self, session, request: dict) -> None:
+        self._offer_json(
+            {"type": "pi_ui_request", "session_id": session.id, "request": request}
+        )
+
+    def offer_pi_ui_resolved(self, session, request_id: str, reason: str) -> None:
+        self._offer_json(
+            {
+                "type": "pi_ui_resolved",
+                "session_id": session.id,
+                "request_id": request_id,
+                "reason": reason,
+            }
+        )
+
     def _offer_json(self, message: dict) -> None:
         self._offer(("json", message))
 
@@ -558,6 +573,8 @@ class ClientConnection:
             return await self._pi_command(message)
         if kind == "pi_snapshot":
             return await self._pi_snapshot(message)
+        if kind == "pi_ui_response":
+            return self._pi_ui_response(message)
         if kind == "list_dirs":
             return self._list_dirs(message)
         if kind == "list_pi_sessions":
@@ -817,6 +834,24 @@ class ClientConnection:
         if session.kind != "pi":
             raise RequestError("bad_request", "session is not a pi session")
         await self._send_pi_snapshot(session, strict=True)
+        return {"ok": True}
+
+    def _pi_ui_response(self, message: dict) -> dict:
+        session = self._require(message)
+        if session.kind != "pi":
+            raise RequestError("bad_request", "session is not a pi session")
+        request_id = message.get("request_id")
+        response = message.get("response")
+        if not isinstance(request_id, str) or not request_id:
+            raise RequestError("bad_request", "request_id is required")
+        if not isinstance(response, dict):
+            raise RequestError("bad_request", "response must be an object")
+        try:
+            session.resolve_ui(request_id, response)
+        except PiSessionClosed as exc:
+            raise RequestError("not_found", str(exc)) from exc
+        except PiError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
         return {"ok": True}
 
     async def _pi_command(self, message: dict) -> dict:

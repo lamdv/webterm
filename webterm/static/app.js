@@ -292,6 +292,15 @@
     });
   }
 
+  function sendPiUiResponse(sessionId, requestId, response) {
+    return request({
+      type: "pi_ui_response",
+      session_id: sessionId,
+      request_id: requestId,
+      response,
+    });
+  }
+
   // ----------------------------------------------------------- control plane
 
   function handleControl(message) {
@@ -302,7 +311,9 @@
       case "attached":
         break;
       case "pi_resync":
-      case "pi_event": {
+      case "pi_event":
+      case "pi_ui_request":
+      case "pi_ui_resolved": {
         const entry = piViews.get(message.session_id);
         if (entry && entry.view) entry.view.handle(message);
         break;
@@ -623,6 +634,8 @@
         onRefresh: () => request({ type: "pi_snapshot", session_id: session.id }),
         onExport: (format) =>
           request({ type: "pi_export", session_id: session.id, format }),
+        onUiResponse: (requestId, response) =>
+          sendPiUiResponse(session.id, requestId, response),
       });
       wrapper.appendChild(view.element);
     } else {
@@ -820,6 +833,14 @@
         badge.textContent = session.agent || "agent";
         badge.title = session.task || "agent session";
         tab.appendChild(badge);
+      }
+
+      if (session.needs_input) {
+        const needs = document.createElement("span");
+        needs.className = "tab-needs-input";
+        needs.textContent = "!";
+        needs.title = "Extension is waiting for input";
+        tab.appendChild(needs);
       }
 
       if (!session.alive) {

@@ -180,6 +180,13 @@ settings/extensions may load. The resume launcher lists persisted sessions via
 `list_pi_sessions`, then asks the same trust question for the selected cwd
 before sending `create` with `resume`.
 
+Extension UI is server-owned: `pi_ui_request` dialogs are shown one at a time
+and answered with `pi_ui_response`; `pi_ui_resolved` dismisses them for every
+viewer. Fire-and-forget requests render as toasts (`notify`), keyed header
+chips (`setStatus`), pre-composer widgets (`setWidget`), the chat header title
+(`setTitle`), and composer prefill (`set_editor_text`). A pending dialog adds a
+`!` badge to the session tab and `needs_input` to session metadata.
+
 ### Resize and fitting
 
 The `fit` routine is deliberately defensive because xterm's layout can be

@@ -42,6 +42,8 @@ PI_RPC_TIMEOUT = 30.0
 #: Approximate byte cap for the live-event ring used by short reconnects.
 EVENT_RING_BYTES = 1_000_000
 EVENT_RING_MIN = 64
+#: Extension UI methods that block pi until a matching response arrives.
+DIALOG_METHODS = frozenset({"select", "confirm", "input", "editor"})
 
 
 class PiError(Exception):
@@ -56,6 +58,12 @@ class PiSubscriber(Protocol):
     """Receives structured events from a pi session it is attached to."""
 
     def offer_pi_event(self, session: PiSession, seq: int, record: dict) -> None: ...
+
+    def offer_pi_ui_request(self, session: PiSession, request: dict) -> None: ...
+
+    def offer_pi_ui_resolved(
+        self, session: PiSession, request_id: str, reason: str
+    ) -> None: ...
 
     def offer_exit(self, session: PiSession) -> None: ...
 
@@ -134,6 +142,11 @@ class PiSession:
         self._pending: dict[str, asyncio.Future[dict]] = {}
         self._rpc_counter = 0
         self._timers: list[asyncio.TimerHandle] = []
+        self._ui_requests: dict[str, dict] = {}
+        self._ui_timers: dict[str, asyncio.TimerHandle] = {}
+        self._ui_status: dict[str, str] = {}
+        self._ui_widgets: dict[str, dict] = {}
+        self._ui_title: str | None = None
         self._stderr_tail: collections.deque[str] = collections.deque(maxlen=50)
         self.protocol_errors = 0
 
@@ -169,6 +182,7 @@ class PiSession:
             "created_at": self.created_at,
             "cwd": self.cwd,
             "trusted": self.trusted,
+            "needs_input": bool(self._ui_requests),
             "seq": self.seq,
         }
 
@@ -245,8 +259,136 @@ class PiSession:
                 "state": state.get("data") or {},
                 "entries": entries.get("data") or {},
                 "commands": commands.get("data") or {},
+                "ui": self.ui_snapshot(),
                 "seq": self.seq,
             }
+
+    def ui_snapshot(self) -> dict:
+        """Return pending extension dialogs and replayable fire-and-forget state."""
+        return {
+            "requests": list(self._ui_requests.values()),
+            "status": dict(self._ui_status),
+            "widgets": dict(self._ui_widgets),
+            "title": self._ui_title,
+            "needsInput": bool(self._ui_requests),
+        }
+
+    def resolve_ui(self, request_id: str, response: dict) -> None:
+        """Validate and write one browser response for a pending dialog."""
+        request = self._ui_requests.get(request_id)
+        if request is None:
+            raise PiError(f"unknown extension UI request {request_id!r}")
+        method = str(request.get("method", ""))
+        payload: dict[str, object] = {}
+        if response.get("cancelled") is True:
+            payload["cancelled"] = True
+        elif method == "confirm":
+            confirmed = response.get("confirmed")
+            if not isinstance(confirmed, bool):
+                raise PiError("confirm responses need a boolean 'confirmed'")
+            payload["confirmed"] = confirmed
+        else:
+            value = response.get("value")
+            if not isinstance(value, str):
+                raise PiError(f"{method} responses need a string 'value'")
+            if method == "select":
+                options = request.get("options") or []
+                if value not in options:
+                    raise PiError("select response is not one of the offered options")
+            payload["value"] = value
+        self._ui_requests.pop(request_id, None)
+        self._cancel_ui_timer(request_id)
+        self.send_command(
+            {"type": "extension_ui_response", "id": request_id, **payload}
+        )
+        self._broadcast_ui_resolved(request_id, "response")
+        if self._on_change is not None:
+            self._on_change()
+
+    def _handle_ui_request(self, record: dict) -> None:
+        method = record.get("method")
+        request_id = record.get("id")
+        if not isinstance(method, str):
+            self.protocol_errors += 1
+            return
+        if method in DIALOG_METHODS:
+            if not isinstance(request_id, str) or not request_id:
+                self.protocol_errors += 1
+                log.warning("pi session %s: dialog without an id", self.id)
+                return
+            if self.origin == "agent" and not self._subscribers:
+                # Nobody is watching an agent-origin session; never leave an
+                # extension blocked forever on an unattended dialog.
+                try:
+                    self.send_command(
+                        {
+                            "type": "extension_ui_response",
+                            "id": request_id,
+                            "cancelled": True,
+                        }
+                    )
+                except PiSessionClosed:
+                    pass
+                return
+            self._ui_requests[request_id] = record
+            timeout_ms = record.get("timeout")
+            if isinstance(timeout_ms, (int, float)) and timeout_ms > 0:
+                self._cancel_ui_timer(request_id)
+                self._ui_timers[request_id] = self._loop.call_later(
+                    timeout_ms / 1000.0, self._expire_ui, request_id
+                )
+        elif method == "notify":
+            pass
+        elif method == "setStatus":
+            key = record.get("statusKey")
+            text = record.get("statusText")
+            if isinstance(key, str) and key:
+                if isinstance(text, str) and text:
+                    self._ui_status[key] = text
+                else:
+                    self._ui_status.pop(key, None)
+        elif method == "setWidget":
+            key = record.get("widgetKey")
+            lines = record.get("widgetLines")
+            if isinstance(key, str) and key:
+                if isinstance(lines, list) and lines:
+                    self._ui_widgets[key] = {
+                        "lines": [str(line) for line in lines],
+                        "placement": str(record.get("widgetPlacement", "aboveEditor")),
+                    }
+                else:
+                    self._ui_widgets.pop(key, None)
+        elif method == "setTitle":
+            title = record.get("title")
+            self._ui_title = str(title) if isinstance(title, str) and title else None
+        elif method == "set_editor_text":
+            pass
+        else:
+            log.debug("pi session %s: unknown extension UI method %r", self.id, method)
+            return
+        for subscriber in list(self._subscribers):
+            subscriber.offer_pi_ui_request(self, record)
+        if method != "set_editor_text":
+            if self._on_change is not None:
+                self._on_change()
+
+    def _expire_ui(self, request_id: str) -> None:
+        if self._ui_requests.pop(request_id, None) is None:
+            return
+        self._ui_timers.pop(request_id, None)
+        # Pi resolves its own timeout too; do not write a late response.
+        self._broadcast_ui_resolved(request_id, "timeout")
+        if self._on_change is not None:
+            self._on_change()
+
+    def _cancel_ui_timer(self, request_id: str) -> None:
+        timer = self._ui_timers.pop(request_id, None)
+        if timer is not None:
+            timer.cancel()
+
+    def _broadcast_ui_resolved(self, request_id: str, reason: str) -> None:
+        for subscriber in list(self._subscribers):
+            subscriber.offer_pi_ui_resolved(self, request_id, reason)
 
     def _write_json(self, record: dict) -> None:
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -338,6 +480,9 @@ class PiSession:
                 future = self._pending.get(request_id)
                 if future is not None and not future.done():
                     future.set_result(record)
+            return
+        if record.get("type") == "extension_ui_request":
+            self._handle_ui_request(record)
             return
         self.seq += 1
         self._remember(self.seq, record, len(line))
@@ -464,6 +609,10 @@ class PiSession:
         self.dead = True
         self.closing = False
         self._cancel_timers()
+        for timer in self._ui_timers.values():
+            timer.cancel()
+        self._ui_timers.clear()
+        self._ui_requests.clear()
         self._remove_reader(self.stdout_fd)
         self._remove_reader(self.stderr_fd)
         self._close_stdin()

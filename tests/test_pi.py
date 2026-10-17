@@ -24,10 +24,18 @@ class Collector:
 
     def __init__(self) -> None:
         self.events: list[tuple[int, dict]] = []
+        self.ui_requests: list[dict] = []
+        self.ui_resolved: list[tuple[str, str]] = []
         self.exited = False
 
     def offer_pi_event(self, session, seq: int, record: dict) -> None:
         self.events.append((seq, record))
+
+    def offer_pi_ui_request(self, session, request: dict) -> None:
+        self.ui_requests.append(request)
+
+    def offer_pi_ui_resolved(self, session, request_id: str, reason: str) -> None:
+        self.ui_resolved.append((request_id, reason))
 
     def offer_exit(self, session) -> None:
         self.exited = True
@@ -89,6 +97,50 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
         session.close()
         self.assertIsNotNone(await session.wait(timeout=5.0))
         self.assertTrue(collector.exited)
+
+    async def test_extension_dialog_is_queued_and_resolved(self) -> None:
+        session = self.start()
+        collector = Collector()
+        session.attach(collector)
+
+        response = await session.rpc({"type": "prompt", "message": "please ask"})
+        self.assertTrue(response["success"])
+        await wait_until(lambda: bool(collector.ui_requests))
+        request = collector.ui_requests[0]
+        self.assertEqual(request["id"], "ui-1")
+        self.assertEqual(request["method"], "confirm")
+        self.assertTrue(session.info()["needs_input"])
+
+        snapshot = await session.snapshot()
+        self.assertEqual(snapshot["ui"]["requests"][0]["id"], "ui-1")
+        self.assertTrue(snapshot["ui"]["needsInput"])
+
+        session.resolve_ui("ui-1", {"confirmed": True})
+        await wait_until(lambda: bool(collector.ui_resolved))
+        self.assertEqual(collector.ui_resolved[0], ("ui-1", "response"))
+        self.assertFalse(session.info()["needs_input"])
+        await wait_until(
+            lambda: any(
+                record.get("type") == "extension_ui_response"
+                and (record.get("response") or {}).get("confirmed") is True
+                for _, record in collector.events
+            )
+        )
+
+    async def test_agent_dialogs_are_cancelled_without_a_viewer(self) -> None:
+        ack_file = Path(self.cwd) / "ui-ack.json"
+        session = self.manager.create_pi(
+            [sys.executable, str(FAKE_PI)],
+            cwd=self.cwd,
+            env={"FAKE_PI_UI_ACK_FILE": str(ack_file)},
+            origin="agent",
+        )
+        response = await session.rpc({"type": "prompt", "message": "please ask"})
+        self.assertTrue(response["success"])
+        await wait_until(ack_file.exists)
+        ack = json.loads(ack_file.read_text(encoding="utf-8"))
+        self.assertTrue(ack["cancelled"])
+        self.assertFalse(session.info()["needs_input"])
 
     async def test_close_escalates_when_stdin_eof_is_ignored(self) -> None:
         session = self.start({"FAKE_PI_IGNORE_EOF": "1", "FAKE_PI_IGNORE_TERM": "1"})
@@ -331,6 +383,67 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
         raw = await reader.read()
         writer.close()
         self.assertIn(b"404", raw.split(b"\r\n", 1)[0])
+
+    async def test_extension_dialog_round_trip(self) -> None:
+        session = await self._create_pi()
+        session_id = session["id"]
+        await self._subscribe_pi(session_id)
+
+        await self.client.send_json(
+            {
+                "type": "pi",
+                "id": "prompt-ask",
+                "session_id": session_id,
+                "command": {"type": "prompt", "message": "please ask"},
+            }
+        )
+        await self.client.recv_json_until(
+            lambda message: message.get("type") == "result"
+            and message.get("id") == "prompt-ask"
+        )
+        ui_request = await self.client.recv_json_until(
+            lambda message: message.get("type") == "pi_ui_request"
+            and message.get("session_id") == session_id
+        )
+        self.assertEqual(ui_request["request"]["id"], "ui-1")
+        self.assertEqual(ui_request["request"]["method"], "confirm")
+
+        leaked = await self.client.recv_json_until(
+            lambda message: message.get("type") == "sessions"
+            and any(
+                item["id"] == session_id and item["needs_input"]
+                for item in message["sessions"]
+            ),
+            timeout=5.0,
+        )
+        self.assertTrue(leaked)
+
+        await self.client.send_json(
+            {
+                "type": "pi_ui_response",
+                "id": "ui-answer",
+                "session_id": session_id,
+                "request_id": "ui-1",
+                "response": {"confirmed": True},
+            }
+        )
+        result = await self.client.recv_json_until(
+            lambda message: message.get("type") == "result"
+            and message.get("id") == "ui-answer"
+        )
+        self.assertTrue(result["result"]["ok"])
+        resolved = await self.client.recv_json_until(
+            lambda message: message.get("type") == "pi_ui_resolved"
+            and message.get("session_id") == session_id
+        )
+        self.assertEqual(resolved["request_id"], "ui-1")
+        self.assertEqual(resolved["reason"], "response")
+        ack = await self.client.recv_json_until(
+            lambda message: message.get("type") == "pi_event"
+            and message.get("session_id") == session_id
+            and message["record"].get("type") == "extension_ui_response"
+        )
+        self.assertTrue(ack["record"]["response"]["confirmed"])
 
     async def test_list_dirs_lists_only_directories(self) -> None:
         root = Path(self.cwd)

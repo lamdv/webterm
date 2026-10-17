@@ -43,7 +43,8 @@
     const header = el("div", "pi-header");
     const titleEl = el("span", "pi-title", session.title || "pi");
     const statusEl = el("span", "pi-status", "starting…");
-    header.append(titleEl, statusEl);
+    const uiStatusesEl = el("div", "pi-ui-statuses");
+    header.append(titleEl, statusEl, uiStatusesEl);
 
     const banner = el("div", "pi-banner");
     banner.hidden = true;
@@ -52,6 +53,9 @@
     queueEl.hidden = true;
     const paletteEl = el("div", "pi-command-palette");
     paletteEl.hidden = true;
+    const widgetsAboveEl = el("div", "pi-ui-widgets above");
+    const widgetsBelowEl = el("div", "pi-ui-widgets below");
+    const toastsEl = el("div", "pi-toasts");
 
     const form = el("form", "pi-composer");
     const input = el("textarea", "pi-input");
@@ -69,7 +73,17 @@
     actions.append(sendButton, stopButton);
     form.append(input, actions);
 
-    root.append(header, banner, messagesEl, queueEl, paletteEl, form);
+    root.append(
+      header,
+      banner,
+      messagesEl,
+      queueEl,
+      paletteEl,
+      widgetsAboveEl,
+      form,
+      widgetsBelowEl,
+      toastsEl
+    );
 
     const state = {
       seq: -1,
@@ -85,6 +99,12 @@
       exited: false,
       banner: "",
       error: "",
+      ui: {
+        requests: [],
+        status: {},
+        widgets: {},
+        title: "",
+      },
     };
 
     function setBanner(text) {
@@ -96,7 +116,7 @@
     function renderHeader() {
       const info = state.state || {};
       const model = info.model && (info.model.id || info.model.name);
-      const name = info.sessionName;
+      const name = info.sessionName || state.ui.title;
       titleEl.textContent = name || session.title || "pi";
       const bits = [];
       if (state.exited) bits.push("exited");
@@ -106,9 +126,12 @@
       if (info.thinkingLevel) bits.push("thinking " + info.thinkingLevel);
       if (info.messageCount) bits.push(info.messageCount + " messages");
       if (info.pendingMessageCount) bits.push(info.pendingMessageCount + " queued");
+      if (state.ui.requests.length) bits.push("needs input");
       statusEl.textContent = bits.join(" · ");
       statusEl.classList.toggle("busy", state.busy);
       statusEl.classList.toggle("exited", state.exited);
+      statusEl.classList.toggle("needs-input", state.ui.requests.length > 0);
+      renderUiStatuses();
       input.disabled = state.exited;
       sendButton.disabled = state.exited;
       stopButton.disabled = state.exited || !state.busy;
@@ -260,6 +283,238 @@
       queueEl.appendChild(list);
     }
 
+
+    let uiOverlay = null;
+    let uiCurrentId = null;
+    let uiKeyHandler = null;
+
+    function renderUiStatuses() {
+      uiStatusesEl.replaceChildren();
+      for (const [key, text] of Object.entries(state.ui.status || {})) {
+        const chip = el("span", "pi-ui-status", String(text));
+        chip.title = key;
+        uiStatusesEl.appendChild(chip);
+      }
+      uiStatusesEl.hidden = !uiStatusesEl.children.length;
+    }
+
+    function renderUiWidgets() {
+      widgetsAboveEl.replaceChildren();
+      widgetsBelowEl.replaceChildren();
+      for (const [key, widget] of Object.entries(state.ui.widgets || {})) {
+        if (!widget || !Array.isArray(widget.lines) || !widget.lines.length) continue;
+        const box = el("div", "pi-ui-widget");
+        box.dataset.key = key;
+        for (const line of widget.lines) {
+          box.appendChild(el("div", "pi-text", String(line)));
+        }
+        const target = widget.placement === "belowEditor" ? widgetsBelowEl : widgetsAboveEl;
+        target.appendChild(box);
+      }
+      widgetsAboveEl.hidden = !widgetsAboveEl.children.length;
+      widgetsBelowEl.hidden = !widgetsBelowEl.children.length;
+    }
+
+    function showToast(message, type) {
+      if (!message) return;
+      const toast = el("div", "pi-toast " + (type || "info"), String(message));
+      toastsEl.appendChild(toast);
+      while (toastsEl.children.length > 4) toastsEl.firstChild.remove();
+      setTimeout(() => toast.remove(), 6000);
+    }
+
+    function removeUiRequest(requestId) {
+      state.ui.requests = state.ui.requests.filter((request) => request.id !== requestId);
+    }
+
+    function closeUiDialog() {
+      if (uiKeyHandler) document.removeEventListener("keydown", uiKeyHandler, true);
+      uiKeyHandler = null;
+      if (uiOverlay) uiOverlay.remove();
+      uiOverlay = null;
+      uiCurrentId = null;
+    }
+
+    function respondUi(request, response) {
+      removeUiRequest(request.id);
+      closeUiDialog();
+      render();
+      if (!options.onUiResponse) {
+        setBanner("extension dialogs are unavailable");
+        render();
+        return;
+      }
+      Promise.resolve(options.onUiResponse(request.id, response)).catch((error) =>
+        commandError(error, true)
+      );
+    }
+
+    function buildUiDialog(request) {
+      const overlay = el("div", "pi-trust-overlay pi-ui-overlay");
+      const dialog = el("div", "pi-trust-dialog pi-ui-dialog");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      dialog.setAttribute("aria-label", request.title || "Extension request");
+
+      const heading = el("h2", "", request.title || "Extension request");
+      dialog.appendChild(heading);
+      if (request.message) {
+        dialog.appendChild(el("p", "pi-ui-message", String(request.message)));
+      }
+
+      const actions = el("div", "pi-trust-actions pi-ui-actions");
+      const cancel = el("button", "", "Cancel");
+      cancel.type = "button";
+      cancel.addEventListener("click", () => respondUi(request, { cancelled: true }));
+
+      if (request.method === "confirm") {
+        const no = el("button", "", "No");
+        no.type = "button";
+        no.addEventListener("click", () => respondUi(request, { confirmed: false }));
+        const yes = el("button", "trust", "Yes");
+        yes.type = "button";
+        yes.addEventListener("click", () => respondUi(request, { confirmed: true }));
+        actions.append(cancel, no, yes);
+      } else if (request.method === "select") {
+        const options = Array.isArray(request.options) ? request.options : [];
+        const list = el("div", "pi-ui-options");
+        for (const option of options) {
+          const button = el("button", "pi-ui-option", String(option));
+          button.type = "button";
+          button.addEventListener("click", () => respondUi(request, { value: String(option) }));
+          list.appendChild(button);
+        }
+        dialog.appendChild(list);
+        actions.append(cancel);
+      } else {
+        const editor = request.method === "editor";
+        const field = el(editor ? "textarea" : "input", "pi-ui-input");
+        if (editor) {
+          field.rows = 8;
+          field.value = typeof request.prefill === "string" ? request.prefill : "";
+        } else {
+          field.type = "text";
+          field.value = typeof request.prefill === "string" ? request.prefill : "";
+          field.placeholder = typeof request.placeholder === "string" ? request.placeholder : "";
+        }
+        const form = el("form", "pi-ui-form");
+        const ok = el("button", "trust", "OK");
+        ok.type = "submit";
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          respondUi(request, { value: field.value });
+        });
+        actions.append(cancel, ok);
+        form.append(field, actions);
+        dialog.appendChild(form);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+        const onKey = (event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            respondUi(request, { cancelled: true });
+          }
+        };
+        document.addEventListener("keydown", onKey, true);
+        uiKeyHandler = onKey;
+        overlay.addEventListener("pointerdown", (event) => {
+          if (event.target === overlay) respondUi(request, { cancelled: true });
+        });
+        setTimeout(() => field.focus(), 0);
+        if (editor && typeof field.setSelectionRange === "function") {
+          field.setSelectionRange(field.value.length, field.value.length);
+        }
+        return overlay;
+      }
+
+      dialog.appendChild(actions);
+      overlay.appendChild(dialog);
+      document.body.appendChild(overlay);
+      const onKey = (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          respondUi(request, { cancelled: true });
+        }
+      };
+      document.addEventListener("keydown", onKey, true);
+      uiKeyHandler = onKey;
+      overlay.addEventListener("pointerdown", (event) => {
+        if (event.target === overlay) respondUi(request, { cancelled: true });
+      });
+      const first = actions.querySelector(".trust") || cancel;
+      setTimeout(() => first.focus(), 0);
+      return overlay;
+    }
+
+    function renderUiDialog() {
+      const request = state.ui.requests[0];
+      if (!request) {
+        closeUiDialog();
+        return;
+      }
+      if (uiCurrentId === request.id && uiOverlay) return;
+      closeUiDialog();
+      uiCurrentId = request.id;
+      uiOverlay = buildUiDialog(request);
+    }
+
+    function handleUiRequest(request) {
+      if (!request || typeof request !== "object" || !request.id) return;
+      const method = request.method;
+      if (method === "select" || method === "confirm" || method === "input" || method === "editor") {
+        removeUiRequest(request.id);
+        state.ui.requests.push(request);
+        renderUiDialog();
+        scheduleRender();
+      } else if (method === "notify") {
+        showToast(request.message, request.notifyType);
+      } else if (method === "setStatus") {
+        const key = request.statusKey;
+        if (!key) return;
+        if (request.statusText) state.ui.status[key] = String(request.statusText);
+        else delete state.ui.status[key];
+        scheduleRender();
+      } else if (method === "setWidget") {
+        const key = request.widgetKey;
+        if (!key) return;
+        if (Array.isArray(request.widgetLines) && request.widgetLines.length) {
+          state.ui.widgets[key] = {
+            lines: request.widgetLines.map((line) => String(line)),
+            placement: request.widgetPlacement || "aboveEditor",
+          };
+        } else {
+          delete state.ui.widgets[key];
+        }
+        scheduleRender();
+      } else if (method === "setTitle") {
+        state.ui.title = typeof request.title === "string" ? request.title : "";
+        scheduleRender();
+      } else if (method === "set_editor_text") {
+        if (!input.value.trim() && typeof request.text === "string") {
+          input.value = request.text;
+          updatePalette();
+        }
+      }
+    }
+
+    function handleUiResolved(requestId, reason) {
+      removeUiRequest(requestId);
+      if (uiCurrentId === requestId) closeUiDialog();
+      if (reason === "timeout") showToast("Extension dialog timed out", "warning");
+      scheduleRender();
+    }
+
+    function applyUiSnapshot(ui) {
+      const data = ui && typeof ui === "object" ? ui : {};
+      state.ui.requests = Array.isArray(data.requests) ? data.requests : [];
+      state.ui.status = data.status && typeof data.status === "object" ? { ...data.status } : {};
+      state.ui.widgets = data.widgets && typeof data.widgets === "object" ? { ...data.widgets } : {};
+      state.ui.title = typeof data.title === "string" ? data.title : "";
+      renderUiDialog();
+    }
+
     function availableCommands() {
       const items = BUILTIN_COMMANDS.map((command) => ({ ...command }));
       const names = new Set(items.map((command) => command.name));
@@ -372,6 +627,7 @@
         );
       }
       renderQueue();
+      renderUiWidgets();
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
@@ -400,6 +656,7 @@
       openState.clear();
       state.busy = Boolean(state.state.isStreaming);
       state.error = "";
+      applyUiSnapshot(message.ui);
       const entries = (message.entries && message.entries.entries) || [];
       state.messages = [];
       for (const entry of entries) {
@@ -592,6 +849,10 @@
         reset(message);
       } else if (message.type === "pi_event") {
         applyRecord(message.seq, message.record);
+      } else if (message.type === "pi_ui_request") {
+        handleUiRequest(message.request);
+      } else if (message.type === "pi_ui_resolved") {
+        handleUiResolved(message.request_id, message.reason);
       } else if (message.type === "exit") {
         setExited();
       }
@@ -919,7 +1180,9 @@
       state.liveTools.clear();
       state.queues = { steering: [], followUp: [] };
       state.state.pendingMessageCount = 0;
+      state.ui = { requests: [], status: {}, widgets: {}, title: "" };
       closePalette();
+      closeUiDialog();
       render();
     }
 
@@ -1014,7 +1277,10 @@
       activate: () => {
         if (!state.exited) input.focus();
       },
-      destroy: () => root.remove(),
+      destroy: () => {
+        closeUiDialog();
+        root.remove();
+      },
     };
   }
 
