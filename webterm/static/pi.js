@@ -504,8 +504,14 @@
           if (message && message.role === "assistant") {
             state.messages.push({ message });
             state.live = null;
-          } else if (message && message.role === "user") {
+          } else if (message && (message.role === "user" || message.role === "toolResult")) {
             state.messages.push({ message });
+          }
+          // Once the persisted tool result arrives, render it through the
+          // same collapsed ok/error card as a snapshot.  Keeping the live
+          // execution around would duplicate its output in the tool-call card.
+          if (message && message.role === "toolResult" && message.toolCallId) {
+            state.liveTools.delete(message.toolCallId);
           }
           break;
         }
