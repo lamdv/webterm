@@ -12,9 +12,10 @@ import os
 import signal
 import ssl
 import struct
+import time
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, quote, urlencode
 
 from . import __version__
 from .control import ControlServer, default_control_socket, looks_like_tcp
@@ -232,6 +233,44 @@ async def serve_static(writer: asyncio.StreamWriter, method: str, path: str) -> 
     body = file_path.read_bytes()
     response = _http_response("200 OK", body, content_type=_content_type(file_path))
     writer.write(response)
+    if method == "GET":
+        await writer.drain()
+
+
+async def serve_pi_download(
+    writer: asyncio.StreamWriter,
+    manager: SessionManager,
+    method: str,
+    query: dict[str, str],
+) -> None:
+    """Serve an exported pi file from the managed root as an attachment."""
+    if method not in ("GET", "HEAD"):
+        writer.write(_http_response("405 Method Not Allowed"))
+        await writer.drain()
+        return
+    path = manager.resolve_pi_path(query.get("path"))
+    if path is None or not os.path.isfile(path):
+        writer.write(_http_response("404 Not Found", b"Not found\n"))
+        await writer.drain()
+        return
+    try:
+        body = Path(path).read_bytes()
+    except OSError:
+        writer.write(_http_response("404 Not Found", b"Not found\n"))
+        await writer.drain()
+        return
+    content_type = (
+        "text/html; charset=utf-8" if path.endswith(".html") else _content_type(Path(path))
+    )
+    filename = os.path.basename(path).replace('"', "")
+    writer.write(
+        _http_response(
+            "200 OK",
+            body,
+            content_type=content_type,
+            extra_headers=f'Content-Disposition: attachment; filename="{filename}"\r\n',
+        )
+    )
     if method == "GET":
         await writer.drain()
 
@@ -521,6 +560,10 @@ class ClientConnection:
             return await self._pi_snapshot(message)
         if kind == "list_dirs":
             return self._list_dirs(message)
+        if kind == "list_pi_sessions":
+            return self._list_pi_sessions(message)
+        if kind == "pi_export":
+            return await self._pi_export(message)
         if kind == "list":
             result = {
                 "sessions": self.manager.list_info(include_private=self.peer == "agent")
@@ -633,8 +676,21 @@ class ClientConnection:
         if trust not in (None, "allow", "deny"):
             raise RequestError("bad_request", "trust must be 'allow' or 'deny'")
         trusted = trust == "allow"
+        resume = message.get("resume")
+        resume_path = None
+        if resume is not None:
+            resume_path = self.manager.resolve_pi_path(resume)
+            if resume_path is None or not os.path.isfile(resume_path):
+                raise RequestError("bad_request", "resume path is not a pi session file")
         argv = list(self.manager.pi_command)
-        argv.extend(["--mode", "rpc", "--no-session"])
+        argv.extend(["--mode", "rpc"])
+        root = self.manager.pi_session_dir
+        if root:
+            argv.extend(["--session-dir", root])
+        else:
+            argv.append("--no-session")
+        if resume_path is not None:
+            argv.extend(["--session", resume_path])
         argv.append("--approve" if trusted else "--no-approve")
         provider = message.get("provider")
         model = message.get("model")
@@ -642,12 +698,16 @@ class ClientConnection:
             argv.extend(["--provider", str(provider)])
         if model:
             argv.extend(["--model", str(model)])
+        pi_env = dict(message.get("env") or {})
+        if root:
+            # Nested pi processes started by this one stay in the managed root.
+            pi_env["PI_CODING_AGENT_SESSION_DIR"] = root
         try:
             session = self.manager.create_pi(
                 argv,
                 cwd=message.get("cwd"),
-                env=message.get("env"),
-                title=message.get("title"),
+                env=pi_env,
+                title=message.get("title") or _pi_resume_title(resume_path),
                 parent_id=message.get("parent_id"),
                 origin=str(message.get("origin", "user")),
                 role=str(message.get("role", "agent")),
@@ -697,6 +757,59 @@ class ClientConnection:
             "parent": None if parent == path else parent,
             "dirs": entries,
             "truncated": truncated,
+        }
+
+    def _list_pi_sessions(self, message: dict) -> dict:
+        sessions = self.manager.list_pi_sessions()
+        cwd = message.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            target = os.path.realpath(os.path.abspath(os.path.expanduser(cwd)))
+            sessions = [item for item in sessions if item.get("cwd") == target]
+        return {
+            "root": self.manager.pi_session_dir,
+            "sessions": sessions,
+        }
+
+    async def _pi_export(self, message: dict) -> dict:
+        session = self._require(message)
+        if session.kind != "pi":
+            raise RequestError("bad_request", "session is not a pi session")
+        fmt = str(message.get("format", "html")).lower()
+        if fmt not in ("html", "jsonl"):
+            raise RequestError("bad_request", "format must be 'html' or 'jsonl'")
+        root = self.manager.pi_session_dir
+        if not root:
+            raise RequestError("bad_request", "pi session storage is not configured")
+        if fmt == "html":
+            export_dir = os.path.join(root, "exports")
+            os.makedirs(export_dir, mode=0o700, exist_ok=True)
+            output_path = os.path.join(
+                export_dir, f"{session.id}-{time.time_ns()}.html"
+            )
+            try:
+                response = await session.rpc(
+                    {"type": "export_html", "outputPath": output_path}
+                )
+            except (PiError, PiSessionClosed, TimeoutError) as exc:
+                raise RequestError("pi_error", str(exc)) from exc
+            if not response.get("success"):
+                raise RequestError("pi_error", str(response.get("error", "export failed")))
+            data = response.get("data") or {}
+            path = self.manager.resolve_pi_path(data.get("path") or output_path)
+        else:
+            try:
+                response = await session.rpc({"type": "get_state"})
+            except (PiError, PiSessionClosed, TimeoutError) as exc:
+                raise RequestError("pi_error", str(exc)) from exc
+            if not response.get("success"):
+                raise RequestError("pi_error", str(response.get("error", "get_state failed")))
+            path = self.manager.resolve_pi_path((response.get("data") or {}).get("sessionFile"))
+        if path is None or not os.path.isfile(path):
+            raise RequestError("pi_error", "pi produced no downloadable file")
+        return {
+            "format": fmt,
+            "path": path,
+            "url": "/pi/download?path=" + quote(path, safe=""),
         }
 
     async def _pi_snapshot(self, message: dict) -> dict:
@@ -932,6 +1045,13 @@ class ClientConnection:
         return {"ok": bool(killed), "killed": killed}
 
 
+def _pi_resume_title(path: str | None) -> str | None:
+    if path is None:
+        return None
+    stem = os.path.basename(path)
+    return stem.rsplit(".", 1)[0][:200] or None
+
+
 def _valid_command(command) -> list[str] | str | None:
     """Normalise a create/run command, rejecting malformed values."""
     if command is None:
@@ -1056,6 +1176,9 @@ async def handle_client(
 
         if path == "/config.js":
             await serve_config(writer, config or {})
+            return
+        if path == "/pi/download":
+            await serve_pi_download(writer, manager, method, query)
             return
 
         await serve_static(writer, method, path)

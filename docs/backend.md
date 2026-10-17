@@ -41,6 +41,7 @@ All modules use `from __future__ import annotations` and are linted by `ruff`
 | `--launcher LABEL=COMMAND` | `pi agent` if `pi` is installed | Sidebar launcher button (repeatable). |
 | `--cwd` | `$HOME` | Working directory for new sessions. |
 | `--scrollback` | `100000` | Bytes retained per session for replay. |
+| `--pi-session-dir` | `$WEBTERM_PI_SESSION_DIR` or `$XDG_STATE_HOME/webterm/pi-sessions` | Managed root for persisted pi sessions, exports, and the resume picker. |
 | `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API. |
 | `--no-control` | off | Disable the local control socket. |
 | `--agent NAME=COMMAND` | `pi` if installed | Agent profile for `spawn` (print mode); `{task}` is substituted. |
@@ -60,8 +61,11 @@ dict, and runs `serve()`.
 using `shlex.split`. When no `--launcher` is given, it probes for `pi` with
 `shutil.which` and adds a default button.
 
-The config dict currently supports `fontFamily` and `launchers`; it is served as
-`window.WEBTERM_CONFIG` by `/config.js`.
+The config dict currently supports `fontFamily`, `launchers`, `agents`, and
+`pi` (`available`, `cwd`, `sessionDir`); it is served as
+`window.WEBTERM_CONFIG` by `/config.js`. At startup `main()` creates and
+resolves the pi session root (`0700`) once, so every picker/export containment
+check compares against the same canonical path.
 
 `build_ssl_context(certfile, keyfile)` constructs the server `SSLContext`
 (TLS 1.2 minimum) from the `--tls-cert`/`--tls-key` files and passes it to

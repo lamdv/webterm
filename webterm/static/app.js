@@ -621,6 +621,8 @@
       view = window.WebtermPi.create(session, {
         onCommand: (command) => sendPiCommand(session.id, command),
         onRefresh: () => request({ type: "pi_snapshot", session_id: session.id }),
+        onExport: (format) =>
+          request({ type: "pi_export", session_id: session.id, format }),
       });
       wrapper.appendChild(view.element);
     } else {
@@ -1142,6 +1144,7 @@
     addLauncherButton = add;
 
     if (CONFIG.pi && CONFIG.pi.available) appendPiLauncher();
+    if (CONFIG.pi && CONFIG.pi.available && CONFIG.pi.sessionDir) appendPiResumeLauncher();
 
     for (const launcher of configuredLaunchers()) appendLauncher(launcher, false);
     for (const launcher of userLaunchers) appendLauncher(launcher, true);
@@ -1153,6 +1156,15 @@
     pill.textContent = "pi chat";
     pill.title = "Start a structured pi session (RPC)";
     pill.addEventListener("click", createPiSession);
+    launchersEl.appendChild(pill);
+  }
+
+  function appendPiResumeLauncher() {
+    const pill = document.createElement("button");
+    pill.className = "launcher launcher-pi launcher-pi-resume";
+    pill.textContent = "pi resume";
+    pill.title = "Resume a persisted pi session";
+    pill.addEventListener("click", createPiResumeSession);
     launchersEl.appendChild(pill);
   }
 
@@ -1409,7 +1421,118 @@
     return [];
   }
 
-  function showPiTrustDialog(cwd, onChoose) {
+  function formatPiSessionTime(entry) {
+    const raw = entry.timestamp || (entry.mtime ? entry.mtime * 1000 : null);
+    if (!raw) return "";
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return String(raw);
+    return date.toLocaleString();
+  }
+
+  function showPiResumeDialog(onChoose) {
+    const overlay = document.createElement("div");
+    overlay.className = "pi-trust-overlay";
+    const dialog = document.createElement("div");
+    dialog.className = "pi-trust-dialog pi-resume-dialog";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", "Resume a pi session");
+
+    const heading = document.createElement("h2");
+    heading.textContent = "Resume pi";
+    const copy = document.createElement("p");
+    copy.textContent = "Choose a saved session from the webterm-managed pi session directory.";
+    const rootLine = document.createElement("div");
+    rootLine.className = "pi-resume-root";
+    rootLine.textContent = CONFIG.pi.sessionDir || "";
+    const list = document.createElement("div");
+    list.className = "pi-trust-browser pi-session-list";
+    list.textContent = "Loading…";
+
+    const actions = document.createElement("div");
+    actions.className = "pi-trust-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    actions.appendChild(cancel);
+    dialog.append(heading, copy, rootLine, list, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    let settled = false;
+    let entries = [];
+
+    function finish(entry) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey, true);
+      overlay.remove();
+      onChoose(entry);
+    }
+
+    function renderList() {
+      list.replaceChildren();
+      if (!entries.length) {
+        const empty = document.createElement("div");
+        empty.className = "pi-trust-empty";
+        empty.textContent = "No saved pi sessions yet.";
+        list.appendChild(empty);
+        return;
+      }
+      for (const entry of entries) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "pi-session-item";
+        const title = document.createElement("span");
+        title.className = "pi-session-title";
+        const cwd = entry.cwd || "";
+        const base = cwd.split("/").filter(Boolean).pop();
+        title.textContent = base || entry.id || "session";
+        const meta = document.createElement("span");
+        meta.className = "pi-session-meta";
+        meta.textContent = [formatPiSessionTime(entry), cwd].filter(Boolean).join(" · ");
+        button.append(title, meta);
+        button.title = entry.path || "";
+        button.addEventListener("click", () => finish(entry));
+        list.appendChild(button);
+      }
+    }
+
+    function load() {
+      list.textContent = "Loading…";
+      request({ type: "list_pi_sessions" })
+        .then((result) => {
+          if (settled) return;
+          entries = Array.isArray(result.sessions) ? result.sessions : [];
+          renderList();
+        })
+        .catch((error) => {
+          if (settled) return;
+          list.replaceChildren();
+          const failure = document.createElement("div");
+          failure.className = "pi-trust-empty";
+          failure.textContent =
+            error && error.message ? error.message : "Cannot list pi sessions";
+          list.appendChild(failure);
+        });
+    }
+
+    function onKey(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finish(null);
+      }
+    }
+    cancel.addEventListener("click", () => finish(null));
+    overlay.addEventListener("pointerdown", (event) => {
+      if (event.target === overlay) finish(null);
+    });
+    document.addEventListener("keydown", onKey, true);
+    load();
+    cancel.focus();
+  }
+
+  function showPiTrustDialog(cwd, onChoose, options) {
     const overlay = document.createElement("div");
     overlay.className = "pi-trust-overlay";
     const dialog = document.createElement("div");
@@ -1418,12 +1541,15 @@
     dialog.setAttribute("aria-modal", "true");
     dialog.setAttribute("aria-label", "Start pi session");
 
+    const opts = options || {};
     const heading = document.createElement("h2");
-    heading.textContent = "Start pi?";
+    heading.textContent = opts.resume ? "Resume pi?" : "Start pi?";
     const copy = document.createElement("p");
-    copy.textContent =
-      "Project settings and extensions in this folder run with your user privileges. " +
-      "Choose whether pi should load them.";
+    copy.textContent = opts.resume
+      ? "This saved conversation will run with your user privileges. Choose whether " +
+        "pi should load this project's settings and extensions."
+      : "Project settings and extensions in this folder run with your user privileges. " +
+        "Choose whether pi should load them.";
 
     const pathRow = document.createElement("div");
     pathRow.className = "pi-trust-path-row";
@@ -1459,6 +1585,12 @@
     allow.textContent = "Start with project settings";
     actions.append(cancel, deny, allow);
     dialog.append(heading, copy, pathRow, browser, actions);
+    if (opts.resume) {
+      path.disabled = true;
+      go.hidden = true;
+      up.hidden = true;
+      browser.hidden = true;
+    }
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
@@ -1597,6 +1729,34 @@
         title: "pi",
         trust,
       });
+    });
+  }
+
+  function createPiResumeSession() {
+    const pi = CONFIG.pi;
+    if (!pi || !pi.available) {
+      window.alert("pi is not installed on the server.");
+      return;
+    }
+    showPiResumeDialog((entry) => {
+      if (!entry) return;
+      const cwd = entry.cwd || pi.cwd || "";
+      showPiTrustDialog(
+        cwd,
+        (trust) => {
+          if (!trust) return;
+          activateNext = true;
+          send({
+            type: "create",
+            mode: "pi",
+            cwd,
+            title: entry.id || "pi",
+            trust,
+            resume: entry.path,
+          });
+        },
+        { resume: true }
+      );
     });
   }
 

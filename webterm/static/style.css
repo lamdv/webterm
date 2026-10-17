@@ -1168,3 +1168,215 @@ button,
   }
 }
 
+
+.pi-resume-dialog {
+  width: min(620px, 100%);
+}
+
+.pi-resume-root {
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.pi-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(55vh, 420px);
+}
+
+.pi-session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pi-session-item:hover,
+.pi-session-item:focus-visible {
+  background: var(--bg-elevated);
+  outline: none;
+}
+
+.pi-session-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pi-session-meta {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.pi-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(680px, 100%);
+  max-height: min(80vh, 720px);
+  padding: 16px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.pi-modal:focus {
+  outline: none;
+}
+
+.pi-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.pi-modal-title {
+  margin: 0;
+  font-size: 15px;
+}
+
+.pi-modal-close {
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pi-modal-close:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.pi-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.pi-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pi-modal-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pi-modal-item:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.pi-modal-item-title {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-tree {
+  padding: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.pi-tree-children {
+  margin-left: 18px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.pi-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.pi-tree-node.active {
+  background: var(--bg-elevated);
+}
+
+.pi-tree-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-tree-node.active .pi-tree-label {
+  color: var(--text);
+}
+
+.pi-tree-leaf {
+  flex: none;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.pi-tree-fork {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.pi-tree-fork:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}

@@ -71,7 +71,36 @@ def emit_prompt_events(text: str) -> None:
     send({"type": "agent_settled"})
 
 
+ENTRIES = [
+    {
+        "type": "message",
+        "id": "entry-1",
+        "parentId": None,
+        "timestamp": "2024-01-01T00:00:00.000Z",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "hello"}],
+        },
+    },
+    {
+        "type": "message",
+        "id": "entry-2",
+        "parentId": "entry-1",
+        "timestamp": "2024-01-01T00:00:01.000Z",
+        "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": "follow up"}],
+        },
+    },
+]
+
+
 def main() -> int:
+    argv_file = os.environ.get("FAKE_PI_ARGV_FILE")
+    if argv_file:
+        with open(argv_file, "w", encoding="utf-8") as handle:
+            json.dump(sys.argv, handle)
+
     if os.environ.get("FAKE_PI_IGNORE_TERM"):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
@@ -108,27 +137,14 @@ def main() -> int:
                     "isCompacting": False,
                     "messageCount": 0,
                     "pendingMessageCount": 0,
+                    "sessionFile": os.environ.get("FAKE_PI_SESSION_FILE"),
                 },
             )
         elif kind == "get_entries":
             respond(
                 request_id,
                 "get_entries",
-                {
-                    "entries": [
-                        {
-                            "type": "message",
-                            "id": "entry-1",
-                            "parentId": None,
-                            "timestamp": "2024-01-01T00:00:00.000Z",
-                            "message": {
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": "hello"}],
-                            },
-                        }
-                    ],
-                    "leafId": "entry-1",
-                },
+                {"entries": ENTRIES, "leafId": "entry-2"},
             )
         elif kind == "prompt":
             respond(request_id, "prompt", {"disposition": "started"})
@@ -137,6 +153,37 @@ def main() -> int:
             name = str(command.get("name", "")).strip()
             respond(request_id, "set_session_name", {})
             send({"type": "session_info_changed", "name": name})
+        elif kind == "get_tree":
+            respond(
+                request_id,
+                "get_tree",
+                {
+                    "tree": [
+                        {
+                            "entry": ENTRIES[0],
+                            "children": [{"entry": ENTRIES[1], "children": []}],
+                        }
+                    ],
+                    "leafId": "entry-2",
+                },
+            )
+        elif kind == "get_fork_messages":
+            respond(
+                request_id,
+                "get_fork_messages",
+                {"messages": [{"entryId": "entry-2", "text": "follow up"}]},
+            )
+        elif kind in ("fork", "clone"):
+            respond(request_id, str(kind), {"cancelled": False, "text": "follow up"})
+        elif kind == "export_html":
+            output_path = command.get("outputPath")
+            if not isinstance(output_path, str) or not output_path:
+                respond(request_id, "export_html", success=False, error="no output path")
+            else:
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                with open(output_path, "w", encoding="utf-8") as handle:
+                    handle.write("<!doctype html><title>fake pi export</title>")
+                respond(request_id, "export_html", {"path": output_path})
         elif kind in ("abort", "clear_queue", "set_model", "new_session", "compact"):
             respond(request_id, str(kind), {})
         elif kind == "get_commands":

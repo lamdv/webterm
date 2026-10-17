@@ -154,7 +154,9 @@ scheme, so no extra configuration is needed.
   it (touch) / right-clicking it (desktop). Launched commands are typed into a
   new shell session, so if they exit (or aren't installed) you land back at a
   prompt rather than losing the tab. By default, if `pi` is on `PATH`, a **pi
-  agent** button starts `pi`. Add your own with e.g.
+  agent** button starts the pi TUI. A **pi chat** button starts a structured
+  RPC session instead, with persisted conversations under `--pi-session-dir`
+  and a **pi resume** picker. Add your own with e.g.
   `--launcher "btop=btop" --launcher "logs=journalctl -f"`.
 - **Sub-agents** — webterm also listens on a local Unix socket so a process on
   the same machine (an agent, a script, a test harness) can spawn sessions that
@@ -209,6 +211,7 @@ scheme, so no extra configuration is needed.
 | `--launcher` | `pi agent` (if `pi` is installed) | Add a button that starts a session running `LABEL=COMMAND` (repeatable) |
 | `--cwd` | `$HOME` | Working directory for new sessions |
 | `--scrollback` | `100000` | Bytes of scrollback kept per session for reattach |
+| `--pi-session-dir` | `$WEBTERM_PI_SESSION_DIR` or `$XDG_STATE_HOME/webterm/pi-sessions` | Webterm-managed root for persisted pi GUI sessions |
 | `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API |
 | `--no-control` | off | Disable the local control socket entirely |
 | `--no-discovery` | off | Disable the unauthenticated `/.well-known/webterm.json` document |

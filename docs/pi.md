@@ -5,10 +5,12 @@ webterm, alongside ordinary shell sessions. The goal is a browser chat client
 for a headless `pi --mode rpc` process: remote, persistent, and able to show
 messages, tool calls, and agent status without emulating the TUI in xterm.
 
-Status: **design accepted; P0 server side and an initial browser chat view implemented.**
-Tracking issue: #10. For the
-existing PTY-based pi launcher, nothing changes: it stays as the escape hatch
-for TUI-only features.
+Status: **P0–P2 implemented.** The server, browser chat view, queue/steer
+controls, slash commands, managed session storage, resume picker, export, and
+tree/fork/clone are in place. Extension dialogs, notifications, image paste,
+and subagents remain P3/P4 work. Tracking issue: #10. For the existing
+PTY-based pi launcher, nothing changes: it stays as the escape hatch for
+TUI-only features.
 
 ## Goals
 
@@ -197,38 +199,36 @@ is explicit and per-launch, and the UI says what it does.
 
 ## Session storage
 
-P0 runs pi with `--no-session`; reconnect only needs the server process to
-keep running. Persistence, the resume picker, fork/clone, and export land in a
-later phase, using a webterm-managed root:
+Pi sessions persist under a webterm-managed root:
 
 - Default `$XDG_STATE_HOME/webterm/pi-sessions`, falling back to
   `~/.local/state/webterm/pi-sessions`.
 - Override with `--pi-session-dir` or `WEBTERM_PI_SESSION_DIR`.
 - Create it `0700`, resolve the real path once at startup, and expose it in
-  `/config.js`.
+  `/config.js` as `pi.sessionDir`.
 - Pass `--session-dir <root>` to every pi spawn and set
   `PI_CODING_AGENT_SESSION_DIR` in the pi child environment so nested pi
-  processes stay in the managed root. Do not set it for shell sessions.
+  processes stay in the managed root. Shell sessions are untouched.
 
 The root deliberately overrides pi's global and project `sessionDir` for
 webterm sessions. Sessions from the user's normal pi store are not listed; a
 read-only import root can be added later without changing the writable root.
 
 Pi keeps its grouping under the root
-(`--<cwd>--/<timestamp>_<id>.jsonl`), so the picker walks recursively and
-parses only the first `session` header line per file for the list. Paths from
-the browser are resolved with `realpath` and rejected unless they are under the
-root. The raw RPC channel is still equivalent to shell access, so this is
+(`--<cwd>--/<timestamp>_<id>.jsonl`). `list_pi_sessions` walks recursively and
+parses only the first `session` header line per file, sorting newest first.
+Paths from the browser are resolved with `realpath` and rejected unless they
+are under the root. `create(mode:"pi", resume:<path>)` reopens one with
+`--session <path>`; the browser's **pi resume** launcher lists those files and
+then asks the same explicit project-trust question as a fresh launch. The raw
+RPC channel is still equivalent to shell access, so root validation is
 accident prevention rather than a security boundary.
 
-Deletion is explicit: no automatic session-file removal by default. Optional
-retention flags can remove files by age or count, never a file backing a live
-session. Subagent sessions default to `--no-session`; persistence is opt-in.
-
-For TUI interop, offer "Open in TUI" by spawning
-`pi --session-dir <root> --resume <file>` in a PTY tab, only when the RPC
-session is closed. Verify pi's file locking before allowing two processes on
-one session file; otherwise copy the file first.
+`pi_export` writes HTML into `<root>/exports/` and can also resolve the live
+JSONL session file. Both are fetched through the authenticated `/pi/download`
+route with `Content-Disposition: attachment`. Deletion is explicit: no
+automatic session-file removal. Optional retention flags can remove files by
+age or count, never a file backing a live session.
 
 ## Extension dialogs
 
@@ -278,8 +278,9 @@ widgets, and notifications are rendered as text, never through `innerHTML`.
   writing a persistent webterm decision.
 - **Server restart.** Pi sessions die with the server today; decide whether a
   persisted session file enables resume after restart.
-- **Export serving.** `export_html` returns a path; serving it to the browser
-  needs the same root validation as the picker.
+- **TUI interop.** "Open in TUI" via `pi --session-dir <root> --resume <file>`
+  in a PTY tab, only when the RPC session is closed, and only after verifying
+  pi's file locking.
 
 ## P0 scope
 

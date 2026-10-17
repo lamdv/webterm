@@ -21,6 +21,7 @@ from .session import (
     DEFAULT_RETAINED_TTL,
     DEFAULT_SCROLLBACK,
     SessionManager,
+    prepare_pi_session_dir,
 )
 
 log = logging.getLogger("webterm")
@@ -46,6 +47,15 @@ def build_ssl_context(certfile: str, keyfile: str | None = None) -> ssl.SSLConte
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile, keyfile)
     return context
+
+
+def _default_pi_session_dir() -> str:
+    """Default webterm-managed root for persisted pi session files."""
+    explicit = os.environ.get("WEBTERM_PI_SESSION_DIR")
+    if explicit:
+        return explicit
+    state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(state, "webterm", "pi-sessions")
 
 
 def _default_shell() -> str:
@@ -112,6 +122,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_SCROLLBACK,
         help=f"bytes of scrollback kept per session (default: {DEFAULT_SCROLLBACK})",
+    )
+    parser.add_argument(
+        "--pi-session-dir",
+        default=None,
+        metavar="PATH",
+        help=(
+            "webterm-managed directory for persisted pi sessions "
+            "(default: $WEBTERM_PI_SESSION_DIR or "
+            "$XDG_STATE_HOME/webterm/pi-sessions)"
+        ),
     )
     parser.add_argument(
         "--control-socket",
@@ -267,6 +287,13 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ssl.SSLError) as exc:
             parser.error(f"cannot load TLS certificate: {exc}")
 
+    pi_session_dir = args.pi_session_dir or _default_pi_session_dir()
+    try:
+        pi_session_dir = prepare_pi_session_dir(pi_session_dir)
+    except OSError as exc:
+        parser.error(f"cannot create pi session directory: {exc}")
+    manager.pi_session_dir = pi_session_dir
+
     token = args.token or os.environ.get("WEBTERM_TOKEN") or None
     if not _is_loopback(args.host):
         if ssl_context is None:
@@ -292,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
     config["pi"] = {
         "available": shutil.which("pi") is not None,
         "cwd": os.path.abspath(os.path.expanduser(cwd)),
+        "sessionDir": pi_session_dir,
     }
 
     profiles = parse_agents(args.agent, args.agent_interactive, parser.error)

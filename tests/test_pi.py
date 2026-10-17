@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 from webterm.server import start_server
 from webterm.session import SessionManager
@@ -80,7 +82,7 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
 
         snapshot = await session.snapshot()
         self.assertEqual(snapshot["state"]["model"]["id"], "fake-model")
-        self.assertEqual(snapshot["entries"]["leafId"], "entry-1")
+        self.assertEqual(snapshot["entries"]["leafId"], "entry-2")
         self.assertEqual(snapshot["commands"]["commands"][0]["name"], "review")
         self.assertGreaterEqual(snapshot["seq"], seqs[-1])
 
@@ -119,11 +121,13 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
 class PiServerTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.cwd = tempfile.mkdtemp(prefix="webterm-pi-server-")
+        self.session_root = Path(tempfile.mkdtemp(prefix="webterm-pi-sessions-"))
         self.manager = SessionManager(
             shell="/bin/sh",
             cwd=self.cwd,
             retained_ttl=None,
             pi_command=[sys.executable, str(FAKE_PI)],
+            pi_session_dir=str(self.session_root.resolve()),
         )
         self.handle = await start_server(
             "127.0.0.1",
@@ -139,6 +143,7 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
         await self.handle.stop()
         shutil.rmtree(self.cwd, ignore_errors=True)
+        shutil.rmtree(self.session_root, ignore_errors=True)
 
     async def _create_pi(self, title: str = "fake chat") -> dict:
         await self.client.send_json(
@@ -167,6 +172,165 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
             lambda message: message.get("type") == "pi_resync"
             and message.get("session_id") == session_id
         )
+
+    def _write_session(self, name: str, session_id: str, cwd: str | None = None) -> Path:
+        path = self.session_root / "project" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        header = {
+            "type": "session",
+            "version": 3,
+            "id": session_id,
+            "timestamp": "2024-01-01T00:00:00.000Z",
+            "cwd": cwd or self.cwd,
+        }
+        path.write_text(json.dumps(header) + "\n", encoding="utf-8")
+        return path
+
+    async def _request(self, message: dict) -> dict:
+        await self.client.send_json(message)
+        result = await self.client.recv_json_until(
+            lambda reply: reply.get("type") == "result" and reply.get("id") == message["id"]
+        )
+        return result["result"]
+
+    async def test_list_pi_sessions_reads_headers_and_ignores_unsafe_files(self) -> None:
+        first = self._write_session("first.jsonl", "session-a")
+        second = self._write_session("second.jsonl", "session-b")
+        (self.session_root / "notes.txt").write_text("not jsonl", encoding="utf-8")
+        outside = Path(self.cwd) / "outside.jsonl"
+        outside.write_text(
+            json.dumps(
+                {
+                    "type": "session",
+                    "id": "outside",
+                    "cwd": self.cwd,
+                    "timestamp": "2024-01-01T00:00:00.000Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (self.session_root / "project" / "link.jsonl").symlink_to(outside)
+
+        listing = await self._request({"type": "list_pi_sessions", "id": "list-pi"})
+        self.assertEqual(listing["root"], str(self.session_root.resolve()))
+        ids = {entry["id"] for entry in listing["sessions"]}
+        self.assertIn("session-a", ids)
+        self.assertIn("session-b", ids)
+        self.assertNotIn("outside", ids)
+        paths = {entry["path"] for entry in listing["sessions"]}
+        self.assertIn(str(first), paths)
+        self.assertIn(str(second), paths)
+
+    async def test_create_resume_passes_the_session_file(self) -> None:
+        session_path = self._write_session("resume.jsonl", "session-resume")
+        argv_file = Path(self.cwd) / "argv.json"
+        result = await self._request(
+            {
+                "type": "create",
+                "id": "create-resume",
+                "mode": "pi",
+                "cwd": self.cwd,
+                "trust": "deny",
+                "resume": str(session_path),
+                "env": {"FAKE_PI_ARGV_FILE": str(argv_file)},
+            }
+        )
+        session = result["session"]
+        self.assertEqual(session["title"], "resume")
+        await wait_until(argv_file.exists)
+        argv = json.loads(argv_file.read_text(encoding="utf-8"))
+        self.assertIn("--session", argv)
+        self.assertEqual(argv[argv.index("--session") + 1], str(session_path))
+        self.assertIn("--session-dir", argv)
+        self.assertEqual(
+            argv[argv.index("--session-dir") + 1], str(self.session_root.resolve())
+        )
+        self.assertIn("--no-approve", argv)
+
+    async def test_create_rejects_resume_outside_the_managed_root(self) -> None:
+        outside = Path(self.cwd) / "outside.jsonl"
+        outside.write_text('{"type":"session"}\n', encoding="utf-8")
+        await self.client.send_json(
+            {
+                "type": "create",
+                "id": "bad-resume",
+                "mode": "pi",
+                "cwd": self.cwd,
+                "trust": "deny",
+                "resume": str(outside),
+            }
+        )
+        result = await self.client.recv_json_until(
+            lambda message: message.get("type") == "error"
+            and message.get("id") == "bad-resume"
+        )
+        self.assertEqual(result["error"]["code"], "bad_request")
+
+    async def test_export_html_returns_a_download_url(self) -> None:
+        session = await self._create_pi()
+        result = await self._request(
+            {
+                "type": "pi_export",
+                "id": "export-html",
+                "session_id": session["id"],
+                "format": "html",
+            }
+        )
+        self.assertEqual(result["format"], "html")
+        self.assertTrue(result["url"].startswith("/pi/download?path="))
+        self.assertTrue(result["path"].startswith(str(self.session_root.resolve())))
+        self.assertTrue(Path(result["path"]).is_file())
+
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", self.handle.port
+        )
+        writer.write(
+            f"GET {result['url']} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        status, _, body = raw.partition(b"\r\n\r\n")
+        self.assertIn(b"200", status.split(b"\r\n")[0])
+        self.assertIn(b"fake pi export", body)
+        self.assertIn(b"Content-Disposition: attachment", raw)
+
+    async def test_export_jsonl_returns_the_session_file(self) -> None:
+        session_path = self._write_session("live.jsonl", "session-live")
+        result = await self._request(
+            {
+                "type": "create",
+                "id": "create-live",
+                "mode": "pi",
+                "cwd": self.cwd,
+                "trust": "deny",
+                "env": {"FAKE_PI_SESSION_FILE": str(session_path)},
+            }
+        )
+        exported = await self._request(
+            {
+                "type": "pi_export",
+                "id": "export-jsonl",
+                "session_id": result["session"]["id"],
+                "format": "jsonl",
+            }
+        )
+        self.assertEqual(exported["format"], "jsonl")
+        self.assertEqual(exported["path"], str(session_path))
+        self.assertIn("/pi/download?path=", exported["url"])
+
+    async def test_download_rejects_paths_outside_the_root(self) -> None:
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.handle.port)
+        outside = quote(str(Path(self.cwd) / "outside.jsonl"), safe="")
+        writer.write(
+            f"GET /pi/download?path={outside} HTTP/1.1\r\n"
+            "Host: x\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        self.assertIn(b"404", raw.split(b"\r\n", 1)[0])
 
     async def test_list_dirs_lists_only_directories(self) -> None:
         root = Path(self.cwd)
@@ -236,7 +400,7 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
                 resync = message
 
         self.assertTrue(result["result"]["ok"])
-        self.assertEqual(resync["entries"]["leafId"], "entry-1")
+        self.assertEqual(resync["entries"]["leafId"], "entry-2")
 
     async def test_create_prompt_and_subscribe(self) -> None:
         await self.client.send_json(
@@ -267,7 +431,7 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
             lambda message: message.get("type") == "pi_resync"
             and message.get("session_id") == session_id
         )
-        self.assertEqual(resync["entries"]["leafId"], "entry-1")
+        self.assertEqual(resync["entries"]["leafId"], "entry-2")
 
         await self.client.send_json(
             {

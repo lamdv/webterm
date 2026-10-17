@@ -51,7 +51,7 @@ sections:
 | Socket | `connect`, `send`, `setStatus`, reconnect backoff. |
 | Control plane | `handleControl`, `reconcileSessions`, `ensureTerminal`. |
 | Tab / view | `renderTabs`, `activate`, `startRename` (inline tab rename). |
-| Pi view | `ensurePiView`, pi trust dialog, `createPiSession` launcher. |
+| Pi view | `ensurePiView`, pi trust/resume dialogs, `createPiSession` and `createPiResumeSession` launchers, export download. |
 | Resize | `fit`, `cellSize`, `domCellSize`, `refitAll`. |
 | Actions | Launchers, `createSession`, keyboard shortcuts. |
 | Boot | Feature check, initial render, `connect()`. |
@@ -82,7 +82,7 @@ sections:
 - `sessionsMeta` — the latest `sessions` list from the server.
 - `userLaunchers` — user-defined launcher pills, persisted.
 - `CONFIG = window.WEBTERM_CONFIG || {}` — `fontFamily`, `fontSize`,
-  `launchers`.
+  `launchers`, and `pi` (`available`, `cwd`, `sessionDir`).
 - Reconnect state: `socket`, `reconnectDelay`, `closedByPage`,
   `activateNext`, `restarting`. Each terminal entry also tracks `offset`, the
   number of output bytes it has rendered.
@@ -164,6 +164,21 @@ Unknown ids are ignored.
 - `activate(id)` persists the choice, toggles the `active` class on wrappers,
   updates tab highlighting, and fits/focuses the terminal on the next animation
   frame plus a 50 ms follow-up (needed when a terminal is first made visible).
+
+### Pi view
+
+`ensurePiView` creates `window.WebtermPi.create(session, hooks)` for
+`kind:"pi"` sessions. The view is hydrated by server `pi_resync` snapshots and
+then consumes `pi_event` records; it owns no persistence. Hooks map to the
+generic RPC envelope (`onCommand`), an explicit snapshot refresh (`onRefresh`),
+and `pi_export` (`onExport`). The composer recognizes webterm built-ins
+(`/new`, `/compact`, `/reload`, `/fork`, `/clone`, `/tree`, `/export`) and
+merges pi's `get_commands` results for extension/template/skill commands.
+
+Before a pi process starts, the trust dialog always asks whether project
+settings/extensions may load. The resume launcher lists persisted sessions via
+`list_pi_sessions`, then asks the same trust question for the selected cwd
+before sending `create` with `resume`.
 
 ### Resize and fitting
 

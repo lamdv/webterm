@@ -31,7 +31,12 @@
     { name: "new", description: "Start a new session", source: "webterm" },
     { name: "compact", description: "Compact the conversation", source: "webterm" },
     { name: "reload", description: "Reload state and commands", source: "webterm" },
+    { name: "fork", description: "Branch from an earlier message", source: "webterm" },
+    { name: "clone", description: "Clone the active branch", source: "webterm" },
+    { name: "tree", description: "Show the session tree", source: "webterm" },
+    { name: "export", description: "Download HTML or JSONL", source: "webterm" },
   ];
+  const BUILTIN_NAMES = new Set(BUILTIN_COMMANDS.map((command) => command.name));
 
   function create(session, options) {
     const root = el("div", "pi-view");
@@ -617,6 +622,182 @@
       if (text && !input.value.trim()) input.value = text;
     }
 
+    function showModal(title, body) {
+      const overlay = el("div", "pi-modal-overlay");
+      const dialog = el("div", "pi-modal");
+      dialog.setAttribute("role", "dialog");
+      dialog.setAttribute("aria-modal", "true");
+      dialog.setAttribute("aria-label", title);
+      dialog.tabIndex = -1;
+      const head = el("div", "pi-modal-head");
+      const heading = el("h2", "pi-modal-title", title);
+      const close = el("button", "pi-modal-close", "×");
+      close.type = "button";
+      close.setAttribute("aria-label", "Close");
+      head.append(heading, close);
+      const content = el("div", "pi-modal-body");
+      if (body) content.appendChild(body);
+      dialog.append(head, content);
+      overlay.appendChild(dialog);
+      document.body.appendChild(overlay);
+
+      function closeModal() {
+        document.removeEventListener("keydown", onKey, true);
+        overlay.remove();
+      }
+      function onKey(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          closeModal();
+        }
+      }
+      close.addEventListener("click", closeModal);
+      overlay.addEventListener("pointerdown", (event) => {
+        if (event.target === overlay) closeModal();
+      });
+      document.addEventListener("keydown", onKey, true);
+      dialog.focus();
+      return { close: closeModal, content };
+    }
+
+    function entryLabel(entry) {
+      if (!entry || typeof entry !== "object") return "entry";
+      if (entry.type === "message" && entry.message) {
+        const role = entry.message.role || "message";
+        const text = messageText(entry.message).replace(/\s+/g, " ").trim();
+        return role + (text ? ": " + text.slice(0, 120) : "");
+      }
+      if (entry.type) return entry.type;
+      return "entry";
+    }
+
+    function afterMutation(result, command, closeModal) {
+      return Promise.resolve(result)
+        .then((response) => {
+          if (response && response.data && response.data.cancelled) return;
+          if (closeModal) closeModal();
+          return reloadView();
+        })
+        .catch((error) => {
+          if (closeModal) closeModal();
+          restoreDraft(command.text);
+          commandError(error, false);
+        });
+    }
+
+    function forkEntry(entryId, command, closeModal) {
+      return afterMutation(
+        options.onCommand({ type: "fork", entryId }),
+        command,
+        closeModal
+      );
+    }
+
+    function showForkPicker(command) {
+      const result = options.onCommand({ type: "get_fork_messages" });
+      Promise.resolve(result)
+        .then((response) => {
+          const messages = (response && response.data && response.data.messages) || [];
+          if (!messages.length) {
+            setBanner("no user messages available to fork");
+            render();
+            return;
+          }
+          const body = el("div", "pi-modal-list");
+          const modal = showModal("Fork from a message", body);
+          for (const item of messages) {
+            const button = el("button", "pi-modal-item");
+            button.type = "button";
+            const text = String(item.text || "").replace(/\s+/g, " ").trim();
+            button.appendChild(el("span", "pi-modal-item-title", text.slice(0, 160)));
+            button.addEventListener("click", () =>
+              forkEntry(item.entryId, command, modal.close)
+            );
+            body.appendChild(button);
+          }
+        })
+        .catch((error) => {
+          restoreDraft(command.text);
+          commandError(error, false);
+        });
+    }
+
+    function renderTreeNodes(parent, nodes, leafId, command, modal) {
+      for (const node of nodes || []) {
+        if (!node || !node.entry) continue;
+        const row = el(
+          "div",
+          "pi-tree-node" + (node.entry.id === leafId ? " active" : "")
+        );
+        const label = entryLabel(node.entry);
+        row.appendChild(el("span", "pi-tree-label", label));
+        if (node.entry.id === leafId) {
+          row.appendChild(el("span", "pi-tree-leaf", "active"));
+        }
+        if (node.entry.type === "message" && node.entry.message.role === "user") {
+          const fork = el("button", "pi-tree-fork", "fork");
+          fork.type = "button";
+          fork.title = "Fork from this message";
+          fork.addEventListener("click", () =>
+            forkEntry(node.entry.id, command, modal.close)
+          );
+          row.appendChild(fork);
+        }
+        parent.appendChild(row);
+        if (node.children && node.children.length) {
+          const children = el("div", "pi-tree-children");
+          renderTreeNodes(children, node.children, leafId, command, modal);
+          parent.appendChild(children);
+        }
+      }
+    }
+
+    function showTree(command) {
+      const result = options.onCommand({ type: "get_tree" });
+      Promise.resolve(result)
+        .then((response) => {
+          const data = (response && response.data) || {};
+          const body = el("div", "pi-tree");
+          const modal = showModal("Session tree", body);
+          if (!Array.isArray(data.tree) || !data.tree.length) {
+            body.appendChild(el("div", "pi-empty", "The session tree is empty."));
+            return;
+          }
+          renderTreeNodes(body, data.tree, data.leafId, command, modal);
+        })
+        .catch((error) => {
+          restoreDraft(command.text);
+          commandError(error, false);
+        });
+    }
+
+    function downloadExport(format, command) {
+      if (!options.onExport) {
+        setBanner("export is unavailable");
+        render();
+        return;
+      }
+      setBanner("exporting…");
+      render();
+      Promise.resolve(options.onExport(format))
+        .then((data) => {
+          if (!data || !data.url) throw new Error("export produced no file");
+          const link = document.createElement("a");
+          link.href = data.url;
+          link.download = "";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          setBanner("");
+          render();
+        })
+        .catch((error) => {
+          restoreDraft(command.text);
+          commandError(error, false);
+        });
+    }
+
     function reloadView() {
       if (!options.onRefresh) {
         setBanner("reload is unavailable");
@@ -635,14 +816,15 @@
       const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
       if (!match) return null;
       const name = match[1].toLowerCase();
-      if (name !== "new" && name !== "compact" && name !== "reload") return null;
+      if (!BUILTIN_NAMES.has(name)) return null;
       return { name, args: (match[2] || "").trim(), text };
     }
 
     function runSlashCommand(text) {
       const command = builtinSlash(text);
       if (!command) return false;
-      if (state.busy) {
+      const passive = command.name === "export" || command.name === "tree";
+      if (state.busy && !passive) {
         setBanner("stop pi before running /" + command.name);
         render();
         return true;
@@ -652,17 +834,25 @@
         reloadView();
         return true;
       }
+      if (command.name === "export") {
+        const format = command.args && command.args.toLowerCase() === "jsonl" ? "jsonl" : "html";
+        downloadExport(format, command);
+        return true;
+      }
+      if (command.name === "tree") {
+        showTree(command);
+        return true;
+      }
+      if (command.name === "fork") {
+        showForkPicker(command);
+        return true;
+      }
+      if (command.name === "clone") {
+        afterMutation(options.onCommand({ type: "clone" }), command, null);
+        return true;
+      }
       if (command.name === "new") {
-        const result = options.onCommand({ type: "new_session" });
-        Promise.resolve(result)
-          .then((response) => {
-            if (response && response.data && response.data.cancelled) return;
-            return reloadView();
-          })
-          .catch((error) => {
-            restoreDraft(command.text);
-            commandError(error, false);
-          });
+        afterMutation(options.onCommand({ type: "new_session" }), command, null);
         return true;
       }
       const rpc = { type: "compact" };
