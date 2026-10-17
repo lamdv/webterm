@@ -310,6 +310,12 @@
         });
         paletteEl.appendChild(item);
       });
+      requestAnimationFrame(() => {
+        const active = paletteEl.querySelector(".pi-command-item.active");
+        if (active && typeof active.scrollIntoView === "function") {
+          active.scrollIntoView({ block: "nearest" });
+        }
+      });
     }
 
     function updatePalette() {
