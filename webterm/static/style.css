@@ -915,22 +915,13 @@ button,
 
 .pi-composer-actions {
   display: flex;
+  flex-direction: column;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
-.pi-queue-mode {
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.pi-queue-mode[hidden] {
-  display: none;
+.pi-composer-actions button {
+  width: 100%;
 }
 
 .pi-composer button {
@@ -953,9 +944,30 @@ button,
 }
 
 .pi-send {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  line-height: 1.2;
   background: var(--accent) !important;
   border-color: var(--accent) !important;
   color: #fff !important;
+  touch-action: manipulation;
+  user-select: none;
+}
+
+.pi-send-label {
+  font-weight: 600;
+}
+
+.pi-send-hint {
+  font-size: 10px;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+
+.pi-send-hint:empty {
+  display: none;
 }
 
 .pi-stop {

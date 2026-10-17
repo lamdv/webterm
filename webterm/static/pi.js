@@ -46,19 +46,14 @@
     input.placeholder = "Message pi… (Enter to send, Shift+Enter for a newline)";
     input.setAttribute("aria-label", "Message pi");
     const actions = el("div", "pi-composer-actions");
-    const modeSelect = el("select", "pi-queue-mode");
-    modeSelect.setAttribute("aria-label", "Queued message behavior");
-    const steerOption = el("option", "", "Steer");
-    steerOption.value = "steer";
-    const followOption = el("option", "", "Follow up");
-    followOption.value = "followUp";
-    modeSelect.append(steerOption, followOption);
-    modeSelect.value = "steer";
     const stopButton = el("button", "pi-stop", "Stop");
     stopButton.type = "button";
-    const sendButton = el("button", "pi-send", "Send");
+    const sendButton = el("button", "pi-send");
     sendButton.type = "submit";
-    actions.append(modeSelect, stopButton, sendButton);
+    const sendLabel = el("span", "pi-send-label", "Send");
+    const sendHint = el("span", "pi-send-hint");
+    sendButton.append(sendLabel, sendHint);
+    actions.append(sendButton, stopButton);
     form.append(input, actions);
 
     root.append(header, banner, messagesEl, queueEl, form);
@@ -101,15 +96,13 @@
       input.disabled = state.exited;
       sendButton.disabled = state.exited;
       stopButton.disabled = state.exited || !state.busy;
-      modeSelect.disabled = state.exited;
-      modeSelect.hidden = !state.busy || state.exited;
-      sendButton.textContent = state.busy
-        ? modeSelect.value === "followUp"
-          ? "Follow up"
-          : "Steer"
-        : "Send";
+      sendLabel.textContent = state.busy ? "Follow up" : "Send";
+      sendHint.textContent = state.busy ? "hold to steer" : "";
+      sendButton.title = state.busy
+        ? "Click or Enter: follow up. Hold or Ctrl+Enter: steer."
+        : "Send prompt";
       input.placeholder = state.busy
-        ? "pi is working… (Enter to queue, Shift+Enter for a newline, Esc to stop)"
+        ? "pi is working… (Enter to follow up, Ctrl+Enter to steer, Esc to stop)"
         : "Message pi… (Enter to send, Shift+Enter for a newline)";
     }
 
@@ -504,12 +497,12 @@
         .catch((error) => commandError(error, true));
     }
 
-    function sendPrompt() {
+    function sendPrompt(behavior) {
       const text = input.value.trim();
       if (!text || state.exited) return;
       const wasBusy = state.busy;
       const command = { type: "prompt", message: text };
-      if (wasBusy) command.streamingBehavior = modeSelect.value;
+      if (wasBusy) command.streamingBehavior = behavior || "followUp";
       input.value = "";
       setBanner("");
       if (!wasBusy) state.busy = true;
@@ -547,20 +540,56 @@
       render();
     }
 
+    const LONG_PRESS_MS = 500;
+    let longPressTimer = null;
+    let suppressClick = false;
+
+    function cancelLongPress() {
+      if (longPressTimer !== null) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+    }
+
+    sendButton.addEventListener("pointerdown", (event) => {
+      if (event.button !== undefined && event.button !== 0) return;
+      suppressClick = false;
+      cancelLongPress();
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        suppressClick = true;
+        sendPrompt("steer");
+      }, LONG_PRESS_MS);
+    });
+    sendButton.addEventListener("pointerup", cancelLongPress);
+    sendButton.addEventListener("pointercancel", cancelLongPress);
+    sendButton.addEventListener("pointerleave", cancelLongPress);
+    sendButton.addEventListener("contextmenu", (event) => event.preventDefault());
+    sendButton.addEventListener("click", (event) => {
+      if (!suppressClick) return;
+      event.preventDefault();
+      event.stopPropagation();
+      suppressClick = false;
+    });
+
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       sendPrompt();
     });
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
-        event.preventDefault();
-        sendPrompt();
+      if (event.key === "Enter") {
+        if (event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          sendPrompt("steer");
+        } else if (!event.shiftKey) {
+          event.preventDefault();
+          sendPrompt();
+        }
       } else if (event.key === "Escape") {
         event.preventDefault();
         abort();
       }
     });
-    modeSelect.addEventListener("change", renderHeader);
     stopButton.addEventListener("click", abort);
 
     render();
