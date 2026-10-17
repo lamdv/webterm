@@ -364,26 +364,142 @@
     // high-resolution deltas across events, so a rounded-to-zero tick simply
     // contributes to the next one instead of escaping to the browser.
     const lines = wheelScrollLines(term, event);
-    if (lines > 0) {
-      const app = term.modes && term.modes.applicationCursorKeysMode;
-      const key = "\x1b" + (app ? "O" : "[") + (event.deltaY < 0 ? "A" : "B");
-      send({ type: "input", session_id: sessionId, data: key.repeat(lines) });
-    }
+    if (lines > 0) sendCursorScroll(term, sessionId, event.deltaY < 0, lines);
     return true;
+  }
+
+  // xterm.js 5.5 skips its entire touch handler while the running program has
+  // mouse tracking on (`if (coreMouseService.areMouseEventsActive) return`),
+  // and its touch scroll only moves the viewport's `scrollTop`, which an
+  // alternate buffer has no scrollback for.  Full-screen TUIs (pi, Claude
+  // Code, btop, ...) therefore cannot be scrolled with a finger at all.  Turn
+  // a vertical drag into the same wheel reports (or alternate-scroll keys) a
+  // mouse wheel would have produced, one line per cell of travel.
+  function attachDragScroll(term, wrapper, sessionId) {
+    const ENGAGE_PX = 10; // vertical travel before a touch becomes a scroll
+    let tracking = false; // touchstart seen, direction not yet decided
+    let scrolling = false; // gesture committed to scrolling
+    let startX = 0;
+    let startY = 0;
+    let lastY = 0;
+    let pending = 0; // signed pixels not yet emitted as whole lines
+    let step = 16; // pixels of drag that equal one scrolled line
+
+    // Only the cases xterm cannot handle.  A normal buffer without mouse
+    // tracking keeps xterm's own (working) touch scrolling.
+    const draggable = () => {
+      const buffer = term.buffer && term.buffer.active;
+      return mouseTracking(term) || (buffer && buffer.type === "alternate");
+    };
+
+    const reset = () => {
+      tracking = false;
+      scrolling = false;
+      pending = 0;
+    };
+
+    wrapper.addEventListener(
+      "touchstart",
+      (event) => {
+        if (event.touches.length !== 1 || !draggable()) return;
+        const touch = event.touches[0];
+        tracking = true;
+        scrolling = false;
+        startX = touch.clientX;
+        startY = touch.clientY;
+        lastY = touch.clientY;
+        pending = 0;
+      },
+      { capture: true, passive: true }
+    );
+
+    wrapper.addEventListener(
+      "touchmove",
+      (event) => {
+        if (!tracking) return;
+        if (event.touches.length !== 1) {
+          reset();
+          return;
+        }
+        const touch = event.touches[0];
+        if (!scrolling) {
+          const dx = touch.clientX - startX;
+          const dy = touch.clientY - startY;
+          // Mostly horizontal: leave it to the browser / application.
+          if (Math.abs(dy) < Math.abs(dx)) {
+            if (Math.abs(dx) > ENGAGE_PX) reset();
+            return;
+          }
+          if (Math.abs(dy) < ENGAGE_PX) return;
+          scrolling = true;
+          const cell = cellSize(term, wrapper);
+          step = Math.max(8, cell ? Math.round(cell.height) : 16);
+          // Drop the dead-zone travel instead of replaying it as a jump.
+          lastY = startY + (dy > 0 ? ENGAGE_PX : -ENGAGE_PX);
+          pending = 0;
+        }
+        // We own the gesture now: no page pan and no xterm handler.
+        event.preventDefault();
+        event.stopPropagation();
+        pending += touch.clientY - lastY;
+        lastY = touch.clientY;
+        flush(touch.clientX, touch.clientY);
+      },
+      { capture: true, passive: false }
+    );
+
+    wrapper.addEventListener("touchend", reset, { capture: true });
+    wrapper.addEventListener("touchcancel", reset, { capture: true });
+
+    function flush(clientX, clientY) {
+      let up = 0;
+      let down = 0;
+      while (pending >= step) {
+        pending -= step;
+        up++;
+      }
+      while (pending <= -step) {
+        pending += step;
+        down++;
+      }
+      if (up) scrollBy(term, sessionId, true, up, clientX, clientY);
+      if (down) scrollBy(term, sessionId, false, down, clientX, clientY);
+    }
+  }
+
+  // Route a scroll step to whatever the running program understands: SGR wheel
+  // reports when it tracks the mouse, cursor keys for an alternate-buffer app
+  // without tracking, and the local scrollback otherwise (e.g. a buffer change
+  // mid-drag).  Direction: `up` shows older content, matching a wheel-up.
+  function scrollBy(term, sessionId, up, lines, clientX, clientY) {
+    if (mouseTracking(term)) {
+      for (let i = 0; i < lines; i++) sendMouseWheel(term, up, clientX, clientY);
+    } else if (term.buffer && term.buffer.active && term.buffer.active.type === "alternate") {
+      sendCursorScroll(term, sessionId, up, lines);
+    } else if (typeof term.scrollLines === "function") {
+      for (let i = 0; i < lines; i++) term.scrollLines(up ? -1 : 1);
+    }
+  }
+
+  function mouseTracking(term) {
+    const modes = term.modes;
+    return !!(modes && modes.mouseTrackingMode && modes.mouseTrackingMode !== "none");
   }
 
   // Mouse-tracking applications receive wheel input as SGR mouse reports.
   // xterm emits exactly one report per wheel event, so this matches its
   // behavior for ordinary wheel ticks.
   function forwardMouseWheel(term, event) {
+    if (!mouseTracking(term)) return false;
+    return sendMouseWheel(term, event.deltaY < 0, event.clientX, event.clientY, event);
+  }
+
+  function sendMouseWheel(term, up, clientX, clientY, modifiers) {
     const core = term._core;
-    const modes = term.modes;
-    if (!core || !modes || !modes.mouseTrackingMode || modes.mouseTrackingMode === "none") {
-      return false;
-    }
-    const mouseService = core._mouseService;
-    const coreMouseService = core.coreMouseService;
+    const mouseService = core && core._mouseService;
+    const coreMouseService = core && core.coreMouseService;
     if (
+      !core ||
       !core.screenElement ||
       !mouseService ||
       typeof mouseService.getMouseReportCoords !== "function" ||
@@ -392,7 +508,7 @@
     ) {
       return false;
     }
-    const coords = mouseService.getMouseReportCoords(event, core.screenElement);
+    const coords = mouseService.getMouseReportCoords({ clientX, clientY }, core.screenElement);
     if (!coords) return false;
     coreMouseService.triggerMouseEvent({
       col: coords.col,
@@ -400,12 +516,19 @@
       x: coords.x,
       y: coords.y,
       button: 4, // wheel
-      action: event.deltaY < 0 ? 0 : 1, // 0 = up, 1 = down
-      ctrl: event.ctrlKey,
-      alt: event.altKey,
-      shift: event.shiftKey,
+      action: up ? 0 : 1, // 0 = up, 1 = down
+      ctrl: !!(modifiers && modifiers.ctrlKey),
+      alt: !!(modifiers && modifiers.altKey),
+      shift: !!(modifiers && modifiers.shiftKey),
     });
     return true;
+  }
+
+  // Alternate-scroll cursor keys, honouring DECCKM (application cursor keys).
+  function sendCursorScroll(term, sessionId, up, lines) {
+    const app = term.modes && term.modes.applicationCursorKeysMode;
+    const key = "\x1b" + (app ? "O" : "[") + (up ? "A" : "B");
+    send({ type: "input", session_id: sessionId, data: key.repeat(lines) });
   }
 
   // Reuse xterm's line-per-wheel accounting so alternate-scroll feels the same
@@ -487,6 +610,10 @@
       },
       { capture: true, passive: false }
     );
+
+    // A mouse-tracking full-screen app gets no touch scrolling from xterm, so
+    // translate finger drags into the wheel input it does understand.
+    attachDragScroll(term, wrapper, session.id);
 
     const entry = { term, wrapper, offset: 0 };
     terminals.set(session.id, entry);
@@ -819,6 +946,61 @@
     });
     observer.observe(terminalArea);
   }
+
+  // ------------------------------------------------- virtual keyboard
+
+  // Mobile browsers keep the *layout* viewport at full height when the virtual
+  // keyboard opens and only shrink the *visual* viewport (visualViewport), so a
+  // `100vh` app leaves the terminal's last rows hidden behind the keyboard.
+  // Keep `--app-height` in sync with the visual viewport instead, and when the
+  // keyboard clearly covers part of the screen, collapse the sidebar so the
+  // terminal gets the full width (restoring it when the keyboard closes).
+  const KEYBOARD_MIN_INSET = 120; // px the keyboard must cover to count as open
+  let keyboardOpen = false;
+  let autoCollapsedSidebar = false;
+
+  function viewportInset() {
+    const vv = window.visualViewport;
+    if (!vv) return 0;
+    return Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+  }
+
+  function syncViewport() {
+    const vv = window.visualViewport;
+    const height = vv ? vv.height : window.innerHeight;
+    const offsetTop = vv ? vv.offsetTop : 0;
+    const root = document.documentElement;
+    root.style.setProperty("--app-height", Math.round(height) + "px");
+    root.style.setProperty("--viewport-offset-top", Math.round(offsetTop) + "px");
+
+    const open = vv ? viewportInset() >= KEYBOARD_MIN_INSET : false;
+    if (open === keyboardOpen) return;
+    keyboardOpen = open;
+    appEl.classList.toggle("keyboard-open", open);
+
+    if (open) {
+      // Only take over a sidebar the user had open, and remember that we did.
+      if (!isSidebarCollapsed()) {
+        autoCollapsedSidebar = true;
+        setSidebarCollapsed(true, false);
+      }
+    } else if (autoCollapsedSidebar) {
+      autoCollapsedSidebar = false;
+      // If the user re-opened the sidebar while typing, leave it alone.  On a
+      // narrow viewport the sidebar stays hidden, as it does everywhere else.
+      if (isSidebarCollapsed()) refreshSidebarForViewport();
+    }
+  }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", () => {
+      syncViewport();
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(refitAll, 80);
+    });
+    window.visualViewport.addEventListener("scroll", syncViewport);
+  }
+  syncViewport();
 
   // ---------------------------------------------------------------- actions
 

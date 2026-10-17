@@ -178,6 +178,46 @@ unmeasurable right after creation:
   also trigger a refit for *all* sessions, keeping background PTYs correctly
   sized.
 
+### Virtual keyboard and touch layout
+
+On phones the browser keeps the *layout* viewport at full height while the
+virtual keyboard is open and only shrinks the *visual* viewport
+(`window.visualViewport`). A `100vh` app therefore hides the terminal's last
+rows behind the keyboard. `syncViewport()` closes that gap:
+
+- It writes `--app-height` (the visual viewport height) and
+  `--viewport-offset-top` (the visual viewport's `offsetTop`) as custom
+  properties on `:root`. `#app` uses them for its height and a `translateY`, so
+  the shell always fits the visible area — including the iOS case where the
+  browser pans the visual viewport to reveal a focused input. `100dvh` in the
+  stylesheet is the no-JS fallback.
+- It treats the keyboard as open when
+  `innerHeight - (visualViewport.height + offsetTop)` exceeds 120 px. On the
+  transition to open it collapses an expanded sidebar (with
+  `setSidebarCollapsed(true, false)`, so the user's saved preference is
+  untouched) and records that it did; on close it restores the
+  sidebar only if the user has not re-opened it in the meantime. If the sidebar
+  was already collapsed, nothing changes. On a narrow viewport the sidebar
+  stays hidden when the keyboard closes, as it does everywhere else.
+- `visualViewport` `resize`/`scroll` re-run `syncViewport()` and schedule a
+  debounced `refitAll` so the PTY grid tracks the keyboard.
+
+The chosen threshold means URL-bar changes (~50–80 px) are ignored, so the
+sidebar is not collapsed by ordinary scrolling chrome.
+
+Touch-specific styling lives in one `@media (hover: none), (pointer: coarse)`
+block in `style.css`: the per-tab `×` close button is made permanently visible
+(it is hover-only on desktop), rows and buttons get finger-sized hit targets,
+and popover inputs are bumped to 16 px so iOS does not zoom the page when they
+focus. Interactive elements also get `touch-action: manipulation` to drop the
+double-tap-zoom delay. The viewport meta tag carries `viewport-fit=cover`, and
+`#app` pads by `env(safe-area-inset-*)` for notched displays.
+
+On a narrow viewport (below 640 px) the sidebar stays collapsed whatever the
+stored preference says, and widening the window restores that preference. The
+stored preference itself is only written when the user toggles the sidebar, so
+automatic collapsing never overwrites it.
+
 ### Wheel and mouse input
 
 xterm.js (through at least 5.5.0) drops wheel events that its line
@@ -203,6 +243,36 @@ buffer it does nothing and lets xterm scroll the scrollback. This uses xterm
 internals (`term._core._mouseService`, `coreMouseService.triggerMouseEvent`,
 `viewport.getLinesScrolled`), guarded so a future xterm that changes them falls
 back to stock behavior. Populated by `handleWheel()` in `ensureTerminal()`.
+
+#### Touch drag
+
+The same wheel gap makes full-screen TUIs unscrollable on a touch screen: when
+an app turns mouse tracking on, xterm 5.5 returns early from its `touchstart`
+and `touchmove` handlers, and its touch scroll only moves the viewport's
+`scrollTop`, which an alternate buffer has no scrollback for. `attachDragScroll()`
+(installed per wrapper) fills that gap:
+
+- It only tracks a gesture when `mouseTracking()` is true **or** the active
+  buffer is `alternate` — a normal buffer without mouse tracking keeps xterm's
+  own (working) touch scrolling. Gating on the mouse mode rather than the buffer
+  alone matters because an app can keep reporting the mouse while briefly
+  leaving the alternate screen.
+- On a one-finger `touchstart` it records the origin; the first `touchmove`
+  decides the direction. A mostly-horizontal move, or one that stays inside a
+  10 px dead zone, releases the gesture so taps, long-press selection and pinch
+  zoom are untouched.
+- Once committed it calls `preventDefault()`/`stopPropagation()` (capture,
+  non-passive) so the page never pans, and accumulates vertical travel. Every
+  full cell height of travel is emitted as one line via `scrollBy()`: SGR wheel
+  reports while mouse tracking is on, cursor up/down keys in an untracked
+  alternate buffer, or `term.scrollLines()` if the buffer changed mid-drag.
+  Dragging down shows older content, matching a wheel-up.
+- Multi-touch (pinch) and `touchcancel` abort the gesture.
+
+`handleWheel()` and `attachDragScroll()` share the routing helpers
+(`mouseTracking`, `sendMouseWheel`, `sendCursorScroll`, `scrollBy`), so wheel
+and touch stay behaviourally identical. `html, body` set
+`overscroll-behavior: none` so a drag can never turn into pull-to-refresh.
 
 ### Launchers
 

@@ -180,6 +180,15 @@ scheme, so no extra configuration is needed.
   state are remembered in `localStorage`.
 - **Close session** — click the `×` on a tab; this kills the shell.
 - **Rename** — double-click a tab title.
+- **On a phone** — the layout follows the visual viewport, so when the virtual
+  keyboard opens the terminal shrinks to the space above it and the sidebar
+  auto-collapses for the full width; closing the keyboard restores both. Touch
+  targets are enlarged and the per-tab `×` is always visible. A narrow screen
+  starts with the sidebar collapsed unless you have chosen otherwise.
+- **Drag to scroll** — dragging a finger vertically scrolls full-screen TUIs
+  (pi, Claude Code, btop, vim, tmux) that xterm.js otherwise refuses to touch-
+  scroll because they enabled mouse tracking. Drag down to see older content.
+  Plain scrollback still uses xterm's native touch scrolling.
 - **Reconnect** — just reload the page; sessions stay alive until the server
   exits or you close them.
 - **Restart the server** — the `⟳` button in the sidebar (or `SIGHUP` sent to
