@@ -1665,3 +1665,141 @@ textarea.pi-ui-input {
 .tok-variable {
   color: #ffa657;
 }
+
+/* ------------------------------------------------------ markdown answers */
+
+.pi-md-p {
+  margin: 7px 0 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pi-md-heading {
+  margin: 14px 0 5px;
+  line-height: 1.25;
+  color: var(--text);
+}
+
+h1.pi-md-heading,
+h2.pi-md-heading {
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+  font-size: 18px;
+}
+
+h3.pi-md-heading {
+  font-size: 16px;
+}
+
+h4.pi-md-heading,
+h5.pi-md-heading,
+h6.pi-md-heading {
+  font-size: 14px;
+}
+
+.pi-md-list {
+  margin: 5px 0 0;
+  padding-left: 22px;
+}
+
+.pi-md-list .pi-md-list {
+  margin-top: 2px;
+  padding-left: 20px;
+}
+
+.pi-md-li {
+  margin: 3px 0;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pi-md-li::marker {
+  color: var(--text-dim);
+}
+
+.pi-md-li-task {
+  list-style: none;
+}
+
+.pi-md-task {
+  display: inline-block;
+  min-width: 1.25em;
+  color: var(--text-dim);
+}
+
+.pi-md-blockquote {
+  margin: 7px 0 0;
+  padding: 3px 0 3px 11px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+
+.pi-md-blockquote > :first-child {
+  margin-top: 0;
+}
+
+.pi-md-hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.pi-md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.pi-inline-code {
+  padding: 1px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.pi-md-table-wrap {
+  max-width: 100%;
+  margin: 7px 0 0;
+  overflow-x: auto;
+}
+
+.pi-md-table {
+  margin: 0;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.pi-md-table th,
+.pi-md-table td {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.pi-md-table th {
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.pi-md-table td {
+  color: var(--text);
+}
+
+.pi-md-table .pi-md-cell {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pi-msg > .pi-md-p:first-child,
+.pi-msg > .pi-md-heading:first-child,
+.pi-msg > .pi-md-list:first-child,
+.pi-msg > .pi-md-table-wrap:first-child,
+.pi-msg > .pi-code-block:first-child {
+  margin-top: 0;
+}

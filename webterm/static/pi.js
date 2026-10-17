@@ -38,6 +38,11 @@
     else renderPlain(parent, text);
   }
 
+  function renderAnswer(parent, text) {
+    if (HIGHLIGHT && HIGHLIGHT.renderMarkdown) HIGHLIGHT.renderMarkdown(parent, text);
+    else renderText(parent, text);
+  }
+
   function renderCode(parent, text, lang, options) {
     if (HIGHLIGHT) HIGHLIGHT.renderCode(parent, text, lang, options);
     else parent.appendChild(el("pre", "pi-pre", String(text || "")));
@@ -194,10 +199,11 @@
       return details;
     }
 
-    function appendBlock(parent, block) {
+    function appendBlock(parent, block, markdown) {
       if (!block || typeof block !== "object") return;
       if (block.type === "text") {
-        renderText(parent, block.text || "");
+        if (markdown) renderAnswer(parent, block.text || "");
+        else renderText(parent, block.text || "");
       } else if (block.type === "thinking") {
         if (block.redacted && !block.thinking) return;
         parent.appendChild(el("div", "pi-text pi-thinking", block.thinking || ""));
@@ -256,9 +262,10 @@
           row.appendChild(el("div", "pi-error", message.errorMessage));
         }
         if (!content.length && messageText(message)) {
-          renderText(row, messageText(message));
+          if (role === "assistant") renderAnswer(row, messageText(message));
+          else renderText(row, messageText(message));
         }
-        for (const block of content) appendBlock(row, block);
+        for (const block of content) appendBlock(row, block, role === "assistant");
       } else {
         row.appendChild(el("div", "pi-role", role));
         renderText(row, messageText(message));
