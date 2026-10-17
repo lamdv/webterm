@@ -803,6 +803,11 @@
   function renderTabs() {
     // Don't rebuild the list under an in-progress inline rename.
     if (editingTabId !== null) return;
+    const childCounts = new Map();
+    for (const session of sessionsMeta) {
+      if (!session.parent_id) continue;
+      childCounts.set(session.parent_id, (childCounts.get(session.parent_id) || 0) + 1);
+    }
     sessionsList.innerHTML = "";
     for (const { session, depth } of orderedSessions()) {
       const tab = document.createElement("li");
@@ -833,6 +838,15 @@
         badge.textContent = session.agent || "agent";
         badge.title = session.task || "agent session";
         tab.appendChild(badge);
+      }
+
+      const childCount = childCounts.get(session.id) || 0;
+      if (childCount) {
+        const children = document.createElement("span");
+        children.className = "tab-children";
+        children.textContent = String(childCount);
+        children.title = `${childCount} child session${childCount === 1 ? "" : "s"}`;
+        tab.appendChild(children);
       }
 
       if (session.needs_input) {

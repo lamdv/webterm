@@ -128,6 +128,12 @@ class ControlClient:
     def spawn(self, **params: Any) -> dict:
         return self.request("spawn", **params)
 
+    def pi(self, session_id: str, command: dict, *, timeout: float | None = None) -> dict:
+        result = self.request(
+            "pi", session_id=session_id, command=command, timeout=timeout
+        )
+        return result.get("pi_response") or {}
+
     def send(self, session_id: str, data: str, *, submit: bool = False) -> dict:
         return self.request("send", session_id=session_id, data=data, submit=submit)
 

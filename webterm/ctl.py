@@ -56,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--command", help="explicit command instead of an agent profile")
     p.add_argument("--print", dest="interactive", action="store_false", default=None)
     p.add_argument("--interactive", dest="interactive", action="store_true")
+    p.add_argument(
+        "--rpc",
+        action="store_true",
+        help="start a structured RPC agent (requires an rpc agent profile)",
+    )
     p.set_defaults(interactive=None)
     p.add_argument("--cwd")
     p.add_argument("--title")
@@ -84,8 +89,23 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--exit", action="store_true")
     target.add_argument("--text", dest="pattern", metavar="REGEX")
     target.add_argument("--idle", type=int, metavar="MS")
+    target.add_argument("--settled", action="store_true", help="wait for pi to settle")
     p.add_argument("--since", type=int, default=0)
     p.add_argument("--timeout", type=float, default=None)
+
+    p = sub.add_parser("pi", help="prompt or inspect a structured pi session")
+    p.add_argument("session_id")
+    p.add_argument(
+        "action",
+        choices=["prompt", "steer", "follow-up", "abort", "state", "last-text", "stats"],
+    )
+    p.add_argument("message", nargs="?", help="prompt or steer text")
+    p.add_argument("--timeout", type=float, default=None)
+    p.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="for prompt: return after acceptance instead of after settling",
+    )
 
     p = sub.add_parser("kill", help="terminate a session and its descendants")
     p.add_argument("session_id")
@@ -94,6 +114,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("rename", help="rename a session")
     p.add_argument("session_id")
     p.add_argument("title")
+
+    # Accept --json before or after the verb, matching the documented usage.
+    for command in sub.choices.values():
+        command.add_argument(
+            "--json",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="print raw JSON results",
+        )
     return parser
 
 
@@ -118,6 +147,7 @@ def _dispatch(client: ControlClient, args: argparse.Namespace) -> int:
         "new": _cmd_new,
         "run": _cmd_run,
         "spawn": _cmd_spawn,
+        "pi": _cmd_pi,
         "send": _cmd_send,
         "capture": _cmd_capture,
         "wait": _cmd_wait,
@@ -229,6 +259,8 @@ def _cmd_spawn(client: ControlClient, args: argparse.Namespace) -> int:
         "timeout": args.timeout,
         "visibility": "private" if args.private else "public",
     }
+    if args.rpc:
+        params["rpc"] = True
     if args.interactive is not None:
         params["interactive"] = args.interactive
     # Print-mode agents are awaited by default; an interactive TUI is not, so
@@ -253,6 +285,9 @@ def _emit_run(result: dict, args: argparse.Namespace) -> int:
     if args.json:
         _print_json(result)
         return 0
+    if result.get("text") is not None:
+        sys.stdout.write(str(result["text"]))
+        sys.stdout.flush()
     data = base64.b64decode(result.get("output_base64", ""))
     if data:
         sys.stdout.buffer.write(data)
@@ -296,6 +331,8 @@ def _cmd_wait(client: ControlClient, args: argparse.Namespace) -> int:
         }
     elif args.idle is not None:
         params = {"until": "idle", "quiet_ms": args.idle}
+    elif args.settled:
+        params = {"until": "settled"}
     else:
         params = {"until": "exit"}
     params["timeout"] = args.timeout
@@ -308,8 +345,60 @@ def _cmd_wait(client: ControlClient, args: argparse.Namespace) -> int:
     if args.pattern is not None:
         print(result.get("match"))
         return 0
+    if args.settled:
+        return 0 if result.get("settled") else 124
     code = result.get("exit_code")
     return int(code) if code is not None else 0
+
+
+def _cmd_pi(client: ControlClient, args: argparse.Namespace) -> int:
+    action = args.action
+    if action in ("prompt", "steer", "follow-up") and not args.message:
+        print(f"webtermctl: pi {action} needs a message", file=sys.stderr)
+        return 2
+    if action == "prompt":
+        command: dict[str, Any] = {"type": "prompt", "message": args.message}
+    elif action == "steer":
+        command = {"type": "steer", "message": args.message}
+    elif action == "follow-up":
+        command = {"type": "follow_up", "message": args.message}
+    elif action == "abort":
+        command = {"type": "abort"}
+    elif action == "state":
+        command = {"type": "get_state"}
+    elif action == "last-text":
+        command = {"type": "get_last_assistant_text"}
+    else:
+        command = {"type": "get_session_stats"}
+
+    result = client.pi(args.session_id, command, timeout=args.timeout)
+    output: dict[str, Any] = {"response": result}
+    if action == "prompt" and not args.no_wait:
+        waited = client.wait(
+            args.session_id, until="settled", timeout=args.timeout
+        )
+        output["settled"] = waited.get("settled")
+        text = client.pi(args.session_id, {"type": "get_last_assistant_text"})
+        data = text.get("data") or {}
+        output["text"] = data.get("text")
+
+    if args.json:
+        _print_json(output)
+        return 0
+    if action == "last-text":
+        data = result.get("data") or {}
+        print(data.get("text") or "")
+        return 0
+    if action == "state":
+        _print_json(result.get("data") or {})
+        return 0
+    if action == "prompt" and not args.no_wait:
+        text_value = output.get("text")
+        if text_value:
+            print(text_value)
+        return 0 if output.get("settled") else 124
+    print("ok")
+    return 0
 
 
 def _cmd_kill(client: ControlClient, args: argparse.Namespace) -> int:

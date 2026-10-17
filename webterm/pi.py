@@ -129,6 +129,10 @@ class PiSession:
         self._on_exit = on_exit
         self._on_change = on_change
         self._exit_event = asyncio.Event()
+        #: Starts set because a fresh process is idle; prompt/steer clears it
+        #: before the command is written, and agent_settled sets it again.
+        self._settled_event = asyncio.Event()
+        self._settled_event.set()
         self._loop = loop
         self._snapshot_lock = asyncio.Lock()
 
@@ -213,6 +217,7 @@ class PiSession:
             raise PiSessionClosed(f"pi session {self.id} is not running")
         if not isinstance(command, dict):
             raise PiError("RPC command must be an object")
+        self._note_command(command)
         self._write_json(command)
 
     async def rpc(self, command: dict, *, timeout: float = PI_RPC_TIMEOUT) -> dict:
@@ -230,6 +235,7 @@ class PiSession:
         future: asyncio.Future[dict] = self._loop.create_future()
         self._pending[request_id] = future
         try:
+            self._note_command(request)
             self._write_json(request)
             return await asyncio.wait_for(future, timeout)
         finally:
@@ -390,6 +396,20 @@ class PiSession:
         for subscriber in list(self._subscribers):
             subscriber.offer_pi_ui_resolved(self, request_id, reason)
 
+    def _note_command(self, command: dict) -> None:
+        if command.get("type") in ("prompt", "steer", "follow_up"):
+            self._settled_event.clear()
+
+    async def wait_for_settled(self, timeout: float | None = None) -> bool:
+        """Wait until pi has no automatic work left; False on timeout."""
+        if self.dead:
+            return True
+        try:
+            await asyncio.wait_for(self._settled_event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
     def _write_json(self, record: dict) -> None:
         line = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self._out.extend(line)
@@ -484,6 +504,10 @@ class PiSession:
         if record.get("type") == "extension_ui_request":
             self._handle_ui_request(record)
             return
+        if record.get("type") == "agent_start":
+            self._settled_event.clear()
+        elif record.get("type") == "agent_settled":
+            self._settled_event.set()
         self.seq += 1
         self._remember(self.seq, record, len(line))
         for subscriber in list(self._subscribers):
@@ -626,6 +650,7 @@ class PiSession:
                 future.set_exception(PiSessionClosed(f"pi session {self.id} exited"))
                 future.add_done_callback(_consume_future_exception)
         self._pending.clear()
+        self._settled_event.set()
         self._exit_event.set()
         for subscriber in list(self._subscribers):
             subscriber.offer_exit(self)

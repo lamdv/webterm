@@ -77,12 +77,30 @@ class AgentProfileTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("expected NAME=COMMAND", errors[0])
 
+    def test_rpc_profile_template(self) -> None:
+        profiles = parse_agents(
+            ["pi=pi -p {task}"],
+            ["pi=pi {task}"],
+            lambda message: None,
+            ["pi=pi --mode rpc --no-session"],
+        )
+        self.assertEqual(profiles["pi"]["rpc"], ["pi", "--mode", "rpc", "--no-session"])
+
     def test_parser_accepts_agent_and_limits(self) -> None:
         args = build_parser().parse_args(
-            ["--agent", "pi=pi -p {task}", "--max-agent-depth", "3", "--no-control"]
+            [
+                "--agent",
+                "pi=pi -p {task}",
+                "--max-agent-depth",
+                "3",
+                "--max-agent-children",
+                "5",
+                "--no-control",
+            ]
         )
         self.assertEqual(args.agent, ["pi=pi -p {task}"])
         self.assertEqual(args.max_agent_depth, 3)
+        self.assertEqual(args.max_agent_children, 5)
         self.assertTrue(args.no_control)
 
 

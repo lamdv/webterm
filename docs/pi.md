@@ -5,12 +5,12 @@ webterm, alongside ordinary shell sessions. The goal is a browser chat client
 for a headless `pi --mode rpc` process: remote, persistent, and able to show
 messages, tool calls, and agent status without emulating the TUI in xterm.
 
-Status: **P0–P2 implemented; P3 started.** The server, browser chat view,
-queue/steer controls, slash commands, managed session storage, resume picker,
-export, tree/fork/clone, and extension UI dialogs/widgets/notifications are in
-place. Transcript search, image paste, and subagents remain. Tracking issue:
-#10. For the existing PTY-based pi launcher, nothing changes: it stays as the
-escape hatch for TUI-only features.
+Status: **P0–P2 and the core P4 work implemented; P3 started.** The server,
+browser chat view, queue/steer controls, slash commands, managed session
+storage, resume picker, export, tree/fork/clone, extension UI, and pi subagent
+orchestration are in place. Transcript search, image paste, and further mobile
+polish remain. Tracking issue: #10. For the existing PTY-based pi launcher,
+nothing changes: it stays as the escape hatch for TUI-only features.
 
 ## Goals
 
@@ -270,11 +270,37 @@ Multiple viewers share one agent, tmux-style. Any authenticated viewer may
 answer; first response wins; there is no owner concept. Dialog text, options,
 widgets, and notifications are rendered as text, never through `innerHTML`.
 
+## Subagents
+
+Pi subagents are ordinary webterm sessions with `origin: "agent"`,
+`role: "agent"`, `parent_id` and `depth` metadata, so they nest under the
+spawning session in the browser tree and are covered by the existing kill
+cascade and depth/session limits.
+
+- Every webterm-owned pi process loads
+  `webterm/extensions/webterm-agents.ts` via `-e`. It registers `spawn_agent`,
+  `agent_send`, `agent_wait`, `agent_result`, `agent_list`, and `agent_kill`.
+- The tools call `webtermctl`, which discovers the control socket and parent
+  session from `WEBTERM_SOCKET` / `WEBTERM_SESSION_ID`. A parent therefore
+  cannot accidentally orphan its children.
+- Agent profiles gained an `rpc` command (`--agent-rpc NAME=...`). The default
+  `pi` profile uses `pi --mode rpc --no-session --no-approve` plus the bundled
+  extension. `webtermctl spawn --rpc --agent pi --task ...` creates a
+  structured child and sends the task as its first RPC prompt.
+- Control API additions: `wait --settled`, and
+  `pi <session> prompt|steer|follow-up|abort|state|last-text|stats`.
+- The parent receives the child's final assistant text and state via
+  `get_last_assistant_text` / `get_state` / `get_session_stats`; it does not
+  consume the child's full event stream. The human can click the child in the
+  tree to watch or steer it live.
+- Subagent sessions start untrusted (`--no-approve`) and ephemeral
+  (`--no-session`). Agent-origin extension dialogs are auto-cancelled when no
+  viewer is attached.
+- `--max-agent-children` caps live children per parent (default 16) in addition
+  to `--max-agent-depth`, `--max-sessions`, and the kill cascade.
+
 ## Deferred decisions
 
-- **Subagents.** Whether they land after P1 or only in P4; webterm-injected
-  extension via `-e` versus `bash` + `webtermctl`; whether the parent sees final
-  text only or live child events; fan-out and cost caps.
 - **Compatibility.** Minimum supported pi version, and whether to gate on
   `pi --version` or feature-detect from `get_state` / `get_commands` and ignore
   unknown events.

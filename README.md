@@ -217,7 +217,9 @@ scheme, so no extra configuration is needed.
 | `--no-discovery` | off | Disable the unauthenticated `/.well-known/webterm.json` document |
 | `--agent` | `pi` (if installed) | Agent profile for `webtermctl spawn`, as `NAME=COMMAND` (repeatable) |
 | `--agent-interactive` | same as `--agent` | Interactive command for an agent profile (repeatable) |
+| `--agent-rpc` | `pi` (if installed) | Structured RPC command for an agent profile (repeatable) |
 | `--max-agent-depth` | `5` | Maximum sub-agent nesting depth |
+| `--max-agent-children` | `16` | Maximum live child sessions per parent |
 | `--max-sessions` | `64` | Maximum concurrent sessions |
 | `--max-retained` | `32` | Maximum finished one-shot sessions kept |
 | `--retained-ttl` | `600` | Seconds a finished one-shot session is kept (negative disables) |

@@ -1,0 +1,203 @@
+/**
+ * Webterm sub-agent tools.
+ *
+ * Webterm injects this extension into pi sessions it owns. The tools call the
+ * local `webtermctl` control socket, which fills in the parent session id from
+ * WEBTERM_SESSION_ID, so child agents appear under the current session in the
+ * browser tree.
+ */
+
+import { Type } from "@earendil-works/pi-ai";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+type ExecResult = { stdout: string; stderr: string; code: number };
+
+function errorText(result: ExecResult): string {
+	const stderr = result.stderr.trim();
+	const stdout = result.stdout.trim();
+	return stderr || stdout || `webtermctl exited with code ${result.code}`;
+}
+
+async function ctl(
+	pi: ExtensionAPI,
+	args: string[],
+	timeout = 120_000,
+): Promise<Record<string, unknown>> {
+	const result = (await pi.exec("webtermctl", ["--json", ...args], {
+		timeout,
+	})) as ExecResult;
+	if (result.code !== 0) throw new Error(errorText(result));
+	const text = result.stdout.trim();
+	if (!text) return {};
+	try {
+		return JSON.parse(text) as Record<string, unknown>;
+	} catch {
+		return { text };
+	}
+}
+
+function jsonContent(value: unknown): { type: "text"; text: string }[] {
+	return [{ type: "text", text: JSON.stringify(value, null, 2) }];
+}
+
+export default function (pi: ExtensionAPI) {
+	pi.registerTool({
+		name: "spawn_agent",
+		label: "Spawn sub-agent",
+		description:
+			"Start a child pi agent for a task. The child appears under this session in webterm and can be messaged, waited on, or killed.",
+		parameters: Type.Object({
+			task: Type.String({ description: "The task for the child agent." }),
+			name: Type.Optional(
+				Type.String({ description: "Short display name for the child session." }),
+			),
+			agent: Type.Optional(
+				Type.String({
+					description: "Webterm agent profile name. Defaults to pi.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const agent = params.agent || "pi";
+			const title = params.name || params.task.slice(0, 80);
+			const result = await ctl(
+				pi,
+				[
+					"spawn",
+					"--agent",
+					agent,
+					"--rpc",
+					"--task",
+					params.task,
+					"--title",
+					title,
+					"--no-wait",
+				],
+				30_000,
+			);
+			const sessionId = String(result.session_id || "");
+			return {
+				content: jsonContent({ session_id: sessionId, agent, task: params.task }),
+				details: { session_id: sessionId, agent, task: params.task },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_send",
+		label: "Message sub-agent",
+		description:
+			"Send a prompt, steering message, or follow-up to a sub-agent session.",
+		parameters: Type.Object({
+			session_id: Type.String({ description: "The child session id." }),
+			message: Type.String({ description: "Message text." }),
+			mode: Type.Optional(
+				Type.Union(
+					[Type.Literal("prompt"), Type.Literal("steer"), Type.Literal("follow_up")],
+					{ description: "Delivery mode. Defaults to prompt." },
+				),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const mode = params.mode || "prompt";
+			const action = mode === "follow_up" ? "follow-up" : mode;
+			const args = ["pi", params.session_id, action, params.message];
+			if (mode === "prompt") args.push("--no-wait");
+			const result = await ctl(pi, args, 30_000);
+			return {
+				content: jsonContent(result),
+				details: { session_id: params.session_id, mode },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_wait",
+		label: "Wait for sub-agent",
+		description:
+			"Wait until a sub-agent has settled (no automatic work left). Returns whether it settled before the timeout.",
+		parameters: Type.Object({
+			session_id: Type.String({ description: "The child session id." }),
+			timeout: Type.Optional(
+				Type.Number({ description: "Timeout in seconds. Omit to wait indefinitely." }),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const args = ["wait", params.session_id, "--settled"];
+			if (params.timeout !== undefined) {
+				args.push("--timeout", String(params.timeout));
+			}
+			const timeoutMs =
+				params.timeout === undefined ? 86_400_000 : (params.timeout + 10) * 1000;
+			const result = await ctl(pi, args, timeoutMs);
+			return {
+				content: jsonContent(result),
+				details: result,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_result",
+		label: "Sub-agent result",
+		description: "Read the last assistant text from a sub-agent session.",
+		parameters: Type.Object({
+			session_id: Type.String({ description: "The child session id." }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const result = await ctl(pi, ["pi", params.session_id, "last-text"], 30_000);
+			const response = (result.response || {}) as Record<string, unknown>;
+			const data = (response.data || {}) as Record<string, unknown>;
+			const text = typeof data.text === "string" ? data.text : "";
+			return {
+				content: [{ type: "text", text }],
+				details: { session_id: params.session_id, text },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_list",
+		label: "List sub-agents",
+		description: "List live and retained webterm sessions, including agent lineage.",
+		parameters: Type.Object({}),
+		async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
+			const result = await ctl(pi, ["list"], 30_000);
+			const sessions = Array.isArray(result.sessions) ? result.sessions : [];
+			const agents = sessions
+				.filter((session) => (session as Record<string, unknown>).role === "agent")
+				.map((session) => {
+					const item = session as Record<string, unknown>;
+					return {
+						id: item.id,
+						title: item.title,
+						parent_id: item.parent_id,
+						agent: item.agent,
+						alive: item.alive,
+						exit_code: item.exit_code,
+						needs_input: item.needs_input,
+					};
+				});
+			return {
+				content: jsonContent(agents),
+				details: { agents },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "agent_kill",
+		label: "Kill sub-agent",
+		description: "Terminate a sub-agent and its descendants.",
+		parameters: Type.Object({
+			session_id: Type.String({ description: "The child session id." }),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+			const result = await ctl(pi, ["kill", params.session_id], 30_000);
+			return {
+				content: jsonContent(result),
+				details: { session_id: params.session_id, ...result },
+			};
+		},
+	});
+}

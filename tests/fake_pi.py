@@ -263,6 +263,8 @@ def main() -> int:
                     ]
                 },
             )
+        elif kind == "get_last_assistant_text":
+            respond(request_id, "get_last_assistant_text", {"text": "fake reply"})
         elif kind == "get_session_stats":
             respond(
                 request_id,

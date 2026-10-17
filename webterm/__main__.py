@@ -11,10 +11,12 @@ import shlex
 import shutil
 import ssl
 import sys
+from pathlib import Path
 
 from . import __version__
 from .server import serve
 from .session import (
+    DEFAULT_MAX_AGENT_CHILDREN,
     DEFAULT_MAX_AGENT_DEPTH,
     DEFAULT_MAX_RETAINED,
     DEFAULT_MAX_SESSIONS,
@@ -170,10 +172,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the interactive command for an agent profile (repeatable)",
     )
     parser.add_argument(
+        "--agent-rpc",
+        action="append",
+        default=None,
+        metavar="NAME=COMMAND",
+        help="override the structured RPC command for an agent profile (repeatable)",
+    )
+    parser.add_argument(
         "--max-agent-depth",
         type=int,
         default=DEFAULT_MAX_AGENT_DEPTH,
         help=f"maximum sub-agent nesting depth (default: {DEFAULT_MAX_AGENT_DEPTH})",
+    )
+    parser.add_argument(
+        "--max-agent-children",
+        type=int,
+        default=DEFAULT_MAX_AGENT_CHILDREN,
+        help=(
+            "maximum live child sessions per parent "
+            f"(default: {DEFAULT_MAX_AGENT_CHILDREN})"
+        ),
     )
     parser.add_argument(
         "--max-sessions",
@@ -217,12 +235,12 @@ def parse_agents(
     items: list[str] | None,
     interactive: list[str] | None,
     error,
+    rpc: list[str] | None = None,
 ) -> dict[str, dict[str, list[str]]]:
-    """Turn ``--agent`` / ``--agent-interactive`` flags into agent profiles.
+    """Turn ``--agent`` / ``--agent-interactive`` / ``--agent-rpc`` into profiles.
 
-    Each profile has a ``print`` template (one-shot, result returned) and an
-    ``interactive`` template (a TUI the human can attach to).  ``{task}`` in a
-    template is replaced with the task text; otherwise the task is appended.
+    Each profile can have a ``print`` template (one-shot), an ``interactive``
+    template (a TUI), and an ``rpc`` template (a structured pi session).
     """
     profiles: dict[str, dict[str, list[str]]] = {}
 
@@ -239,15 +257,25 @@ def parse_agents(
     for name, argv in entries(interactive):
         profile = profiles.setdefault(name, {"print": [], "interactive": []})
         profile["interactive"] = argv
+    for name, argv in entries(rpc):
+        profile = profiles.setdefault(name, {"print": [], "interactive": []})
+        profile["rpc"] = argv
     return profiles
 
 
-def default_agents() -> dict[str, dict[str, list[str]]]:
+def default_agents(extension_path: str | None = None) -> dict[str, dict[str, list[str]]]:
     """Built-in agent profiles detected on ``PATH``."""
     profiles: dict[str, dict[str, list[str]]] = {}
     pi = shutil.which("pi")
     if pi:
-        profiles["pi"] = {"print": [pi, "-p", "{task}"], "interactive": [pi, "{task}"]}
+        rpc = [pi, "--mode", "rpc", "--no-session", "--no-approve"]
+        if extension_path:
+            rpc.extend(["-e", extension_path])
+        profiles["pi"] = {
+            "print": [pi, "-p", "{task}"],
+            "interactive": [pi, "{task}"],
+            "rpc": rpc,
+        }
     return profiles
 
 
@@ -268,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         cwd=cwd,
         scrollback=args.scrollback,
         max_agent_depth=args.max_agent_depth,
+        max_agent_children=args.max_agent_children,
         max_sessions=args.max_sessions,
         max_retained=args.max_retained,
         retained_ttl=None if args.retained_ttl < 0 else args.retained_ttl,
@@ -293,6 +322,9 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         parser.error(f"cannot create pi session directory: {exc}")
     manager.pi_session_dir = pi_session_dir
+    extension_path = Path(__file__).with_name("extensions") / "webterm-agents.ts"
+    if extension_path.is_file():
+        manager.pi_extension = str(extension_path)
 
     token = args.token or os.environ.get("WEBTERM_TOKEN") or None
     if not _is_loopback(args.host):
@@ -322,9 +354,11 @@ def main(argv: list[str] | None = None) -> int:
         "sessionDir": pi_session_dir,
     }
 
-    profiles = parse_agents(args.agent, args.agent_interactive, parser.error)
+    profiles = parse_agents(
+        args.agent, args.agent_interactive, parser.error, args.agent_rpc
+    )
     if not profiles:
-        profiles = default_agents()
+        profiles = default_agents(manager.pi_extension)
     if profiles:
         config["agents"] = [
             {"name": name, **{key: value for key, value in profile.items() if value}}

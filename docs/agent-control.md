@@ -380,21 +380,25 @@ Two thin, stdlib-only pieces:
 
 ```
 webtermctl list [--tree] [--json]
-webtermctl spawn --agent pi --task "run the tests" [--print|--interactive] [--wait] [--json]
+webtermctl spawn --agent pi --task "run the tests" [--print|--interactive|--rpc] [--wait] [--json]
 webtermctl run   [--wait] [--json] [--text] CMD...
 webtermctl new   [--title T] [--cwd D] [--command CMD] [--private]
+webtermctl pi    <id> prompt|steer|follow-up|abort|state|last-text|stats [MESSAGE] [--no-wait] [--timeout S] [--json]
 webtermctl send  <id> TEXT [--enter]
 webtermctl capture <id> [--since N] [--text]
-webtermctl wait  <id> --exit | --text RE | --idle MS [--timeout S] [--json]
+webtermctl wait  <id> --exit | --text RE | --idle MS | --settled [--timeout S] [--json]
 webtermctl kill  <id> [--tree]
 webtermctl rename <id> T
 ```
 
 `webtermctl spawn` is the one-liner a parent agent calls: it fills `parent_id`
 from `$WEBTERM_SESSION_ID`, so `pi` (or any agent that can run a shell command)
-gets sub-agents with no extra integration. `--json` emits raw results. A separate
-console script avoids touching the existing `webterm` parser (no subcommands
-today).
+gets sub-agents with no extra integration. `--rpc` starts a structured pi child
+and sends `--task` as its first prompt; `--wait` then waits for `agent_settled`
+rather than process exit. The bundled pi extension wraps these verbs as model
+tools (`spawn_agent`, `agent_send`, `agent_wait`, `agent_result`, `agent_list`,
+`agent_kill`). `--json` emits raw results and is accepted before or after the
+verb. A separate console script avoids touching the existing `webterm` parser.
 
 ## 7. Future: webterm's default agentic interface
 

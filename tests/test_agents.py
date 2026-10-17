@@ -142,6 +142,13 @@ class LineageTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({s.id for s in manager.descendants_of(a.id)}, {b.id, c.id})
         self.assertEqual(c.depth, 2)
 
+    async def test_child_fanout_cap(self) -> None:
+        manager = self.manager(max_agent_children=1)
+        parent = manager.create_single("sleep 30")
+        manager.create_single("sleep 30", parent_id=parent.id)
+        with self.assertRaises(SessionLimitError):
+            manager.create_single("sleep 30", parent_id=parent.id)
+
     async def test_depth_guard(self) -> None:
         manager = self.manager(max_agent_depth=1)
         root = manager.create_single("sleep 30")

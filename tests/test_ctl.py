@@ -7,6 +7,7 @@ import base64
 import contextlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +16,8 @@ from webterm.client import ControlClient
 from webterm.ctl import main as ctl_main
 from webterm.server import ServerHandle, start_server
 from webterm.session import SessionManager
+
+FAKE_PI = Path(__file__).with_name("fake_pi.py")
 
 
 class CtlBase(unittest.IsolatedAsyncioTestCase):
@@ -26,6 +29,11 @@ class CtlBase(unittest.IsolatedAsyncioTestCase):
             "echoer": {
                 "print": ["/bin/sh", "-c", "printf '{task}'"],
                 "interactive": ["/bin/sh", "-c", "printf '{task}'"],
+            },
+            "pi": {
+                "print": [sys.executable, str(FAKE_PI)],
+                "interactive": [sys.executable, str(FAKE_PI)],
+                "rpc": [sys.executable, str(FAKE_PI)],
             },
         }
         self.handle: ServerHandle = await start_server(
@@ -81,6 +89,31 @@ class CtlCommandTests(CtlBase):
         )
         self.assertEqual(code, 0)
         self.assertEqual(out, b"TASK_DONE")
+
+    async def test_spawn_rpc_and_pi_prompt(self) -> None:
+        code, out = await self.run_ctl(
+            "spawn", "--agent", "pi", "--rpc", "--task", "hello", "--text"
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, b"fake reply")
+
+        code, out = await self.run_ctl(
+            "--json", "spawn", "--agent", "pi", "--rpc", "--task", "hello", "--no-wait"
+        )
+        self.assertEqual(code, 0)
+        session_id = json.loads(out)["session_id"]
+        code, out = await self.run_ctl(
+            "pi", session_id, "prompt", "second task", "--no-wait", "--json"
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(json.loads(out)["response"]["success"])
+        code, out = await self.run_ctl("wait", session_id, "--settled", "--json")
+        self.assertEqual(code, 0)
+        code, out = await self.run_ctl("--json", "pi", session_id, "last-text")
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["response"]["data"]["text"], "fake reply")
+        await self.run_ctl("kill", session_id)
 
     async def test_spawn_without_agent_or_command_fails(self) -> None:
         code, _ = await self.run_ctl("spawn")

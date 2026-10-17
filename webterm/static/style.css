@@ -1566,3 +1566,13 @@ textarea.pi-ui-input {
     font-size: 16px;
   }
 }
+
+.tab-children {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.3;
+}

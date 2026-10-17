@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import shlex
 import signal
 import ssl
 import struct
@@ -709,6 +710,8 @@ class ClientConnection:
         if resume_path is not None:
             argv.extend(["--session", resume_path])
         argv.append("--approve" if trusted else "--no-approve")
+        if self.manager.pi_extension:
+            argv.extend(["-e", self.manager.pi_extension])
         provider = message.get("provider")
         model = message.get("model")
         if provider:
@@ -923,7 +926,13 @@ class ClientConnection:
         return session
 
     def _resolve_agent(
-        self, agent: str | None, task: str | None, command, interactive: bool
+        self,
+        agent: str | None,
+        task: str | None,
+        command,
+        interactive: bool,
+        *,
+        rpc: bool = False,
     ) -> list[str] | str:
         """Turn an agent profile + task into the argv to run."""
         command = _valid_command(command)
@@ -934,7 +943,7 @@ class ClientConnection:
         profile = self.profiles.get(agent)
         if profile is None:
             raise RequestError("bad_request", f"unknown agent {agent!r}")
-        key = "interactive" if interactive else "print"
+        key = "rpc" if rpc else ("interactive" if interactive else "print")
         template = profile.get(key)
         if not template:
             raise RequestError("bad_request", f"agent {agent!r} has no {key} command")
@@ -942,6 +951,10 @@ class ClientConnection:
         if task:
             if any("{task}" in part for part in parts):
                 return [part.replace("{task}", task) for part in parts]
+            if rpc:
+                # Structured agents receive the task as an RPC prompt instead
+                # of an argv message.
+                return parts
             parts.append(task)
             return parts
         # No task supplied: drop arguments that are only the empty placeholder
@@ -950,6 +963,7 @@ class ClientConnection:
 
     async def _run(self, message: dict, *, spawn: bool) -> dict:
         interactive = bool(message.get("interactive")) or message.get("mode") == "interactive"
+        rpc = bool(message.get("rpc")) or message.get("mode") == "rpc"
         task = message.get("task")
         agent = message.get("agent")
         common = dict(
@@ -962,7 +976,43 @@ class ClientConnection:
             visibility=str(message.get("visibility", "public")),
         )
         try:
-            if spawn:
+            if spawn and rpc:
+                argv = self._resolve_agent(agent, None, message.get("command"), False, rpc=True)
+                if isinstance(argv, str):
+                    argv = shlex.split(argv)
+                if not argv:
+                    raise RequestError("bad_request", "structured agent command is empty")
+                if self.manager.pi_extension and not any(
+                    part in ("-e", "--extension") for part in argv
+                ):
+                    argv.extend(["-e", self.manager.pi_extension])
+                session = self.manager.create_pi(
+                    argv,
+                    cwd=message.get("cwd"),
+                    env=message.get("env"),
+                    title=message.get("title") or task,
+                    parent_id=message.get("parent_id") or None,
+                    origin="agent",
+                    role="agent",
+                    agent=agent,
+                    task=task,
+                    visibility=str(message.get("visibility", "public")),
+                    trusted=False,
+                )
+                if task:
+                    try:
+                        response = await session.rpc(
+                            {"type": "prompt", "message": task}
+                        )
+                    except (PiError, PiSessionClosed, TimeoutError) as exc:
+                        self.manager.kill(session.id, tree=False)
+                        raise RequestError("pi_error", str(exc)) from exc
+                    if not response.get("success"):
+                        self.manager.kill(session.id, tree=False)
+                        raise RequestError(
+                            "pi_error", str(response.get("error", "prompt rejected"))
+                        )
+            elif spawn:
                 argv = self._resolve_agent(agent, task, message.get("command"), interactive)
                 session = self.manager.spawn(
                     argv, interactive=interactive, agent=agent, task=task, **common
@@ -989,10 +1039,41 @@ class ClientConnection:
         wait = bool(message.get("wait", not interactive))
         if not wait:
             return {"session_id": session.id, "session": session.info()}
+        if session.kind == "pi":
+            timeout = _optional_float(message.get("timeout"))
+            settled = await session.wait_for_settled(timeout)
+            result = await self._pi_result(session, settled=settled)
+            result["timed_out"] = not settled
+            return result
         code = await session.wait(timeout=_optional_float(message.get("timeout")))
         result = self._output_result(session, message)
         result["exit_code"] = code
         result["timed_out"] = code is None
+        return result
+
+    async def _pi_result(self, session: PiSession, *, settled: bool) -> dict:
+        """Collect the structured result of a pi sub-agent."""
+        result: dict[str, object] = {
+            "session_id": session.id,
+            "settled": settled,
+            "exit_code": session.exit_code,
+        }
+        if session.dead:
+            return result
+        try:
+            text = await session.rpc(
+                {"type": "get_last_assistant_text"}, timeout=5.0
+            )
+            if text.get("success"):
+                result["text"] = (text.get("data") or {}).get("text")
+            state = await session.rpc({"type": "get_state"}, timeout=5.0)
+            if state.get("success"):
+                result["state"] = state.get("data") or {}
+            stats = await session.rpc({"type": "get_session_stats"}, timeout=5.0)
+            if stats.get("success"):
+                result["stats"] = stats.get("data") or {}
+        except (PiError, PiSessionClosed, TimeoutError) as exc:
+            result["error"] = str(exc)
         return result
 
     def _output_result(self, session: Session, message: dict) -> dict:
@@ -1044,8 +1125,19 @@ class ClientConnection:
         session = self._require(message)
         until = str(message.get("until", "exit"))
         timeout = _optional_float(message.get("timeout"))
+        if until == "settled":
+            if session.kind != "pi":
+                raise RequestError("bad_request", "until=settled is only for pi sessions")
+            matched = await session.wait_for_settled(timeout)
+            return {
+                "matched": matched,
+                "settled": matched,
+                "exit_code": session.exit_code,
+            }
         if until != "exit" and session.kind != "shell":
-            raise RequestError("bad_request", "only until=exit is available for pi sessions")
+            raise RequestError(
+                "bad_request", "only until=exit or until=settled is available for pi sessions"
+            )
         if until == "text":
             pattern = message.get("pattern")
             if not isinstance(pattern, str) or not pattern:

@@ -31,6 +31,7 @@ from .pi import PiSession, fork_pi
 
 DEFAULT_SCROLLBACK = 100_000
 DEFAULT_MAX_AGENT_DEPTH = 5
+DEFAULT_MAX_AGENT_CHILDREN = 16
 DEFAULT_MAX_SESSIONS = 64
 DEFAULT_MAX_RETAINED = 32
 DEFAULT_RETAINED_TTL = 600.0
@@ -542,6 +543,7 @@ class SessionManager:
         env: dict[str, str] | None = None,
         child_env: dict[str, str] | None = None,
         max_agent_depth: int = DEFAULT_MAX_AGENT_DEPTH,
+        max_agent_children: int = DEFAULT_MAX_AGENT_CHILDREN,
         max_sessions: int = DEFAULT_MAX_SESSIONS,
         max_retained: int = DEFAULT_MAX_RETAINED,
         retained_ttl: float | None = DEFAULT_RETAINED_TTL,
@@ -556,10 +558,13 @@ class SessionManager:
         # per-session WEBTERM_* identity is added at fork time.
         self.child_env = dict(child_env or {})
         self.max_agent_depth = max_agent_depth
+        self.max_agent_children = max_agent_children
         self.max_sessions = max_sessions
         self.max_retained = max_retained
         self.retained_ttl = retained_ttl
         self.pi_command = list(pi_command) if pi_command else ["pi"]
+        #: Optional webterm extension injected into every pi process.
+        self.pi_extension: str | None = None
         #: Webterm-managed root for pi session files; ``None`` disables
         #: persistence and the resume picker (tests, embedded use).
         self.pi_session_dir = (
@@ -799,6 +804,13 @@ class SessionManager:
         parent = self.sessions.get(parent_id)
         if parent is None:
             return 0
+        if self.max_agent_children is not None:
+            live_children = sum(1 for child in self.children_of(parent_id) if not child.dead)
+            if live_children >= self.max_agent_children:
+                raise SessionLimitError(
+                    f"child session limit for {parent_id} reached "
+                    f"({self.max_agent_children})"
+                )
         depth = parent.depth + 1
         if self.max_agent_depth is not None and depth > self.max_agent_depth:
             raise DepthExceededError(

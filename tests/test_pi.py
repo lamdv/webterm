@@ -98,6 +98,17 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(await session.wait(timeout=5.0))
         self.assertTrue(collector.exited)
 
+    async def test_wait_for_settled_tracks_dialog_blocked_run(self) -> None:
+        session = self.start()
+        collector = Collector()
+        session.attach(collector)
+        self.assertTrue(await session.wait_for_settled(timeout=0.1))
+        await session.rpc({"type": "prompt", "message": "please ask"})
+        await wait_until(lambda: bool(collector.ui_requests))
+        self.assertFalse(await session.wait_for_settled(timeout=0.1))
+        session.resolve_ui("ui-1", {"confirmed": True})
+        self.assertTrue(await session.wait_for_settled(timeout=2.0))
+
     async def test_extension_dialog_is_queued_and_resolved(self) -> None:
         session = self.start()
         collector = Collector()
@@ -187,6 +198,13 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
             self.manager,
             enable_control=False,
             discovery=False,
+            profiles={
+                "pi": {
+                    "print": [sys.executable, str(FAKE_PI)],
+                    "interactive": [sys.executable, str(FAKE_PI)],
+                    "rpc": [sys.executable, str(FAKE_PI)],
+                }
+            },
         )
         self.client = await WSClient.connect("127.0.0.1", self.handle.port)
         await self.client.recv_json()  # initial sessions broadcast
@@ -383,6 +401,32 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
         raw = await reader.read()
         writer.close()
         self.assertIn(b"404", raw.split(b"\r\n", 1)[0])
+
+    async def test_spawn_rpc_agent_waits_for_settled_result(self) -> None:
+        await self.client.send_json(
+            {
+                "type": "spawn",
+                "id": "spawn-rpc",
+                "agent": "pi",
+                "rpc": True,
+                "task": "do the thing",
+                "wait": True,
+                "timeout": 5,
+            }
+        )
+        result = await self.client.recv_json_until(
+            lambda message: message.get("type") == "result"
+            and message.get("id") == "spawn-rpc"
+        )
+        data = result["result"]
+        self.assertTrue(data["settled"])
+        self.assertFalse(data["timed_out"])
+        self.assertEqual(data["text"], "fake reply")
+        self.assertEqual(data["state"]["model"]["id"], "fake-model")
+        session = self.manager.get(data["session_id"])
+        self.assertEqual(session.kind, "pi")
+        self.assertEqual(session.role, "agent")
+        self.assertEqual(session.task, "do the thing")
 
     async def test_extension_dialog_round_trip(self) -> None:
         session = await self._create_pi()

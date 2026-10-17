@@ -46,7 +46,9 @@ All modules use `from __future__ import annotations` and are linted by `ruff`
 | `--no-control` | off | Disable the local control socket. |
 | `--agent NAME=COMMAND` | `pi` if installed | Agent profile for `spawn` (print mode); `{task}` is substituted. |
 | `--agent-interactive NAME=COMMAND` | same as `--agent` | Interactive command for an agent profile. |
+| `--agent-rpc NAME=COMMAND` | pi when installed | Structured RPC command for an agent profile. |
 | `--max-agent-depth` | `5` | Maximum sub-agent nesting depth. |
+| `--max-agent-children` | `16` | Maximum live child sessions per parent. |
 | `--max-sessions` | `64` | Maximum concurrent sessions. |
 | `--max-retained` | `32` | Maximum finished one-shot sessions retained. |
 | `--retained-ttl` | `600` | Seconds a finished one-shot session is kept (negative disables). |
@@ -59,7 +61,10 @@ dict, and runs `serve()`.
 
 `parse_launchers` turns `LABEL=COMMAND` into `{"label": ..., "command": [...]}`
 using `shlex.split`. When no `--launcher` is given, it probes for `pi` with
-`shutil.which` and adds a default button.
+`shutil.which` and adds a default button. Agent profiles now carry `print`,
+`interactive`, and optional `rpc` templates; the default `pi` RPC profile and
+every browser-created pi session load the bundled
+`webterm/extensions/webterm-agents.ts` extension.
 
 The config dict currently supports `fontFamily`, `launchers`, `agents`, and
 `pi` (`available`, `cwd`, `sessionDir`); it is served as
