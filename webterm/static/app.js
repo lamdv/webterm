@@ -620,6 +620,7 @@
     if (window.WebtermPi) {
       view = window.WebtermPi.create(session, {
         onCommand: (command) => sendPiCommand(session.id, command),
+        onRefresh: () => request({ type: "pi_snapshot", session_id: session.id }),
       });
       wrapper.appendChild(view.element);
     } else {
@@ -1423,9 +1424,26 @@
     copy.textContent =
       "Project settings and extensions in this folder run with your user privileges. " +
       "Choose whether pi should load them.";
-    const path = document.createElement("code");
+
+    const pathRow = document.createElement("div");
+    pathRow.className = "pi-trust-path-row";
+    const path = document.createElement("input");
+    path.type = "text";
     path.className = "pi-trust-path";
-    path.textContent = cwd || "server default directory";
+    path.value = cwd || "";
+    path.placeholder = "Server directory";
+    path.setAttribute("aria-label", "Session directory");
+    const go = document.createElement("button");
+    go.type = "button";
+    go.textContent = "Go";
+    const up = document.createElement("button");
+    up.type = "button";
+    up.textContent = "Up";
+    up.disabled = true;
+    pathRow.append(path, go, up);
+
+    const browser = document.createElement("div");
+    browser.className = "pi-trust-browser";
 
     const actions = document.createElement("div");
     actions.className = "pi-trust-actions";
@@ -1440,31 +1458,125 @@
     allow.className = "trust";
     allow.textContent = "Start with project settings";
     actions.append(cancel, deny, allow);
-    dialog.append(heading, copy, path, actions);
+    dialog.append(heading, copy, pathRow, browser, actions);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
     let settled = false;
+    let choosing = false;
+    let current = { path: cwd || "", parent: null };
+    let listSeq = 0;
+
+    function directoryButton(label, target) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "pi-trust-dir";
+      button.textContent = label;
+      button.title = target;
+      button.addEventListener("click", () => navigate(target));
+      return button;
+    }
+
+    function renderDirs(result) {
+      browser.replaceChildren();
+      if (result.parent) browser.appendChild(directoryButton("../", result.parent));
+      for (const dir of result.dirs || []) {
+        browser.appendChild(directoryButton(dir.name + "/", dir.path));
+      }
+      if (result.truncated) {
+        const more = document.createElement("div");
+        more.className = "pi-trust-empty";
+        more.textContent = "More entries not shown";
+        browser.appendChild(more);
+      }
+      if (!browser.children.length) {
+        const empty = document.createElement("div");
+        empty.className = "pi-trust-empty";
+        empty.textContent = "No subdirectories";
+        browser.appendChild(empty);
+      }
+    }
+
+    async function navigate(target) {
+      const seq = ++listSeq;
+      browser.textContent = "Loading…";
+      try {
+        const result = await request({ type: "list_dirs", path: String(target || "") });
+        if (settled || seq !== listSeq) return;
+        current = result;
+        path.value = result.path;
+        up.disabled = !result.parent;
+        renderDirs(result);
+      } catch (error) {
+        if (settled || seq !== listSeq) return;
+        browser.replaceChildren();
+        const failure = document.createElement("div");
+        failure.className = "pi-trust-empty";
+        failure.textContent =
+          error && error.message ? error.message : "Cannot open directory";
+        browser.appendChild(failure);
+        up.disabled = true;
+      }
+    }
+
     function finish(value) {
       if (settled) return;
       settled = true;
       document.removeEventListener("keydown", onKey, true);
       overlay.remove();
-      onChoose(value);
+      onChoose(value, path.value.trim());
     }
+
+    async function choose(value) {
+      if (settled || choosing) return;
+      const target = path.value.trim();
+      if (!target || target === current.path) {
+        finish(value);
+        return;
+      }
+      choosing = true;
+      try {
+        const result = await request({ type: "list_dirs", path: target });
+        if (settled) return;
+        path.value = result.path;
+        finish(value);
+      } catch (error) {
+        if (settled) return;
+        browser.replaceChildren();
+        const failure = document.createElement("div");
+        failure.className = "pi-trust-empty";
+        failure.textContent =
+          error && error.message ? error.message : "Cannot open directory";
+        browser.appendChild(failure);
+      } finally {
+        choosing = false;
+      }
+    }
+
     function onKey(event) {
       if (event.key === "Escape") {
         event.preventDefault();
         finish(null);
       }
     }
+    path.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        navigate(path.value);
+      }
+    });
+    go.addEventListener("click", () => navigate(path.value));
+    up.addEventListener("click", () => {
+      if (current.parent) navigate(current.parent);
+    });
     cancel.addEventListener("click", () => finish(null));
-    deny.addEventListener("click", () => finish("deny"));
-    allow.addEventListener("click", () => finish("allow"));
+    deny.addEventListener("click", () => choose("deny"));
+    allow.addEventListener("click", () => choose("allow"));
     overlay.addEventListener("pointerdown", (event) => {
       if (event.target === overlay) finish(null);
     });
     document.addEventListener("keydown", onKey, true);
+    navigate(path.value);
     deny.focus();
   }
 
@@ -1475,10 +1587,16 @@
       return;
     }
     const cwd = pi.cwd || "";
-    showPiTrustDialog(cwd, (trust) => {
+    showPiTrustDialog(cwd, (trust, chosenCwd) => {
       if (!trust) return;
       activateNext = true;
-      send({ type: "create", mode: "pi", cwd: pi.cwd, title: "pi", trust });
+      send({
+        type: "create",
+        mode: "pi",
+        cwd: chosenCwd || pi.cwd,
+        title: "pi",
+        trust,
+      });
     });
   }
 

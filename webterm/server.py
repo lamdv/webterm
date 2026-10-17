@@ -8,6 +8,7 @@ import contextlib
 import hmac
 import json
 import logging
+import os
 import signal
 import ssl
 import struct
@@ -507,7 +508,7 @@ class ClientConnection:
             )
             return {"ok": bool(killed), "killed": killed}
         if kind == "rename":
-            return self._rename(message)
+            return await self._rename(message)
         if kind == "input":
             self._input(message)
             return {"ok": True}
@@ -516,6 +517,10 @@ class ClientConnection:
             return {"ok": True}
         if kind == "pi":
             return await self._pi_command(message)
+        if kind == "pi_snapshot":
+            return await self._pi_snapshot(message)
+        if kind == "list_dirs":
+            return self._list_dirs(message)
         if kind == "list":
             result = {
                 "sessions": self.manager.list_info(include_private=self.peer == "agent")
@@ -579,11 +584,13 @@ class ClientConnection:
         )
         return session.info()
 
-    async def _send_pi_snapshot(self, session: PiSession) -> None:
+    async def _send_pi_snapshot(self, session: PiSession, *, strict: bool = False) -> None:
         try:
             snapshot = await session.snapshot()
         except (PiError, PiSessionClosed, TimeoutError) as exc:
             log.warning("pi session %s: snapshot failed: %s", session.id, exc)
+            if strict:
+                raise RequestError("pi_error", str(exc)) from exc
             return
         self._offer_json(
             {
@@ -661,6 +668,44 @@ class ClientConnection:
                 pass
         return session
 
+    def _list_dirs(self, message: dict) -> dict:
+        raw = message.get("path")
+        base = self.manager.cwd if raw is None or not str(raw).strip() else str(raw)
+        path = os.path.abspath(os.path.expanduser(base))
+        if not os.path.isdir(path):
+            raise RequestError("bad_request", f"not a directory: {path}")
+        entries: list[dict[str, str]] = []
+        truncated = False
+        try:
+            with os.scandir(path) as scan:
+                for entry in scan:
+                    try:
+                        if not entry.is_dir():
+                            continue
+                    except OSError:
+                        continue
+                    if len(entries) >= 500:
+                        truncated = True
+                        break
+                    entries.append({"name": entry.name, "path": entry.path})
+        except OSError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        entries.sort(key=lambda item: item["name"].casefold())
+        parent = os.path.dirname(path)
+        return {
+            "path": path,
+            "parent": None if parent == path else parent,
+            "dirs": entries,
+            "truncated": truncated,
+        }
+
+    async def _pi_snapshot(self, message: dict) -> dict:
+        session = self._require(message)
+        if session.kind != "pi":
+            raise RequestError("bad_request", "session is not a pi session")
+        await self._send_pi_snapshot(session, strict=True)
+        return {"ok": True}
+
     async def _pi_command(self, message: dict) -> dict:
         session = self._require(message)
         if session.kind != "pi":
@@ -681,9 +726,23 @@ class ClientConnection:
             raise RequestError("bad_request", str(exc)) from exc
         return {"pi_response": response}
 
-    def _rename(self, message: dict) -> dict:
+    async def _rename(self, message: dict) -> dict:
         session = self._require(message)
-        session.title = str(message.get("title", session.title))[:200]
+        title = str(message.get("title", session.title))[:200]
+        session.title = title
+        if session.kind == "pi" and title:
+            try:
+                response = await session.rpc(
+                    {"type": "set_session_name", "name": title}, timeout=5.0
+                )
+                if not response.get("success"):
+                    log.debug(
+                        "pi session %s: set_session_name failed: %s",
+                        session.id,
+                        response.get("error"),
+                    )
+            except (PiError, PiSessionClosed, TimeoutError) as exc:
+                log.debug("pi session %s: set_session_name failed: %s", session.id, exc)
         self.manager.notify()
         return {"session": session.info()}
 

@@ -133,8 +133,26 @@ def main() -> int:
         elif kind == "prompt":
             respond(request_id, "prompt", {"disposition": "started"})
             emit_prompt_events(str(command.get("message", "hello")))
-        elif kind in ("abort", "clear_queue", "set_model"):
+        elif kind == "set_session_name":
+            name = str(command.get("name", "")).strip()
+            respond(request_id, "set_session_name", {})
+            send({"type": "session_info_changed", "name": name})
+        elif kind in ("abort", "clear_queue", "set_model", "new_session", "compact"):
             respond(request_id, str(kind), {})
+        elif kind == "get_commands":
+            respond(
+                request_id,
+                "get_commands",
+                {
+                    "commands": [
+                        {
+                            "name": "review",
+                            "description": "Review the current changes",
+                            "source": "prompt",
+                        }
+                    ]
+                },
+            )
         elif kind == "get_session_stats":
             respond(
                 request_id,

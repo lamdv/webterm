@@ -234,9 +234,17 @@ class PiSession:
             entries = await self.rpc({"type": "get_entries"})
             if not entries.get("success"):
                 raise PiError(str(entries.get("error", "get_entries failed")))
+            commands = await self.rpc({"type": "get_commands"})
+            if not commands.get("success"):
+                log.warning(
+                    "pi session %s: get_commands failed: %s",
+                    self.id,
+                    commands.get("error"),
+                )
             return {
                 "state": state.get("data") or {},
                 "entries": entries.get("data") or {},
+                "commands": commands.get("data") or {},
                 "seq": self.seq,
             }
 

@@ -27,6 +27,12 @@
     return textFromContent(message.content);
   }
 
+  const BUILTIN_COMMANDS = [
+    { name: "new", description: "Start a new session", source: "webterm" },
+    { name: "compact", description: "Compact the conversation", source: "webterm" },
+    { name: "reload", description: "Reload state and commands", source: "webterm" },
+  ];
+
   function create(session, options) {
     const root = el("div", "pi-view");
     const header = el("div", "pi-header");
@@ -39,6 +45,8 @@
     const messagesEl = el("div", "pi-messages");
     const queueEl = el("div", "pi-queue");
     queueEl.hidden = true;
+    const paletteEl = el("div", "pi-command-palette");
+    paletteEl.hidden = true;
 
     const form = el("form", "pi-composer");
     const input = el("textarea", "pi-input");
@@ -56,7 +64,7 @@
     actions.append(sendButton, stopButton);
     form.append(input, actions);
 
-    root.append(header, banner, messagesEl, queueEl, form);
+    root.append(header, banner, messagesEl, queueEl, paletteEl, form);
 
     const state = {
       seq: -1,
@@ -64,6 +72,9 @@
       live: null,
       liveTools: new Map(),
       queues: { steering: [], followUp: [] },
+      piCommands: [],
+      paletteItems: [],
+      paletteIndex: 0,
       state: {},
       busy: false,
       exited: false,
@@ -81,7 +92,7 @@
       const info = state.state || {};
       const model = info.model && (info.model.id || info.model.name);
       const name = info.sessionName;
-      if (name) titleEl.textContent = name;
+      titleEl.textContent = name || session.title || "pi";
       const bits = [];
       if (state.exited) bits.push("exited");
       else if (state.busy) bits.push("working…");
@@ -244,6 +255,97 @@
       queueEl.appendChild(list);
     }
 
+    function availableCommands() {
+      const items = BUILTIN_COMMANDS.map((command) => ({ ...command }));
+      const names = new Set(items.map((command) => command.name));
+      for (const command of state.piCommands) {
+        if (!command || typeof command.name !== "string" || names.has(command.name)) continue;
+        names.add(command.name);
+        items.push(command);
+      }
+      return items;
+    }
+
+    function commandQuery() {
+      if (state.exited) return null;
+      const value = input.value;
+      if (!/^\/\S*$/.test(value)) return null;
+      return value.slice(1).toLowerCase();
+    }
+
+    function closePalette() {
+      state.paletteItems = [];
+      state.paletteIndex = 0;
+      paletteEl.hidden = true;
+      paletteEl.replaceChildren();
+    }
+
+    function renderPalette() {
+      paletteEl.replaceChildren();
+      if (!state.paletteItems.length) {
+        paletteEl.hidden = true;
+        return;
+      }
+      paletteEl.hidden = false;
+      state.paletteItems.forEach((command, index) => {
+        const item = el(
+          "div",
+          "pi-command-item" + (index === state.paletteIndex ? " active" : "")
+        );
+        item.appendChild(el("span", "pi-command-name", "/" + command.name));
+        if (command.description) {
+          item.appendChild(el("span", "pi-command-desc", command.description));
+        }
+        if (command.source) {
+          item.appendChild(el("span", "pi-command-source", command.source));
+        }
+        item.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          acceptCommand(index, false);
+        });
+        paletteEl.appendChild(item);
+      });
+    }
+
+    function updatePalette() {
+      const query = commandQuery();
+      if (query === null) {
+        closePalette();
+        return;
+      }
+      const items = availableCommands().filter((command) =>
+        String(command.name).toLowerCase().startsWith(query)
+      );
+      if (!items.length) {
+        closePalette();
+        return;
+      }
+      state.paletteItems = items;
+      if (state.paletteIndex >= items.length) state.paletteIndex = 0;
+      renderPalette();
+    }
+
+    function movePalette(delta) {
+      if (!state.paletteItems.length) return;
+      state.paletteIndex =
+        (state.paletteIndex + delta + state.paletteItems.length) % state.paletteItems.length;
+      renderPalette();
+    }
+
+    function acceptCommand(index, runExact) {
+      const command = state.paletteItems[index];
+      if (!command) return;
+      const query = commandQuery();
+      const exact = query !== null && query === String(command.name).toLowerCase();
+      input.value = "/" + command.name + " ";
+      if (typeof input.setSelectionRange === "function") {
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+      input.focus();
+      closePalette();
+      if (runExact && exact) sendPrompt();
+    }
+
     function render() {
       renderHeader();
       for (const tool of state.liveTools.values()) tool.rendered = false;
@@ -278,6 +380,12 @@
       state.live = null;
       state.liveTools.clear();
       state.queues = { steering: [], followUp: [] };
+      const commands = message.commands && message.commands.commands;
+      state.piCommands = Array.isArray(commands)
+        ? commands.filter((command) => command && typeof command.name === "string")
+        : [];
+      state.paletteItems = [];
+      state.paletteIndex = 0;
       openState.clear();
       state.busy = Boolean(state.state.isStreaming);
       state.error = "";
@@ -290,6 +398,7 @@
       }
       setBanner("");
       render();
+      updatePalette();
     }
 
     function assistantLive() {
@@ -436,6 +545,13 @@
         case "extension_error":
           setBanner("extension error: " + (record.error || "unknown"));
           break;
+        case "session_info_changed":
+          if (typeof record.name === "string" && record.name) {
+            state.state.sessionName = record.name;
+          } else {
+            delete state.state.sessionName;
+          }
+          break;
         case "queue_update": {
           if (Array.isArray(record.steering) || Array.isArray(record.followUp)) {
             const steering = Array.isArray(record.steering) ? record.steering : [];
@@ -497,9 +613,73 @@
         .catch((error) => commandError(error, true));
     }
 
+    function restoreDraft(text) {
+      if (text && !input.value.trim()) input.value = text;
+    }
+
+    function reloadView() {
+      if (!options.onRefresh) {
+        setBanner("reload is unavailable");
+        render();
+        return Promise.resolve();
+      }
+      setBanner("reloading…");
+      render();
+      return Promise.resolve(options.onRefresh()).catch((error) =>
+        commandError(error, false)
+      );
+    }
+
+    function builtinSlash(text) {
+      if (!text.startsWith("/")) return null;
+      const match = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(text);
+      if (!match) return null;
+      const name = match[1].toLowerCase();
+      if (name !== "new" && name !== "compact" && name !== "reload") return null;
+      return { name, args: (match[2] || "").trim(), text };
+    }
+
+    function runSlashCommand(text) {
+      const command = builtinSlash(text);
+      if (!command) return false;
+      if (state.busy) {
+        setBanner("stop pi before running /" + command.name);
+        render();
+        return true;
+      }
+      input.value = "";
+      if (command.name === "reload") {
+        reloadView();
+        return true;
+      }
+      if (command.name === "new") {
+        const result = options.onCommand({ type: "new_session" });
+        Promise.resolve(result)
+          .then((response) => {
+            if (response && response.data && response.data.cancelled) return;
+            return reloadView();
+          })
+          .catch((error) => {
+            restoreDraft(command.text);
+            commandError(error, false);
+          });
+        return true;
+      }
+      const rpc = { type: "compact" };
+      if (command.args) rpc.customInstructions = command.args;
+      const result = options.onCommand(rpc);
+      Promise.resolve(result).catch((error) => {
+        restoreDraft(command.text);
+        commandError(error, false);
+      });
+      return true;
+    }
+
     function sendPrompt(behavior) {
       const text = input.value.trim();
       if (!text || state.exited) return;
+      closePalette();
+      if (runSlashCommand(text)) return;
       const wasBusy = state.busy;
       const command = { type: "prompt", message: text };
       if (wasBusy) command.streamingBehavior = behavior || "followUp";
@@ -509,7 +689,7 @@
       const result = options.onCommand(command);
       if (result && typeof result.catch === "function") {
         result.catch((error) => {
-          if (!input.value.trim()) input.value = text;
+          restoreDraft(text);
           commandError(error, wasBusy);
         });
       }
@@ -537,6 +717,7 @@
       state.liveTools.clear();
       state.queues = { steering: [], followUp: [] };
       state.state.pendingMessageCount = 0;
+      closePalette();
       render();
     }
 
@@ -576,7 +757,37 @@
       event.preventDefault();
       sendPrompt();
     });
+    input.addEventListener("input", updatePalette);
+    input.addEventListener("click", updatePalette);
+    input.addEventListener("blur", () => setTimeout(closePalette, 0));
     input.addEventListener("keydown", (event) => {
+      if (!paletteEl.hidden) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          movePalette(1);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          movePalette(-1);
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          acceptCommand(state.paletteIndex, false);
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          acceptCommand(state.paletteIndex, !event.ctrlKey && !event.metaKey);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closePalette();
+          return;
+        }
+      }
       if (event.key === "Enter") {
         if (event.ctrlKey || event.metaKey) {
           event.preventDefault();

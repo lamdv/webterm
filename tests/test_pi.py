@@ -81,6 +81,7 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
         snapshot = await session.snapshot()
         self.assertEqual(snapshot["state"]["model"]["id"], "fake-model")
         self.assertEqual(snapshot["entries"]["leafId"], "entry-1")
+        self.assertEqual(snapshot["commands"]["commands"][0]["name"], "review")
         self.assertGreaterEqual(snapshot["seq"], seqs[-1])
 
         session.close()
@@ -138,6 +139,104 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
         await self.client.close()
         await self.handle.stop()
         shutil.rmtree(self.cwd, ignore_errors=True)
+
+    async def _create_pi(self, title: str = "fake chat") -> dict:
+        await self.client.send_json(
+            {
+                "type": "create",
+                "id": "create-pi",
+                "mode": "pi",
+                "cwd": self.cwd,
+                "title": title,
+                "trust": "allow",
+            }
+        )
+        result = await self.client.recv_json_until(
+            lambda message: message.get("type") == "result"
+            and message.get("id") == "create-pi"
+        )
+        return result["result"]["session"]
+
+    async def _subscribe_pi(self, session_id: str) -> dict:
+        await self.client.send_json({"type": "subscribe", "session_id": session_id})
+        await self.client.recv_json_until(
+            lambda message: message.get("type") == "attached"
+            and message["session"]["id"] == session_id
+        )
+        return await self.client.recv_json_until(
+            lambda message: message.get("type") == "pi_resync"
+            and message.get("session_id") == session_id
+        )
+
+    async def test_list_dirs_lists_only_directories(self) -> None:
+        root = Path(self.cwd)
+        (root / "beta").mkdir()
+        (root / "alpha").mkdir()
+        (root / "note.txt").write_text("x", encoding="utf-8")
+
+        await self.client.send_json(
+            {"type": "list_dirs", "id": "list-dirs", "path": self.cwd}
+        )
+        result = await self.client.recv_json_until(
+            lambda message: message.get("type") == "result"
+            and message.get("id") == "list-dirs"
+        )
+        listing = result["result"]
+        self.assertEqual(listing["path"], str(root.resolve()))
+        self.assertEqual([entry["name"] for entry in listing["dirs"]], ["alpha", "beta"])
+        self.assertEqual(listing["parent"], str(root.parent.resolve()))
+
+    async def test_rename_updates_pi_session_name(self) -> None:
+        session = await self._create_pi()
+        session_id = session["id"]
+        await self._subscribe_pi(session_id)
+
+        await self.client.send_json(
+            {
+                "type": "rename",
+                "id": "rename-pi",
+                "session_id": session_id,
+                "title": "renamed chat",
+            }
+        )
+        result = None
+        event = None
+        while result is None or event is None:
+            message = await self.client.recv_json()
+            if message.get("type") == "result" and message.get("id") == "rename-pi":
+                result = message
+            elif (
+                message.get("type") == "pi_event"
+                and message.get("session_id") == session_id
+                and message["record"].get("type") == "session_info_changed"
+            ):
+                event = message
+
+        self.assertEqual(result["result"]["session"]["title"], "renamed chat")
+        self.assertEqual(event["record"]["name"], "renamed chat")
+
+    async def test_snapshot_request_sends_resync(self) -> None:
+        session = await self._create_pi()
+        session_id = session["id"]
+        await self._subscribe_pi(session_id)
+
+        await self.client.send_json(
+            {"type": "pi_snapshot", "id": "snapshot-pi", "session_id": session_id}
+        )
+        result = None
+        resync = None
+        while result is None or resync is None:
+            message = await self.client.recv_json()
+            if message.get("type") == "result" and message.get("id") == "snapshot-pi":
+                result = message
+            elif (
+                message.get("type") == "pi_resync"
+                and message.get("session_id") == session_id
+            ):
+                resync = message
+
+        self.assertTrue(result["result"]["ok"])
+        self.assertEqual(resync["entries"]["leafId"], "entry-1")
 
     async def test_create_prompt_and_subscribe(self) -> None:
         await self.client.send_json(
