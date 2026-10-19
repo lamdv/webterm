@@ -73,9 +73,14 @@
     const root = el("div", "pi-view");
     const header = el("div", "pi-header");
     const titleEl = el("span", "pi-title", session.title || "pi");
-    const statusEl = el("span", "pi-status", "starting…");
     const uiStatusesEl = el("div", "pi-ui-statuses");
-    header.append(titleEl, statusEl, uiStatusesEl);
+    header.append(titleEl, uiStatusesEl);
+
+    // Runtime status lives in a bar at the very bottom of the view, under the
+    // composer, so the header stays a pure title bar.
+    const statusEl = el("span", "pi-status", "starting…");
+    const footer = el("div", "pi-footer");
+    footer.append(statusEl);
 
     const banner = el("div", "pi-banner");
     banner.hidden = true;
@@ -93,6 +98,10 @@
     const widgetsAboveEl = el("div", "pi-ui-widgets above");
     const widgetsBelowEl = el("div", "pi-ui-widgets below");
     const toastsEl = el("div", "pi-toasts");
+    // Toasts float just above the composer. A zero-height host keeps them
+    // anchored there whatever the composer and status bar end up measuring.
+    const toastHost = el("div", "pi-toast-host");
+    toastHost.append(toastsEl);
 
     const form = el("form", "pi-composer");
     const input = el("textarea", "pi-input");
@@ -104,9 +113,10 @@
     stopButton.type = "button";
     const sendButton = el("button", "pi-send");
     sendButton.type = "submit";
+    // One label only: the button keeps a constant height in both modes. The
+    // hold-to-steer gesture lives in the title and the busy placeholder.
     const sendLabel = el("span", "pi-send-label", "Send");
-    const sendHint = el("span", "pi-send-hint");
-    sendButton.append(sendLabel, sendHint);
+    sendButton.append(sendLabel);
     actions.append(sendButton, stopButton);
     form.append(input, actions);
 
@@ -117,9 +127,10 @@
       queueEl,
       paletteEl,
       widgetsAboveEl,
+      toastHost,
       form,
       widgetsBelowEl,
-      toastsEl
+      footer
     );
 
     const state = {
@@ -180,12 +191,11 @@
       sendButton.disabled = state.exited;
       stopButton.disabled = state.exited || !state.busy;
       sendLabel.textContent = state.busy ? "Follow up" : "Send";
-      sendHint.textContent = state.busy ? "hold to steer" : "";
       sendButton.title = state.busy
         ? "Click or Enter: follow up. Hold or Ctrl+Enter: steer."
         : "Send prompt";
       input.placeholder = state.busy
-        ? "pi is working… (Enter to follow up, Ctrl+Enter to steer, Esc to stop)"
+        ? "pi is working… (Enter follows up, hold or Ctrl+Enter steers, Esc stops)"
         : "Message pi… (Enter to send, Shift+Enter for a newline)";
     }
 

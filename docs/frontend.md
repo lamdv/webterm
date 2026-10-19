@@ -182,13 +182,21 @@ backwards transcript paging (`onHistory`), and `pi_export` (`onExport`). A
 snapshot carries only the newest entries plus `hasMore`/`firstEntryId`; the
 view renders a **Load earlier messages** control when older entries exist and
 prepends each `pi_history` page while holding the current scroll position. A
-resync invalidates in-flight page requests. The composer recognizes webterm
-built-ins
+resync invalidates in-flight page requests. The layout is a title bar
+(`.pi-header`: title plus extension status chips), the transcript, the composer
+and a bottom status bar (`.pi-footer`: idle/working, model, thinking level,
+message and queue counts). The composer stretches its textarea to the full
+height of the action column (Send above Stop), and the Send button keeps one
+fixed height whether it reads `Send` or `Follow up`; the hold-to-steer gesture
+is described by its tooltip and the busy placeholder. Toasts float above the
+composer from a zero-height host, not from a hardcoded offset. The composer
+recognizes webterm built-ins
 (`/new`, `/compact`, `/model`, `/provider`, `/reload`, `/fork`, `/clone`,
 `/tree`, `/export`) and merges pi's `get_commands` results for
 extension/template/skill commands. `/model` and `/provider` are webterm-side
 pickers over `get_available_models`; selecting an entry sends `set_model` and
-updates the header's model label from the response without a full resync.
+updates the bottom status bar's model label from the response without a full
+resync.
 
 Model text is rendered through `WebtermHighlight.renderText()`, which splits
 fenced code blocks into DOM-only highlighted `<pre>` nodes. Tool arguments are
