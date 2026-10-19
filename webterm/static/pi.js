@@ -690,7 +690,10 @@
       state.paletteItems = [];
       state.paletteIndex = 0;
       openState.clear();
-      state.busy = Boolean(state.state.isStreaming);
+      state.busy =
+        typeof message.streaming === "boolean"
+          ? message.streaming
+          : Boolean(state.state.isStreaming);
       state.error = "";
       applyUiSnapshot(message.ui);
       const entries = (message.entries && message.entries.entries) || [];

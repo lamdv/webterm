@@ -171,8 +171,10 @@ scheme, so no extra configuration is needed.
   webtermctl list --tree                   # see the agent tree
   ```
 
-  The socket is guarded by filesystem permissions (`0600`) and peer
-  credentials, and is never exposed over the network. See
+  The bundled pi extension exposes these verbs as tools, so a running agent can
+  spawn and manage child agents itself; children appear nested under the parent.
+  The socket is guarded by filesystem permissions (`0600`) and peer credentials,
+  and is never exposed over the network. See
   [docs/agent-control.md](docs/agent-control.md).
 - **Switch session** — click a tab in the sidebar.
 - **Resize sidebar** — drag the divider between the sidebar and the terminal

@@ -63,7 +63,14 @@ def emit_prompt_events(text: str) -> None:
             "type": "message_end",
             "message": {
                 "role": "assistant",
+                "model": "fake-model",
                 "content": [{"type": "text", "text": text}],
+                "usage": {
+                    "input": 3,
+                    "output": 5,
+                    "totalTokens": 8,
+                    "cost": {"total": 0.001},
+                },
             },
         }
     )

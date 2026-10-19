@@ -837,8 +837,20 @@
         const badge = document.createElement("span");
         badge.className = "tab-badge";
         badge.textContent = session.agent || "agent";
-        badge.title = session.task || "agent session";
+        badge.title = [session.task || "agent session", session.model]
+          .filter(Boolean)
+          .join(" · ");
         tab.appendChild(badge);
+      }
+
+      const cost = Number(session.cost);
+      if (session.role === "agent" && Number.isFinite(cost) && cost > 0) {
+        const costEl = document.createElement("span");
+        costEl.className = "tab-cost";
+        costEl.textContent = "$" + cost.toFixed(cost < 0.01 ? 3 : 2);
+        costEl.title =
+          (session.tokens || 0) + " tokens · $" + cost.toFixed(4);
+        tab.appendChild(costEl);
       }
 
       const childCount = childCounts.get(session.id) || 0;
@@ -848,6 +860,13 @@
         children.textContent = String(childCount);
         children.title = `${childCount} child session${childCount === 1 ? "" : "s"}`;
         tab.appendChild(children);
+      }
+
+      if (session.streaming) {
+        const streaming = document.createElement("span");
+        streaming.className = "tab-streaming";
+        streaming.title = "Agent is working";
+        tab.appendChild(streaming);
       }
 
       if (session.needs_input) {

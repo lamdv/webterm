@@ -123,6 +123,10 @@ class PiSession:
         self.created_at = time.time()
 
         self.seq = 0
+        self.streaming = False
+        self.model: str | None = None
+        self.tokens = 0
+        self.cost = 0.0
         self._events: collections.deque[tuple[int, dict, int]] = collections.deque()
         self._event_bytes = 0
         self._subscribers: set[PiSubscriber] = set()
@@ -187,6 +191,10 @@ class PiSession:
             "cwd": self.cwd,
             "trusted": self.trusted,
             "needs_input": bool(self._ui_requests),
+            "streaming": self.streaming,
+            "model": self.model,
+            "tokens": self.tokens,
+            "cost": round(self.cost, 6),
             "seq": self.seq,
         }
 
@@ -266,6 +274,8 @@ class PiSession:
                 "entries": entries.get("data") or {},
                 "commands": commands.get("data") or {},
                 "ui": self.ui_snapshot(),
+                "streaming": self.streaming,
+                "settled": self._settled_event.is_set(),
                 "seq": self.seq,
             }
 
@@ -506,12 +516,64 @@ class PiSession:
             return
         if record.get("type") == "agent_start":
             self._settled_event.clear()
+            if not self.streaming:
+                self.streaming = True
+                if self._on_change is not None:
+                    self._on_change()
         elif record.get("type") == "agent_settled":
             self._settled_event.set()
+            if self.streaming:
+                self.streaming = False
+                if self._on_change is not None:
+                    self._on_change()
+        elif record.get("type") == "message_end":
+            self._track_usage(record.get("message"))
         self.seq += 1
         self._remember(self.seq, record, len(line))
         for subscriber in list(self._subscribers):
             subscriber.offer_pi_event(self, self.seq, record)
+
+    def _track_usage(self, message: object) -> None:
+        """Accumulate model, token, and cost totals from completed messages."""
+        if not isinstance(message, dict):
+            return
+        usage = message.get("usage")
+        changed = False
+        model = message.get("model")
+        if isinstance(model, str) and model and model != self.model:
+            self.model = model
+            changed = True
+        if not isinstance(usage, dict):
+            return
+        total = usage.get("totalTokens")
+        if not isinstance(total, (int, float)):
+            total = sum(
+                value
+                for value in (
+                    usage.get("input"),
+                    usage.get("output"),
+                    usage.get("cacheRead"),
+                    usage.get("cacheWrite"),
+                )
+                if isinstance(value, (int, float))
+            )
+        if isinstance(total, (int, float)) and total:
+            self.tokens += int(total)
+            changed = True
+        cost = usage.get("cost")
+        if isinstance(cost, dict):
+            amount = cost.get("total")
+            if isinstance(amount, (int, float)) and amount:
+                self.cost += float(amount)
+                changed = True
+        if changed:
+            log.debug(
+                "pi session %s: usage model=%s tokens=%d cost=%.6f",
+                self.id,
+                self.model,
+                self.tokens,
+                self.cost,
+            )
 
     def _on_stderr(self) -> None:
         while self._stderr_open:
@@ -632,6 +694,7 @@ class PiSession:
             return
         self.dead = True
         self.closing = False
+        self.streaming = False
         self._cancel_timers()
         for timer in self._ui_timers.values():
             timer.cancel()

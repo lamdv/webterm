@@ -88,7 +88,15 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seqs, sorted(seqs))
         self.assertEqual(len(seqs), len(set(seqs)))
 
+        info = session.info()
+        self.assertFalse(info["streaming"])
+        self.assertEqual(info["model"], "fake-model")
+        self.assertEqual(info["tokens"], 8)
+        self.assertAlmostEqual(info["cost"], 0.001)
+
         snapshot = await session.snapshot()
+        self.assertFalse(snapshot["streaming"])
+        self.assertTrue(snapshot["settled"])
         self.assertEqual(snapshot["state"]["model"]["id"], "fake-model")
         self.assertEqual(snapshot["entries"]["leafId"], "entry-2")
         self.assertEqual(snapshot["commands"]["commands"][0]["name"], "review")

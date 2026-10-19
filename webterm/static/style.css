@@ -1571,6 +1571,32 @@ textarea.pi-ui-input {
   border-color: var(--accent);
 }
 
+.tab-cost {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-streaming {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 rgba(79, 156, 249, 0.6);
+  animation: tab-streaming-pulse 1.4s ease-out infinite;
+}
+
+@keyframes tab-streaming-pulse {
+  70% {
+    box-shadow: 0 0 0 5px rgba(79, 156, 249, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(79, 156, 249, 0);
+  }
+}
+
 .tab-needs-input {
   flex: none;
   display: inline-flex;

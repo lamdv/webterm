@@ -296,6 +296,11 @@ cascade and depth/session limits.
   `get_last_assistant_text` / `get_state` / `get_session_stats`; it does not
   consume the child's full event stream. The human can click the child in the
   tree to watch or steer it live.
+- Delegation is agent-initiated: the bundled extension tools call `webtermctl`
+  from inside the parent agent, so the agent decides when to spawn a child.
+  There is no browser "delegate" action. Session rows show a pulsing dot while
+  a child agent is working, the model in the agent badge tooltip, and a cost
+  chip once usage is reported.
 - Subagent sessions start untrusted (`--no-approve`) and ephemeral
   (`--no-session`). Agent-origin extension dialogs are auto-cancelled when no
   viewer is attached.
