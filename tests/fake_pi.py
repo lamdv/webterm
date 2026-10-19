@@ -124,6 +124,8 @@ def main() -> int:
         with open(child_file, "w", encoding="utf-8") as handle:
             handle.write(str(child.pid))
 
+    thinking = {"level": "off"}
+
     for line in sys.stdin:
         try:
             command = json.loads(line)
@@ -139,7 +141,7 @@ def main() -> int:
                 "get_state",
                 {
                     "model": {"provider": "fake", "id": "fake-model"},
-                    "thinkingLevel": "off",
+                    "thinkingLevel": thinking["level"],
                     "isStreaming": False,
                     "isCompacting": False,
                     "messageCount": 0,
@@ -278,6 +280,24 @@ def main() -> int:
                     "name": command.get("modelId"),
                 },
             )
+        elif kind == "get_available_thinking_levels":
+            respond(
+                request_id,
+                "get_available_thinking_levels",
+                {"levels": ["off", "minimal", "low", "medium", "high"]},
+            )
+        elif kind == "set_thinking_level":
+            level = str(command.get("level", ""))
+            if level not in ("off", "minimal", "low", "medium", "high"):
+                respond(
+                    request_id,
+                    "set_thinking_level",
+                    success=False,
+                    error="invalid thinking level",
+                )
+            else:
+                thinking["level"] = level
+                respond(request_id, "set_thinking_level", {})
         elif kind == "get_commands":
             respond(
                 request_id,

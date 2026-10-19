@@ -58,6 +58,7 @@
     { name: "compact", description: "Compact the conversation", source: "webterm" },
     { name: "model", description: "Switch model", source: "webterm" },
     { name: "provider", description: "Switch provider", source: "webterm" },
+    { name: "thinking", description: "Set the thinking level", source: "webterm" },
     { name: "reload", description: "Reload state and commands", source: "webterm" },
     { name: "fork", description: "Branch from an earlier message", source: "webterm" },
     { name: "clone", description: "Clone the active branch", source: "webterm" },
@@ -1425,6 +1426,105 @@
       showProviderPicker(command, command.args);
     }
 
+    function currentThinkingLevel() {
+      const level = state.state && state.state.thinkingLevel;
+      return typeof level === "string" ? level : "";
+    }
+
+    function fetchThinkingLevels() {
+      return Promise.resolve(
+        options.onCommand({ type: "get_available_thinking_levels" })
+      ).then((response) => {
+        const levels = response && response.data && response.data.levels;
+        if (!Array.isArray(levels)) return [];
+        return levels.filter((level) => typeof level === "string" && level);
+      });
+    }
+
+    function selectThinkingLevel(level, command) {
+      setBanner("setting thinking to " + level + "…");
+      render();
+      return Promise.resolve(options.onCommand({ type: "set_thinking_level", level }))
+        .then(() => {
+          // pi reports the level back through get_state on the next snapshot;
+          // track it locally so the header and picker update immediately.
+          state.state = { ...state.state, thinkingLevel: level };
+          setBanner("");
+          showToast("thinking level: " + level, "info");
+          render();
+        })
+        .catch((error) => {
+          restoreDraft(command && command.text);
+          commandError(error, false);
+        });
+    }
+
+    function showThinkingPicker(command, query, available) {
+      Promise.resolve(available || fetchThinkingLevels())
+        .then((levels) => {
+          if (!levels.length) {
+            setBanner("the current model has no thinking levels");
+            render();
+            return;
+          }
+          const matches = query
+            ? levels.filter((level) =>
+                level.toLowerCase().startsWith(query.toLowerCase())
+              )
+            : levels;
+          if (!matches.length) {
+            setBanner("no thinking level matches " + query);
+            render();
+            return;
+          }
+          const current = currentThinkingLevel();
+          const body = el("div", "pi-modal-list");
+          const modal = showModal("Thinking level", body);
+          for (const level of matches) {
+            const button = el("button", "pi-modal-item");
+            button.type = "button";
+            const head = el("span", "pi-model-head");
+            head.appendChild(el("span", "pi-modal-item-title", level));
+            if (level === current) {
+              head.appendChild(el("span", "pi-model-current", "current"));
+            }
+            button.appendChild(head);
+            button.addEventListener("click", () => {
+              modal.close();
+              if (level !== current) selectThinkingLevel(level, command);
+            });
+            body.appendChild(button);
+          }
+        })
+        .catch((error) => {
+          restoreDraft(command && command.text);
+          commandError(error, false);
+        });
+    }
+
+    function runThinkingCommand(command) {
+      const query = (command.args || "").trim();
+      if (!query) {
+        showThinkingPicker(command, "");
+        return;
+      }
+      fetchThinkingLevels()
+        .then((levels) => {
+          const exact = levels.find(
+            (level) => level.toLowerCase() === query.toLowerCase()
+          );
+          if (exact) {
+            selectThinkingLevel(exact, command);
+            return;
+          }
+          showThinkingPicker(command, query, levels);
+        })
+        .catch((error) => {
+          restoreDraft(command.text);
+          commandError(error, false);
+        });
+    }
+
     function downloadExport(format, command) {
       if (!options.onExport) {
         setBanner("export is unavailable");
@@ -1476,7 +1576,12 @@
     function runSlashCommand(text) {
       const command = builtinSlash(text);
       if (!command) return false;
-      const passive = command.name === "export" || command.name === "tree";
+      // Changing the thinking level is safe mid-run: pi applies it to the next
+      // model call, so there is no reason to make the user stop first.
+      const passive =
+        command.name === "export" ||
+        command.name === "tree" ||
+        command.name === "thinking";
       if (state.busy && !passive) {
         setBanner("stop pi before running /" + command.name);
         render();
@@ -1493,6 +1598,10 @@
       }
       if (command.name === "provider") {
         runProviderCommand(command);
+        return true;
+      }
+      if (command.name === "thinking") {
+        runThinkingCommand(command);
         return true;
       }
       if (command.name === "export") {

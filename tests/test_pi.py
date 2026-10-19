@@ -112,6 +112,16 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(switched["success"])
         self.assertEqual(switched["data"]["id"], "fake-model-2")
 
+        levels = await session.rpc({"type": "get_available_thinking_levels"})
+        self.assertTrue(levels["success"])
+        self.assertEqual(levels["data"]["levels"][0], "off")
+        thought = await session.rpc({"type": "set_thinking_level", "level": "low"})
+        self.assertTrue(thought["success"])
+        state = await session.rpc({"type": "get_state"})
+        self.assertEqual(state["data"]["thinkingLevel"], "low")
+        rejected = await session.rpc({"type": "set_thinking_level", "level": "nope"})
+        self.assertFalse(rejected["success"])
+
         session.close()
         self.assertIsNotNone(await session.wait(timeout=5.0))
         self.assertTrue(collector.exited)
