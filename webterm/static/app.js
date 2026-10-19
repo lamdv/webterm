@@ -633,6 +633,8 @@
       view = window.WebtermPi.create(session, {
         onCommand: (command) => sendPiCommand(session.id, command),
         onRefresh: () => request({ type: "pi_snapshot", session_id: session.id }),
+        onHistory: (before, limit) =>
+          request({ type: "pi_history", session_id: session.id, before, limit }),
         onExport: (format) =>
           request({ type: "pi_export", session_id: session.id, format }),
         onUiResponse: (requestId, response) =>
@@ -1175,16 +1177,41 @@
     closeNewSessionPopover();
     createSession();
   });
-  // Long-press (touch) or right-click opens a popover to name the shell and
-  // type a precommand into it; a plain click still starts a shell immediately.
-  attachLongPress(newSessionButton, openNewSessionPopover);
-  document.getElementById("empty-new").addEventListener("click", () => createSession());
+  // Long-press (touch) or right-click opens a popover to pick the session type
+  // (shell or pi chat) and, for shells, a name and precommand; a plain click
+  // still starts a shell immediately.
+  attachLongPress(newSessionButton, () => openNewSessionPopover("shell"));
+  renderEmptyChoices();
   document.getElementById("restart-server").addEventListener("click", () => {
     if (!window.confirm("Restart the server? All sessions will be closed.")) return;
     restarting = true;
     setStatus("restarting", "restarting…");
     send({ type: "restart" });
   });
+
+  // The empty state offers one button per session type instead of assuming a
+  // shell, so a first-time visitor can start a pi chat too.
+  function renderEmptyChoices() {
+    const host = document.getElementById("empty-choices");
+    if (!host) return;
+    host.innerHTML = "";
+    host.appendChild(emptyChoice("Start a shell", () => createSession(), true));
+    if (CONFIG.pi && CONFIG.pi.available) {
+      host.appendChild(emptyChoice("Start pi chat", createPiSession));
+      if (CONFIG.pi.sessionDir) {
+        host.appendChild(emptyChoice("Resume pi…", createPiResumeSession));
+      }
+    }
+  }
+
+  function emptyChoice(label, action, primary) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = primary ? "empty-choice primary" : "empty-choice";
+    button.textContent = label;
+    button.addEventListener("click", action);
+    return button;
+  }
 
   function renderLaunchers() {
     if (!launchersEl) return;
@@ -1356,6 +1383,10 @@
   const newSessionForm = document.getElementById("new-session-form");
   const newSessionNameInput = document.getElementById("new-session-name");
   const newSessionCommandInput = document.getElementById("new-session-command");
+  const newSessionKinds = document.getElementById("new-session-kinds");
+  const newSessionShellFields = document.getElementById("new-session-shell-fields");
+  const newSessionCreateButton = document.getElementById("new-session-create");
+  let newSessionKind = "shell";
   let addLauncherButton = null;
 
   // Show a popover beneath its anchor, flipping to stay inside the viewport.
@@ -1377,13 +1408,47 @@
     popover.style.top = top + "px";
   }
 
-  function openNewSessionPopover() {
+  function openNewSessionPopover(kind) {
     if (!newSessionPopover) return;
     closeLauncherPopover();
     positionPopover(newSessionPopover, newSessionButton || newSessionPopover.parentElement);
     newSessionNameInput.value = "";
     newSessionCommandInput.value = "";
-    newSessionNameInput.focus();
+    setNewSessionKind(kind === "pi" ? "pi" : "shell");
+    if (newSessionKind === "shell") newSessionNameInput.focus();
+    else if (newSessionCreateButton) newSessionCreateButton.focus();
+  }
+
+  // Switch the popover between a shell (name + precommand) and a pi chat.
+  // Types the server cannot start are not offered at all.
+  function setNewSessionKind(kind) {
+    const piAvailable = Boolean(CONFIG.pi && CONFIG.pi.available);
+    newSessionKind = kind === "pi" && piAvailable ? "pi" : "shell";
+    if (newSessionKinds) {
+      for (const button of newSessionKinds.querySelectorAll("[data-kind]")) {
+        const disabled = button.dataset.kind === "pi" && !piAvailable;
+        button.hidden = disabled;
+        const active = button.dataset.kind === newSessionKind;
+        button.setAttribute("aria-checked", active ? "true" : "false");
+        button.classList.toggle("active", active);
+      }
+      newSessionKinds.hidden = !piAvailable;
+    }
+    if (newSessionShellFields) newSessionShellFields.hidden = newSessionKind === "pi";
+    if (newSessionCreateButton) {
+      newSessionCreateButton.textContent = newSessionKind === "pi" ? "Start pi chat" : "Create";
+    }
+  }
+
+  if (newSessionKinds) {
+    newSessionKinds.addEventListener("click", (event) => {
+      const target = event.target;
+      const button = target instanceof Element ? target.closest("[data-kind]") : null;
+      if (!button || button.hidden) return;
+      setNewSessionKind(button.dataset.kind);
+      if (newSessionKind === "pi" && newSessionCreateButton) newSessionCreateButton.focus();
+      else newSessionNameInput.focus();
+    });
   }
 
   function closeNewSessionPopover() {
@@ -1406,10 +1471,14 @@
   if (newSessionForm) {
     newSessionForm.addEventListener("submit", (event) => {
       event.preventDefault();
+      closeNewSessionPopover();
+      if (newSessionKind === "pi") {
+        createPiSession();
+        return;
+      }
       const name = newSessionNameInput.value.trim();
       const command = newSessionCommandInput.value.trim();
       createSession(command || undefined, name || undefined);
-      closeNewSessionPopover();
     });
   }
 

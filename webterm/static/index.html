@@ -33,7 +33,7 @@
           <div id="sidebar-actions">
             <button
               id="new-session"
-              title="New session (Ctrl+Shift+N) · long-press or right-click to name it and add a precommand"
+              title="New shell (Ctrl+Shift+N) · long-press or right-click to pick a session type, name it, or add a precommand"
             >
               + new
             </button>
@@ -74,28 +74,45 @@
         <div id="terminal-area"></div>
         <div id="empty-state" hidden>
           <p>No sessions running.</p>
-          <button id="empty-new">Start a shell</button>
+          <div id="empty-choices" class="empty-choices"></div>
         </div>
       </main>
     </div>
     <div id="new-session-popover" class="popover" role="dialog" aria-label="New session" hidden>
       <form id="new-session-form">
-        <label for="new-session-name">Name <span class="hint">(optional)</span></label>
-        <input
-          id="new-session-name"
-          type="text"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="Session name"
-        />
-        <label for="new-session-command">Precommand <span class="hint">(optional)</span></label>
-        <input
-          id="new-session-command"
-          type="text"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="e.g. cd ~/src && ls"
-        />
+        <div
+          id="new-session-kinds"
+          class="popover-kinds"
+          role="radiogroup"
+          aria-label="Session type"
+        >
+          <button type="button" data-kind="shell" role="radio" aria-checked="true">
+            Shell
+          </button>
+          <button type="button" data-kind="pi" role="radio" aria-checked="false">
+            pi chat
+          </button>
+        </div>
+        <div id="new-session-shell-fields">
+          <label for="new-session-name">Name <span class="hint">(optional)</span></label>
+          <input
+            id="new-session-name"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Session name"
+          />
+          <label for="new-session-command"
+            >Precommand <span class="hint">(optional)</span></label
+          >
+          <input
+            id="new-session-command"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="e.g. cd ~/src && ls"
+          />
+        </div>
         <div class="popover-actions">
           <button type="button" id="new-session-cancel">Cancel</button>
           <button type="submit" id="new-session-create">Create</button>

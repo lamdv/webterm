@@ -156,8 +156,9 @@ scheme, so no extra configuration is needed.
   prompt rather than losing the tab. By default, if `pi` is on `PATH`, a **pi
   agent** button starts the pi TUI. A **pi chat** button starts a structured
   RPC session instead; long-press or right-click it to reopen a persisted
-  conversation from the `--pi-session-dir` resume picker. Add your own with e.g.
-  `--launcher "btop=btop" --launcher "logs=journalctl -f"`.
+  conversation from the `--pi-session-dir` resume picker. Long conversations
+  open at the newest messages and fetch earlier ones on demand. Add your own
+  with e.g. `--launcher "btop=btop" --launcher "logs=journalctl -f"`.
 - **Sub-agents** — webterm also listens on a local Unix socket so a process on
   the same machine (an agent, a script, a test harness) can spawn sessions that
   show up in the sidebar. An agent running *inside* a webterm session inherits

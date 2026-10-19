@@ -56,6 +56,8 @@
   const BUILTIN_COMMANDS = [
     { name: "new", description: "Start a new session", source: "webterm" },
     { name: "compact", description: "Compact the conversation", source: "webterm" },
+    { name: "model", description: "Switch model", source: "webterm" },
+    { name: "provider", description: "Switch provider", source: "webterm" },
     { name: "reload", description: "Reload state and commands", source: "webterm" },
     { name: "fork", description: "Branch from an earlier message", source: "webterm" },
     { name: "clone", description: "Clone the active branch", source: "webterm" },
@@ -63,6 +65,8 @@
     { name: "export", description: "Download HTML or JSONL", source: "webterm" },
   ];
   const BUILTIN_NAMES = new Set(BUILTIN_COMMANDS.map((command) => command.name));
+  //: Entries requested per backwards transcript page.  The server caps this.
+  const HISTORY_PAGE_SIZE = 100;
 
   function create(session, options) {
     const root = el("div", "pi-view");
@@ -131,6 +135,13 @@
       exited: false,
       banner: "",
       error: "",
+      history: {
+        hasMore: false,
+        firstId: null,
+        loading: false,
+        error: "",
+        generation: 0,
+      },
       ui: {
         requests: [],
         status: {},
@@ -646,12 +657,77 @@
       if (runExact && exact) sendPrompt();
     }
 
+    let scrollAnchor = null;
+
+    function historyRow() {
+      const history = state.history;
+      const row = el("div", "pi-history");
+      if (history.loading) {
+        row.appendChild(el("span", "pi-history-status", "Loading earlier messages…"));
+      } else if (history.hasMore) {
+        const button = el("button", "pi-history-more", "Load earlier messages");
+        button.type = "button";
+        button.disabled = state.exited;
+        button.addEventListener("click", loadEarlier);
+        row.appendChild(button);
+      }
+      if (history.error) {
+        row.appendChild(el("span", "pi-history-error", history.error));
+      }
+      return row;
+    }
+
+    function loadEarlier() {
+      const history = state.history;
+      if (state.exited || history.loading || !history.hasMore || !history.firstId) return;
+      if (!options.onHistory) {
+        setBanner("earlier messages are unavailable");
+        render();
+        return;
+      }
+      history.loading = true;
+      history.error = "";
+      const generation = history.generation;
+      const before = history.firstId;
+      const anchor = { height: messagesEl.scrollHeight, top: messagesEl.scrollTop };
+      render();
+      Promise.resolve(options.onHistory(before, HISTORY_PAGE_SIZE))
+        .then((result) => {
+          if (generation !== history.generation) return;
+          const page = result && Array.isArray(result.entries) ? result.entries : [];
+          const known = new Set(
+            state.messages.map((item) => item.entryId).filter(Boolean)
+          );
+          const older = messagesFromEntries(page, known);
+          history.loading = false;
+          history.hasMore = Boolean(result && result.hasMore);
+          if (result && typeof result.firstEntryId === "string") {
+            history.firstId = result.firstEntryId;
+          } else if (!older.length) {
+            history.hasMore = false;
+          }
+          state.messages = older.concat(state.messages);
+          scrollAnchor = anchor;
+          render();
+        })
+        .catch((error) => {
+          if (generation !== history.generation) return;
+          history.loading = false;
+          history.error =
+            error && error.message ? error.message : "could not load earlier messages";
+          render();
+        });
+    }
+
     function render() {
       renderHeader();
       const previousTop = messagesEl.scrollTop;
       const followBottom = stickToBottom;
       for (const tool of state.liveTools.values()) tool.rendered = false;
       messagesEl.replaceChildren();
+      if (state.history.hasMore || state.history.loading || state.history.error) {
+        messagesEl.appendChild(historyRow());
+      }
       for (const item of state.messages) appendMessage(item.message, false);
       if (state.live) appendMessage(state.live, true);
       for (const tool of state.liveTools.values()) {
@@ -664,7 +740,13 @@
       }
       renderQueue();
       renderUiWidgets();
-      messagesEl.scrollTop = followBottom ? messagesEl.scrollHeight : previousTop;
+      if (scrollAnchor) {
+        messagesEl.scrollTop =
+          messagesEl.scrollHeight - scrollAnchor.height + scrollAnchor.top;
+        scrollAnchor = null;
+      } else {
+        messagesEl.scrollTop = followBottom ? messagesEl.scrollHeight : previousTop;
+      }
     }
 
     let renderQueued = false;
@@ -677,7 +759,24 @@
       });
     }
 
+    function messagesFromEntries(entries, known) {
+      const messages = [];
+      for (const entry of entries || []) {
+        if (!entry || entry.type !== "message" || !entry.message) continue;
+        if (entry.message.role === "system") continue;
+        if (known && typeof entry.id === "string") {
+          if (known.has(entry.id)) continue;
+          known.add(entry.id);
+        }
+        messages.push({ entryId: entry.id, message: entry.message });
+      }
+      return messages;
+    }
+
     function reset(message) {
+      state.history.generation += 1;
+      state.history.loading = false;
+      state.history.error = "";
       state.seq = typeof message.seq === "number" ? message.seq : -1;
       state.state = message.state || {};
       state.live = null;
@@ -696,13 +795,21 @@
           : Boolean(state.state.isStreaming);
       state.error = "";
       applyUiSnapshot(message.ui);
-      const entries = (message.entries && message.entries.entries) || [];
-      state.messages = [];
-      for (const entry of entries) {
-        if (!entry || entry.type !== "message" || !entry.message) continue;
-        if (entry.message.role === "system") continue;
-        state.messages.push({ entryId: entry.id, message: entry.message });
-      }
+      const entryData =
+        message.entries && typeof message.entries === "object" ? message.entries : {};
+      const entries = Array.isArray(entryData.entries) ? entryData.entries : [];
+      state.history.hasMore = Boolean(entryData.hasMore);
+      const firstEntry = entries.find(
+        (entry) => entry && typeof entry.id === "string"
+      );
+      state.history.firstId =
+        typeof entryData.firstEntryId === "string"
+          ? entryData.firstEntryId
+          : firstEntry
+            ? firstEntry.id
+            : null;
+      state.messages = messagesFromEntries(entries);
+      scrollAnchor = null;
       setBanner("");
       render();
       updatePalette();
@@ -1084,6 +1191,240 @@
         });
     }
 
+    function currentModel() {
+      const model = state.state && state.state.model;
+      return model && typeof model === "object" ? model : null;
+    }
+
+    function modelName(model) {
+      return model.name && model.name !== model.id ? model.name : model.id;
+    }
+
+    function modelMatches(model, query) {
+      if (!query) return true;
+      const haystack = [model.provider, model.id, model.name]
+        .filter((part) => typeof part === "string")
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query.toLowerCase());
+    }
+
+    function fetchModels() {
+      return Promise.resolve(options.onCommand({ type: "get_available_models" })).then(
+        (response) => {
+          const models = response && response.data && response.data.models;
+          if (!Array.isArray(models)) return [];
+          return models.filter(
+            (model) =>
+              model &&
+              typeof model === "object" &&
+              typeof model.id === "string" &&
+              typeof model.provider === "string"
+          );
+        }
+      );
+    }
+
+    function selectModel(model, command) {
+      setBanner("switching to " + model.provider + "/" + model.id + "…");
+      render();
+      return Promise.resolve(
+        options.onCommand({
+          type: "set_model",
+          provider: model.provider,
+          modelId: model.id,
+        })
+      )
+        .then((response) => {
+          const applied = response && response.data;
+          state.state = {
+            ...state.state,
+            model: applied && applied.id ? applied : model,
+          };
+          setBanner("");
+          render();
+        })
+        .catch((error) => {
+          restoreDraft(command && command.text);
+          commandError(error, false);
+        });
+    }
+
+    function showModelPicker(command, query, provider, available) {
+      Promise.resolve(available || fetchModels())
+        .then((all) => {
+          const models = provider
+            ? all.filter((model) => model.provider === provider)
+            : all;
+          if (!models.length) {
+            setBanner(provider ? "no models for provider " + provider : "no models available");
+            render();
+            return;
+          }
+          const current = currentModel();
+          const body = el("div", "pi-model-picker");
+          const search = el("input", "pi-model-search");
+          search.type = "search";
+          search.placeholder = "Filter by provider, model, or name…";
+          search.value = query || "";
+          const list = el("div", "pi-modal-list");
+          body.append(search, list);
+          const modal = showModal(
+            provider ? "Models · " + provider : "Select a model",
+            body
+          );
+
+          function visible() {
+            return models.filter((model) => modelMatches(model, search.value.trim()));
+          }
+
+          function renderList() {
+            list.replaceChildren();
+            const items = visible();
+            if (!items.length) {
+              list.appendChild(el("div", "pi-empty", "No matching models."));
+              return;
+            }
+            const groups = new Map();
+            for (const model of items) {
+              if (!groups.has(model.provider)) groups.set(model.provider, []);
+              groups.get(model.provider).push(model);
+            }
+            for (const [name, group] of groups) {
+              list.appendChild(el("div", "pi-model-group", name));
+              for (const model of group) {
+                const chosen =
+                  current &&
+                  current.id === model.id &&
+                  current.provider === model.provider;
+                const button = el("button", "pi-modal-item");
+                button.type = "button";
+                const head = el("span", "pi-model-head");
+                head.appendChild(el("span", "pi-modal-item-title", modelName(model)));
+                if (chosen) head.appendChild(el("span", "pi-model-current", "current"));
+                button.appendChild(head);
+                button.appendChild(
+                  el("span", "pi-model-detail", model.provider + "/" + model.id)
+                );
+                button.addEventListener("click", () => {
+                  modal.close();
+                  selectModel(model, command);
+                });
+                list.appendChild(button);
+              }
+            }
+          }
+
+          search.addEventListener("input", renderList);
+          search.addEventListener("search", renderList);
+          search.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            const first = visible()[0];
+            if (first) {
+              modal.close();
+              selectModel(first, command);
+            }
+          });
+          renderList();
+          search.focus();
+        })
+        .catch((error) => {
+          restoreDraft(command && command.text);
+          commandError(error, false);
+        });
+    }
+
+    function showProviderPicker(command, query, available) {
+      Promise.resolve(available || fetchModels())
+        .then((models) => {
+          const byProvider = new Map();
+          for (const model of models) {
+            if (!byProvider.has(model.provider)) byProvider.set(model.provider, []);
+            byProvider.get(model.provider).push(model);
+          }
+          if (!byProvider.size) {
+            setBanner("no providers available");
+            render();
+            return;
+          }
+          const providers = [...byProvider.keys()].sort();
+          if (query) {
+            const exact = providers.find(
+              (provider) => provider.toLowerCase() === query.toLowerCase()
+            );
+            if (exact) {
+              showModelPicker(command, "", exact, models);
+              return;
+            }
+          }
+          const matches = query
+            ? providers.filter((provider) =>
+                provider.toLowerCase().includes(query.toLowerCase())
+              )
+            : providers;
+          if (!matches.length) {
+            setBanner("no provider matches " + query);
+            render();
+            return;
+          }
+          const current = currentModel();
+          const body = el("div", "pi-modal-list");
+          const modal = showModal(
+            query ? "Providers matching " + query : "Select a provider",
+            body
+          );
+          for (const provider of matches) {
+            const count = byProvider.get(provider).length;
+            const button = el("button", "pi-modal-item");
+            button.type = "button";
+            const head = el("span", "pi-model-head");
+            head.appendChild(el("span", "pi-modal-item-title", provider));
+            if (current && current.provider === provider) {
+              head.appendChild(el("span", "pi-model-current", "current"));
+            }
+            button.appendChild(head);
+            button.appendChild(
+              el("span", "pi-model-detail", count + (count === 1 ? " model" : " models"))
+            );
+            button.addEventListener("click", () => {
+              modal.close();
+              showModelPicker(command, "", provider, models);
+            });
+            body.appendChild(button);
+          }
+        })
+        .catch((error) => {
+          restoreDraft(command && command.text);
+          commandError(error, false);
+        });
+    }
+
+    function runModelCommand(command) {
+      if (!command.args) {
+        showModelPicker(command, "", null);
+        return;
+      }
+      const query = command.args;
+      fetchModels()
+        .then((models) => {
+          const match = models.find(
+            (model) =>
+              (model.provider + "/" + model.id).toLowerCase() === query.toLowerCase()
+          );
+          if (match) selectModel(match, command);
+          else showModelPicker(command, query, null, models);
+        })
+        .catch((error) => {
+          restoreDraft(command.text);
+          commandError(error, false);
+        });
+    }
+
+    function runProviderCommand(command) {
+      showProviderPicker(command, command.args);
+    }
+
     function downloadExport(format, command) {
       if (!options.onExport) {
         setBanner("export is unavailable");
@@ -1144,6 +1485,14 @@
       input.value = "";
       if (command.name === "reload") {
         reloadView();
+        return true;
+      }
+      if (command.name === "model") {
+        runModelCommand(command);
+        return true;
+      }
+      if (command.name === "provider") {
+        runProviderCommand(command);
         return true;
       }
       if (command.name === "export") {

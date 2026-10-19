@@ -39,6 +39,14 @@ PI_TERM_GRACE = 2.0
 #: Time given after SIGKILL before the session is locally torn down.
 PI_FORCE_GRACE = 1.5
 PI_RPC_TIMEOUT = 30.0
+#: Newest entries included in an attach/resync snapshot.  Older entries are
+#: fetched on demand so a long session does not ship its whole transcript to
+#: the browser on every attach.
+SNAPSHOT_ENTRY_LIMIT = 100
+#: Entries returned by one backwards history page, and the hard cap a client
+#: may request.
+HISTORY_ENTRY_LIMIT = 100
+MAX_HISTORY_ENTRY_LIMIT = 500
 #: Approximate byte cap for the live-event ring used by short reconnects.
 EVENT_RING_BYTES = 1_000_000
 EVENT_RING_MIN = 64
@@ -52,6 +60,27 @@ class PiError(Exception):
 
 class PiSessionClosed(PiError):
     """The pi process is gone and can no longer answer commands."""
+
+
+def _entry_page(entries: list[dict], has_more: bool) -> dict:
+    """Wrap an entry slice with the pagination fields the browser expects."""
+    first = entries[0].get("id") if entries and isinstance(entries[0], dict) else None
+    return {
+        "entries": entries,
+        "hasMore": has_more,
+        "firstEntryId": first if isinstance(first, str) else None,
+    }
+
+
+def _entry_tail(data: dict, limit: int | None) -> dict:
+    """Keep only the newest *limit* entries of a ``get_entries`` payload."""
+    entries = data.get("entries")
+    if not isinstance(entries, list):
+        return data
+    if limit is not None and limit > 0 and len(entries) > limit:
+        page = entries[-limit:]
+        return {**data, **_entry_page(page, True)}
+    return {**data, **_entry_page(entries, False)}
 
 
 class PiSubscriber(Protocol):
@@ -249,11 +278,13 @@ class PiSession:
         finally:
             self._pending.pop(request_id, None)
 
-    async def snapshot(self) -> dict:
+    async def snapshot(self, *, entry_limit: int | None = SNAPSHOT_ENTRY_LIMIT) -> dict:
         """Fetch the authoritative conversation state for a client attach.
 
         The returned ``seq`` is the last event sequence applied before the
         snapshot was made; a client should ignore live events at or below it.
+        Only the newest ``entry_limit`` entries are included; the rest are
+        available through :meth:`history`.
         """
         async with self._snapshot_lock:
             state = await self.rpc({"type": "get_state"})
@@ -269,15 +300,40 @@ class PiSession:
                     self.id,
                     commands.get("error"),
                 )
+            data = entries.get("data") or {}
             return {
                 "state": state.get("data") or {},
-                "entries": entries.get("data") or {},
+                "entries": _entry_tail(data, entry_limit),
                 "commands": commands.get("data") or {},
                 "ui": self.ui_snapshot(),
                 "streaming": self.streaming,
                 "settled": self._settled_event.is_set(),
                 "seq": self.seq,
             }
+
+    async def history(self, before: str, limit: int = HISTORY_ENTRY_LIMIT) -> dict:
+        """Return up to *limit* append-ordered entries before *before*.
+
+        pi's ``get_entries`` only has a forward cursor (``since``), and the
+        entry list is append-only, so a backwards page is a lookup plus a
+        slice.  The page excludes *before* itself.
+        """
+        response = await self.rpc({"type": "get_entries"})
+        if not response.get("success"):
+            raise PiError(str(response.get("error", "get_entries failed")))
+        data = response.get("data") or {}
+        entries = data.get("entries")
+        if not isinstance(entries, list):
+            raise PiError("get_entries returned no entry list")
+        index = None
+        for position, entry in enumerate(entries):
+            if isinstance(entry, dict) and entry.get("id") == before:
+                index = position
+                break
+        if index is None:
+            raise PiError(f"entry not found: {before}")
+        start = max(0, index - max(limit, 1))
+        return _entry_page(entries[start:index], start > 0)
 
     def ui_snapshot(self) -> dict:
         """Return pending extension dialogs and replayable fire-and-forget state."""

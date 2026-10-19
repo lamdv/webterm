@@ -21,6 +21,8 @@ from urllib.parse import parse_qs, quote, urlencode
 from . import __version__
 from .control import ControlServer, default_control_socket, looks_like_tcp
 from .integration.pi import (
+    HISTORY_ENTRY_LIMIT,
+    MAX_HISTORY_ENTRY_LIMIT,
     PiError,
     PiSession,
     PiSessionClosed,
@@ -578,6 +580,8 @@ class ClientConnection:
             return await self._pi_command(message)
         if kind == "pi_snapshot":
             return await self._pi_snapshot(message)
+        if kind == "pi_history":
+            return await self._pi_history(message)
         if kind == "pi_ui_response":
             return self._pi_ui_response(message)
         if kind == "list_dirs":
@@ -847,6 +851,27 @@ class ClientConnection:
             raise RequestError("bad_request", "session is not a pi session")
         await self._send_pi_snapshot(session, strict=True)
         return {"ok": True}
+
+    async def _pi_history(self, message: dict) -> dict:
+        """Return one backwards page of transcript entries for the pi view."""
+        session = self._require(message)
+        if session.kind != "pi":
+            raise RequestError("bad_request", "session is not a pi session")
+        before = message.get("before")
+        if not isinstance(before, str) or not before:
+            raise RequestError("bad_request", "before is required")
+        limit = _nonneg_int(message.get("limit"))
+        if not limit:
+            limit = HISTORY_ENTRY_LIMIT
+        limit = min(limit, MAX_HISTORY_ENTRY_LIMIT)
+        try:
+            return await session.history(before, limit)
+        except TimeoutError as exc:
+            raise RequestError("timeout", "pi history request timed out") from exc
+        except PiSessionClosed as exc:
+            raise RequestError("not_found", str(exc)) from exc
+        except PiError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
 
     def _pi_ui_response(self, message: dict) -> dict:
         session = self._require(message)

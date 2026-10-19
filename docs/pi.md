@@ -140,6 +140,16 @@ On first attach or a detected gap:
 2. Replace the client's message state.
 3. Apply live events after the snapshot.
 
+A snapshot carries only the newest `SNAPSHOT_ENTRY_LIMIT` entries plus
+`hasMore` and `firstEntryId`, so attaching to a long session does not ship the
+whole transcript. The browser shows **Load earlier messages** and asks for
+`pi_history` with `before: <firstEntryId>`; the server walks the append-only
+entry list backwards and returns one page (`HISTORY_ENTRY_LIMIT` entries by
+default, `MAX_HISTORY_ENTRY_LIMIT` at most). The page is prepended without
+moving the reader's scroll position. History reads are safe during a run; the
+client discards a page if a resync replaced the transcript while the request
+was in flight.
+
 `get_messages` is not the hydration primitive for a tree-capable UI; it hides
 pre-compaction entries and branch structure. A small monotonic live `seq` is
 still useful to detect gaps between event batches, but it is not the replay
@@ -162,6 +172,9 @@ Keep the existing text-JSON control plane and binary terminal frames. Add:
   avoid collisions when two clients drive the same session.
 - Server to client: `pi_event`, `{session_id, seq, record}`.
 - Server to client: `pi_resync` when a client attaches or a gap is detected.
+- Client to server: `pi_history`, `{session_id, before, limit}`, answers
+  `{entries, hasMore, firstEntryId}` with the entries immediately before
+  `before` for backwards transcript paging.
 - Extension UI: `pi_ui_request`, `pi_ui_resolved`, `pi_ui_response`, plus a
   small replayed `ui_state` for status/widget/title.
 - `kind`, `closing`, and `trusted` on session metadata.
@@ -281,7 +294,7 @@ spawning session in the browser tree and are covered by the existing kill
 cascade and depth/session limits.
 
 - Every webterm-owned pi process loads
-  `webterm/extensions/webterm-agents.ts` via `-e`. It registers `spawn_agent`,
+  `webterm/integration/pi/extension.ts` via `-e`. It registers `spawn_agent`,
   `agent_send`, `agent_wait`, `agent_result`, `agent_list`, and `agent_kill`.
 - The tools call `webtermctl`, which discovers the control socket and parent
   session from `WEBTERM_SOCKET` / `WEBTERM_SESSION_ID`. A parent therefore

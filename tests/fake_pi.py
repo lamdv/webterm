@@ -254,8 +254,30 @@ def main() -> int:
                 with open(output_path, "w", encoding="utf-8") as handle:
                     handle.write("<!doctype html><title>fake pi export</title>")
                 respond(request_id, "export_html", {"path": output_path})
-        elif kind in ("abort", "clear_queue", "set_model", "new_session", "compact"):
+        elif kind in ("abort", "clear_queue", "new_session", "compact"):
             respond(request_id, str(kind), {})
+        elif kind == "get_available_models":
+            respond(
+                request_id,
+                "get_available_models",
+                {
+                    "models": [
+                        {"provider": "fake", "id": "fake-model", "name": "Fake Model"},
+                        {"provider": "fake", "id": "fake-model-2", "name": "Fake Model 2"},
+                        {"provider": "other", "id": "other-model", "name": "Other Model"},
+                    ]
+                },
+            )
+        elif kind == "set_model":
+            respond(
+                request_id,
+                "set_model",
+                {
+                    "provider": command.get("provider"),
+                    "id": command.get("modelId"),
+                    "name": command.get("modelId"),
+                },
+            )
         elif kind == "get_commands":
             respond(
                 request_id,

@@ -55,7 +55,7 @@ sections:
 | Tab / view | `renderTabs`, `activate`, `startRename` (inline tab rename). |
 | Pi view | `ensurePiView`, pi trust/resume dialogs, `createPiSession` and `createPiResumeSession` launchers, export download. |
 | Resize | `fit`, `cellSize`, `domCellSize`, `refitAll`. |
-| Actions | Launchers, `createSession`, keyboard shortcuts. |
+| Actions | Launchers, `createSession`, `renderEmptyChoices`, session-type switch, keyboard shortcuts. |
 | Boot | Feature check, initial render, `connect()`. |
 
 ### Sidebar
@@ -173,9 +173,17 @@ Unknown ids are ignored.
 `kind:"pi"` sessions. The view is hydrated by server `pi_resync` snapshots and
 then consumes `pi_event` records; it owns no persistence. Hooks map to the
 generic RPC envelope (`onCommand`), an explicit snapshot refresh (`onRefresh`),
-and `pi_export` (`onExport`). The composer recognizes webterm built-ins
-(`/new`, `/compact`, `/reload`, `/fork`, `/clone`, `/tree`, `/export`) and
-merges pi's `get_commands` results for extension/template/skill commands.
+backwards transcript paging (`onHistory`), and `pi_export` (`onExport`). A
+snapshot carries only the newest entries plus `hasMore`/`firstEntryId`; the
+view renders a **Load earlier messages** control when older entries exist and
+prepends each `pi_history` page while holding the current scroll position. A
+resync invalidates in-flight page requests. The composer recognizes webterm
+built-ins
+(`/new`, `/compact`, `/model`, `/provider`, `/reload`, `/fork`, `/clone`,
+`/tree`, `/export`) and merges pi's `get_commands` results for
+extension/template/skill commands. `/model` and `/provider` are webterm-side
+pickers over `get_available_models`; selecting an entry sends `set_model` and
+updates the header's model label from the response without a full resync.
 
 Model text is rendered through `WebtermHighlight.renderText()`, which splits
 fenced code blocks into DOM-only highlighted `<pre>` nodes. Tool arguments are
@@ -187,9 +195,11 @@ by language+content to keep streaming re-renders cheap, and the transcript
 keeps its scroll position unless the viewer is already near the bottom.
 
 Before a pi process starts, the trust dialog always asks whether project
-settings/extensions may load. The resume launcher lists persisted sessions via
+settings/extensions may load. The resume dialog lists persisted sessions via
 `list_pi_sessions`, then asks the same trust question for the selected cwd
-before sending `create` with `resume`.
+before sending `create` with `resume`. Both are reachable from the `pi chat`
+launcher (long-press/right-click for resume), from the `pi chat` session type in
+the new-session popover, and from the empty-state buttons.
 
 Extension UI is server-owned: `pi_ui_request` dialogs are shown one at a time
 and answered with `pi_ui_response`; `pi_ui_resolved` dismisses them for every
@@ -327,12 +337,21 @@ grid and sends `{"type":"create", ...}`.
 
 ### New session
 
-A plain click on `+ new` (or `Ctrl+Shift+N`, or the empty-state button) starts a
-shell immediately. A long-press or right-click on `+ new` opens the new-session
-popover (`attachLongPress`), which takes an optional name and an optional
-**precommand**. Submitting it calls `createSession(precommand, name)`; the
-server starts an interactive shell and types the precommand into it, so shell
-syntax (`&&`, pipes, globs) works and the user lands at a prompt when it exits.
+A plain click on `+ new` (or `Ctrl+Shift+N`) starts a shell immediately. A
+long-press or right-click on `+ new` opens the new-session popover
+(`attachLongPress`), which starts with a **session type** switch — `Shell` or
+`pi chat` (offered only when `CONFIG.pi.available`). For shells the popover also
+takes an optional name and an optional **precommand**; submitting calls
+`createSession(precommand, name)`, so the server starts an interactive shell and
+types the precommand into it — shell syntax (`&&`, pipes, globs) works and the
+user lands at a prompt when it exits. Choosing `pi chat` hides the shell fields,
+relabels the submit button, and runs `createPiSession()` (the trust dialog) on
+submit.
+
+When no sessions are open, `#empty-state` renders one button per session type
+(`renderEmptyChoices`) instead of assuming a shell: `Start a shell`,
+`Start pi chat`, and — when `CONFIG.pi.sessionDir` is set — `Resume pi…`. The
+buttons are built in JS so unavailable types are simply absent.
 
 The `⟳` button in the sidebar header asks for confirmation (restarting closes
 all sessions), then sends `{"type":"restart"}`. The server acks with

@@ -285,6 +285,44 @@ body {
   display: none;
 }
 
+/* Author rules below set `display`, so keep `hidden` authoritative inside
+   popovers (the kind switch hides labels and inputs). */
+.popover [hidden] {
+  display: none;
+}
+
+.popover-kinds {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.popover-kinds button {
+  flex: 1 1 0;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.popover-kinds button:hover {
+  color: var(--text);
+}
+
+.popover-kinds button.active {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+  color: #eaf2ff;
+}
+
 .popover label {
   display: block;
   margin-bottom: 4px;
@@ -560,16 +598,38 @@ body {
   font-family: monospace;
 }
 
-#empty-new {
-  background: var(--accent-dim);
-  color: #eaf2ff;
-  border: 1px solid var(--accent);
+.empty-choices {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: min(90%, 480px);
+}
+
+.empty-choice {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 14px;
+  font-family: inherit;
+  font-size: 13px;
   cursor: pointer;
 }
 
-#empty-new:hover {
+.empty-choice:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+  color: #eaf2ff;
+}
+
+.empty-choice.primary {
+  background: var(--accent-dim);
+  color: #eaf2ff;
+  border-color: var(--accent);
+}
+
+.empty-choice.primary:hover {
   background: var(--accent);
 }
 
@@ -627,7 +687,7 @@ button,
   }
 
   #new-session,
-  #empty-new {
+  .empty-choice {
     padding: 8px 14px;
   }
 
@@ -647,6 +707,11 @@ button,
   .popover input {
     font-size: 16px;
     padding: 7px 9px;
+  }
+
+  .popover-kinds button {
+    padding: 7px 9px;
+    font-size: 14px;
   }
 }
 
@@ -768,6 +833,46 @@ button,
 .pi-empty {
   margin: auto;
   font-size: 13px;
+}
+
+.pi-history {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.pi-history-more {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pi-history-more:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.pi-history-more:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.pi-history-status,
+.pi-history-error {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.pi-history-error {
+  color: var(--danger);
 }
 
 .pi-error {
@@ -1351,6 +1456,68 @@ button,
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pi-model-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pi-model-search {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.pi-model-search:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.pi-model-group {
+  margin: 8px 2px 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pi-model-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pi-model-head .pi-modal-item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.pi-model-detail {
+  overflow: hidden;
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-model-current {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .pi-tree {

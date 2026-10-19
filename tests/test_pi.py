@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import quote
 
+from webterm.integration.pi import PiError
 from webterm.server import start_server
 from webterm.session import SessionManager
 
@@ -102,9 +103,48 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["commands"]["commands"][0]["name"], "review")
         self.assertGreaterEqual(snapshot["seq"], seqs[-1])
 
+        models = await session.rpc({"type": "get_available_models"})
+        self.assertTrue(models["success"])
+        self.assertEqual(models["data"]["models"][0]["provider"], "fake")
+        switched = await session.rpc(
+            {"type": "set_model", "provider": "fake", "modelId": "fake-model-2"}
+        )
+        self.assertTrue(switched["success"])
+        self.assertEqual(switched["data"]["id"], "fake-model-2")
+
         session.close()
         self.assertIsNotNone(await session.wait(timeout=5.0))
         self.assertTrue(collector.exited)
+
+    async def test_snapshot_returns_newest_entries_and_history_pages_backwards(self) -> None:
+        session = self.start()
+
+        snapshot = await session.snapshot(entry_limit=1)
+        self.assertEqual(
+            [entry["id"] for entry in snapshot["entries"]["entries"]], ["entry-2"]
+        )
+        self.assertTrue(snapshot["entries"]["hasMore"])
+        self.assertEqual(snapshot["entries"]["firstEntryId"], "entry-2")
+
+        page = await session.history("entry-2", 1)
+        self.assertEqual([entry["id"] for entry in page["entries"]], ["entry-1"])
+        self.assertFalse(page["hasMore"])
+        self.assertEqual(page["firstEntryId"], "entry-1")
+
+        empty = await session.history("entry-1", 1)
+        self.assertEqual(empty["entries"], [])
+        self.assertFalse(empty["hasMore"])
+        self.assertIsNone(empty["firstEntryId"])
+
+        full = await session.snapshot(entry_limit=10)
+        self.assertFalse(full["entries"]["hasMore"])
+        self.assertEqual(full["entries"]["firstEntryId"], "entry-1")
+
+        with self.assertRaises(PiError):
+            await session.history("missing", 1)
+
+        session.close()
+        self.assertIsNotNone(await session.wait(timeout=5.0))
 
     async def test_wait_for_settled_tracks_dialog_blocked_run(self) -> None:
         session = self.start()
@@ -566,6 +606,45 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["result"]["ok"])
         self.assertEqual(resync["entries"]["leafId"], "entry-2")
+        self.assertFalse(resync["entries"]["hasMore"])
+        self.assertEqual(resync["entries"]["firstEntryId"], "entry-1")
+
+    async def test_pi_history_returns_older_entries(self) -> None:
+        session = await self._create_pi()
+        session_id = session["id"]
+        await self._subscribe_pi(session_id)
+
+        await self.client.send_json(
+            {
+                "type": "pi_history",
+                "id": "history-pi",
+                "session_id": session_id,
+                "before": "entry-2",
+                "limit": 1,
+            }
+        )
+        result = await self.client.recv_json_until(
+            lambda message: message.get("type") == "result"
+            and message.get("id") == "history-pi"
+        )
+        page = result["result"]
+        self.assertEqual([entry["id"] for entry in page["entries"]], ["entry-1"])
+        self.assertFalse(page["hasMore"])
+        self.assertEqual(page["firstEntryId"], "entry-1")
+
+        await self.client.send_json(
+            {
+                "type": "pi_history",
+                "id": "history-bad",
+                "session_id": session_id,
+                "before": "missing",
+            }
+        )
+        error = await self.client.recv_json_until(
+            lambda message: message.get("type") == "error"
+            and message.get("id") == "history-bad"
+        )
+        self.assertEqual(error["error"]["code"], "bad_request")
 
     async def test_create_prompt_and_subscribe(self) -> None:
         await self.client.send_json(
