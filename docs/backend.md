@@ -13,7 +13,9 @@ for the client see [frontend.md](frontend.md).
 | `webterm/__main__.py` | CLI entry point: argument parsing, config assembly, `asyncio.run`. |
 | `webterm/server.py` | HTTP static serving, WebSocket upgrade, `ClientConnection` command loop and fan-out, shutdown. |
 | `webterm/session.py` | `Session` (PTY + scrollback + subscribers + lineage) and `SessionManager` (spawn, reap, list, kill, limits, GC). |
-| `webterm/pi.py` | `PiSession`: a `pi --mode rpc` child over three pipes, JSONL event fan-out, snapshot/resync, server-owned extension dialogs/UI state, and two-phase close. |
+| `webterm/integration/pi/session.py` | `PiSession`: a `pi --mode rpc` child over three pipes, JSONL event fan-out, snapshot/resync, server-owned extension dialogs/UI state, and two-phase close. |
+| `webterm/integration/pi/storage.py` | pi session-file root, header parsing, path containment, and picker listing. |
+| `webterm/integration/pi/config.py` | pi CLI defaults, availability/detection, frontend config, agent profile, and launcher. |
 | `webterm/websocket.py` | Minimal RFC 6455 server: handshake, framing, fragmentation, ping/pong/close. |
 | `webterm/transport.py` | `Transport` protocol and `FramedTransport` (length-prefixed frames for the control socket). |
 | `webterm/control.py` | Local `AF_UNIX` control listener, discovery file, peer-credential check. |
@@ -61,16 +63,19 @@ dict, and runs `serve()`.
 
 `parse_launchers` turns `LABEL=COMMAND` into `{"label": ..., "command": [...]}`
 using `shlex.split`. When no `--launcher` is given, it probes for `pi` with
-`shutil.which` and adds a default button. Agent profiles now carry `print`,
-`interactive`, and optional `rpc` templates; the default `pi` RPC profile and
-every browser-created pi session load the bundled
-`webterm/extensions/webterm-agents.ts` extension.
+`shutil.which` and adds a default button only when pi is installed. Agent
+profiles carry `print`, `interactive`, and optional `rpc` templates; the default
+`pi` RPC profile and every browser-created pi session load the bundled
+`webterm/integration/pi/extension.ts` extension.
 
 The config dict currently supports `fontFamily`, `launchers`, `agents`, and
 `pi` (`available`, `cwd`, `sessionDir`); it is served as
 `window.WEBTERM_CONFIG` by `/config.js`. At startup `main()` creates and
-resolves the pi session root (`0700`) once, so every picker/export containment
-check compares against the same canonical path.
+resolves the pi session root (`0700`) only when pi is installed or
+`--pi-session-dir` was given explicitly. Without pi, `pi_available` is false,
+`sessionDir` is `null`, pi launchers/profiles are omitted, and a `create`
+request for a pi session is rejected with an `unavailable` error instead of
+spawning a doomed child.
 
 `build_ssl_context(certfile, keyfile)` constructs the server `SSLContext`
 (TLS 1.2 minimum) from the `--tls-cert`/`--tls-key` files and passes it to

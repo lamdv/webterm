@@ -11,9 +11,9 @@ import shlex
 import shutil
 import ssl
 import sys
-from pathlib import Path
 
 from . import __version__
+from .integration.pi import config as pi_config
 from .server import serve
 from .session import (
     DEFAULT_MAX_AGENT_CHILDREN,
@@ -23,7 +23,6 @@ from .session import (
     DEFAULT_RETAINED_TTL,
     DEFAULT_SCROLLBACK,
     SessionManager,
-    prepare_pi_session_dir,
 )
 
 log = logging.getLogger("webterm")
@@ -49,15 +48,6 @@ def build_ssl_context(certfile: str, keyfile: str | None = None) -> ssl.SSLConte
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(certfile, keyfile)
     return context
-
-
-def _default_pi_session_dir() -> str:
-    """Default webterm-managed root for persisted pi session files."""
-    explicit = os.environ.get("WEBTERM_PI_SESSION_DIR")
-    if explicit:
-        return explicit
-    state = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
-    return os.path.join(state, "webterm", "pi-sessions")
 
 
 def _default_shell() -> str:
@@ -263,22 +253,6 @@ def parse_agents(
     return profiles
 
 
-def default_agents(extension_path: str | None = None) -> dict[str, dict[str, list[str]]]:
-    """Built-in agent profiles detected on ``PATH``."""
-    profiles: dict[str, dict[str, list[str]]] = {}
-    pi = shutil.which("pi")
-    if pi:
-        rpc = [pi, "--mode", "rpc", "--no-session", "--no-approve"]
-        if extension_path:
-            rpc.extend(["-e", extension_path])
-        profiles["pi"] = {
-            "print": [pi, "-p", "{task}"],
-            "interactive": [pi, "{task}"],
-            "rpc": rpc,
-        }
-    return profiles
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -290,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
 
     shell = args.shell or _default_shell()
     cwd = args.cwd or os.path.expanduser("~")
+    pi_bin = shutil.which("pi")
 
     manager = SessionManager(
         shell=shell,
@@ -300,7 +275,8 @@ def main(argv: list[str] | None = None) -> int:
         max_sessions=args.max_sessions,
         max_retained=args.max_retained,
         retained_ttl=None if args.retained_ttl < 0 else args.retained_ttl,
-        pi_command=[shutil.which("pi") or "pi"],
+        pi_command=[pi_bin or "pi"],
+        pi_available=pi_bin is not None,
     )
 
     config: dict[str, object] = {}
@@ -316,15 +292,18 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ssl.SSLError) as exc:
             parser.error(f"cannot load TLS certificate: {exc}")
 
-    pi_session_dir = args.pi_session_dir or _default_pi_session_dir()
-    try:
-        pi_session_dir = prepare_pi_session_dir(pi_session_dir)
-    except OSError as exc:
-        parser.error(f"cannot create pi session directory: {exc}")
-    manager.pi_session_dir = pi_session_dir
-    extension_path = Path(__file__).with_name("extensions") / "webterm-agents.ts"
-    if extension_path.is_file():
-        manager.pi_extension = str(extension_path)
+    pi_session_dir: str | None = None
+    if args.pi_session_dir or pi_bin:
+        try:
+            pi_session_dir = pi_config.configure(manager, args.pi_session_dir)
+        except OSError as exc:
+            parser.error(f"cannot create pi session directory: {exc}")
+    else:
+        # No pi and no explicit storage root: do not create pi state or load
+        # the pi extension.  The server and shell sessions still start normally.
+        manager.pi_session_dir = None
+        manager.pi_extension = None
+        log.info("pi is not installed; pi sessions are disabled")
 
     token = args.token or os.environ.get("WEBTERM_TOKEN") or None
     if not _is_loopback(args.host):
@@ -343,22 +322,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.launcher:
         launchers = parse_launchers(args.launcher, parser.error)
     else:
-        pi = shutil.which("pi")
-        if pi:
-            launchers.append({"label": "pi agent", "command": [pi]})
+        launchers = pi_config.default_launcher()
     if launchers:
         config["launchers"] = launchers
-    config["pi"] = {
-        "available": shutil.which("pi") is not None,
-        "cwd": os.path.abspath(os.path.expanduser(cwd)),
-        "sessionDir": pi_session_dir,
-    }
+    config["pi"] = pi_config.frontend_config(
+        pi_session_dir, cwd, is_available=manager.pi_available
+    )
 
     profiles = parse_agents(
         args.agent, args.agent_interactive, parser.error, args.agent_rpc
     )
     if not profiles:
-        profiles = default_agents(manager.pi_extension)
+        profiles = pi_config.default_agent_profiles(manager.pi_extension)
     if profiles:
         config["agents"] = [
             {"name": name, **{key: value for key, value in profile.items() if value}}

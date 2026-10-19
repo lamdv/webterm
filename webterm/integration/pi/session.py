@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from .session import SessionManager
+    from ...session import SessionManager
 
 log = logging.getLogger("webterm")
 

@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
-import json
 import logging
 import os
 import pty
 import re
 import shlex
+import shutil
 import signal
 import struct
 import termios
@@ -27,7 +27,8 @@ from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from .ansi import remove_ansi
-from .pi import PiSession, fork_pi
+from .integration.pi import PiSession, fork_pi
+from .integration.pi import storage as pi_storage
 
 DEFAULT_SCROLLBACK = 100_000
 DEFAULT_MAX_AGENT_DEPTH = 5
@@ -42,41 +43,6 @@ READ_SIZE = 65_536
 WAIT_WINDOW = 65_536
 
 log = logging.getLogger("webterm")
-
-#: Header lines are small; cap the read so a malformed file cannot make the
-#: session picker load an arbitrary amount of data.
-PI_HEADER_LIMIT = 64 * 1024
-#: Maximum entries returned by the session picker in one response.
-PI_SESSION_LIST_LIMIT = 500
-
-
-def prepare_pi_session_dir(path: str) -> str:
-    """Create the managed pi session root and return its real path.
-
-    New directories are created ``0700``.  The path is resolved once here so
-    every later containment check compares against the same canonical root.
-    """
-    root = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-    os.makedirs(root, mode=0o700, exist_ok=True)
-    return root
-
-
-def _read_pi_session_header(path: str) -> dict | None:
-    """Read the first ``session`` header line from a pi session file."""
-    try:
-        with open(path, "rb") as handle:
-            line = handle.readline(PI_HEADER_LIMIT)
-    except OSError:
-        return None
-    if not line:
-        return None
-    try:
-        header = json.loads(line)
-    except (ValueError, UnicodeDecodeError):
-        return None
-    if not isinstance(header, dict) or header.get("type") != "session":
-        return None
-    return header
 
 
 class SessionError(Exception):
@@ -549,6 +515,7 @@ class SessionManager:
         retained_ttl: float | None = DEFAULT_RETAINED_TTL,
         pi_command: list[str] | None = None,
         pi_session_dir: str | None = None,
+        pi_available: bool | None = None,
     ) -> None:
         self.shell = shell
         self.cwd = cwd
@@ -563,6 +530,13 @@ class SessionManager:
         self.max_retained = max_retained
         self.retained_ttl = retained_ttl
         self.pi_command = list(pi_command) if pi_command else ["pi"]
+        #: Whether the default pi command can be executed.  ``create_pi`` still
+        #: accepts an explicit argv, so tests and embedded hosts are unaffected.
+        self.pi_available = (
+            shutil.which(self.pi_command[0]) is not None
+            if pi_available is None
+            else bool(pi_available)
+        )
         #: Optional webterm extension injected into every pi process.
         self.pi_extension: str | None = None
         #: Webterm-managed root for pi session files; ``None`` disables
@@ -730,52 +704,13 @@ class SessionManager:
         This is accident prevention for picker/export paths, not a security
         boundary: pi sessions already have the server user's file access.
         """
-        if not self.pi_session_dir or not isinstance(raw, str) or not raw.strip():
-            return None
-        candidate = os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
-        try:
-            common = os.path.commonpath([candidate, self.pi_session_dir])
-        except ValueError:
-            return None
-        return candidate if common == self.pi_session_dir else None
+        return pi_storage.resolve_path(self.pi_session_dir, raw)
 
-    def list_pi_sessions(self, limit: int = PI_SESSION_LIST_LIMIT) -> list[dict[str, object]]:
+    def list_pi_sessions(
+        self, limit: int = pi_storage.PI_SESSION_LIST_LIMIT
+    ) -> list[dict[str, object]]:
         """List persisted pi sessions under the managed root, newest first."""
-        root = self.pi_session_dir
-        if root is None or not os.path.isdir(root):
-            return []
-        found: list[tuple[float, dict[str, object]]] = []
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            dirnames[:] = sorted(name for name in dirnames if not name.startswith("."))
-            for name in filenames:
-                if not name.endswith(".jsonl"):
-                    continue
-                path = os.path.join(dirpath, name)
-                if self.resolve_pi_path(path) != os.path.realpath(path):
-                    continue
-                header = _read_pi_session_header(path)
-                if header is None:
-                    continue
-                try:
-                    stat = os.stat(path)
-                except OSError:
-                    continue
-                found.append(
-                    (
-                        stat.st_mtime,
-                        {
-                            "path": path,
-                            "id": header.get("id"),
-                            "cwd": header.get("cwd"),
-                            "timestamp": header.get("timestamp"),
-                            "parentSession": header.get("parentSession"),
-                            "size": stat.st_size,
-                            "mtime": stat.st_mtime,
-                        },
-                    )
-                )
-        found.sort(key=lambda item: item[0], reverse=True)
-        return [entry for _, entry in found[:limit]]
+        return pi_storage.list_sessions(self.pi_session_dir, limit)
 
     def children_of(self, session_id: str) -> list[Session | PiSession]:
         """Sessions whose ``parent_id`` is *session_id* (one level)."""

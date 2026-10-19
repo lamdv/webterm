@@ -20,7 +20,11 @@ from urllib.parse import parse_qs, quote, urlencode
 
 from . import __version__
 from .control import ControlServer, default_control_socket, looks_like_tcp
-from .pi import PiError, PiSession, PiSessionClosed
+from .integration.pi import (
+    PiError,
+    PiSession,
+    PiSessionClosed,
+)
 from .session import (
     DepthExceededError,
     Session,
@@ -690,6 +694,11 @@ class ClientConnection:
             raise _request_error(exc) from exc
 
     def _create_pi(self, message: dict) -> PiSession:
+        if not self.manager.pi_available:
+            raise RequestError(
+                "unavailable",
+                "pi is not installed on the server; install pi or configure a pi command",
+            )
         trust = message.get("trust")
         if trust not in (None, "allow", "deny"):
             raise RequestError("bad_request", "trust must be 'allow' or 'deny'")
