@@ -250,6 +250,9 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
             pi_command=[sys.executable, str(FAKE_PI)],
             pi_session_dir=str(self.session_root.resolve()),
         )
+        # Production always points this at the bundled extension, so browser
+        # sessions (and the pi processes they spawn) inherit the webterm context.
+        self.manager.pi_extension = str(Path(self.cwd) / "extension.ts")
         self.handle = await start_server(
             "127.0.0.1",
             0,
@@ -375,6 +378,8 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
             argv[argv.index("--session-dir") + 1], str(self.session_root.resolve())
         )
         self.assertIn("--no-approve", argv)
+        self.assertIn("-e", argv)
+        self.assertEqual(argv[argv.index("-e") + 1], self.manager.pi_extension)
 
     async def test_create_rejects_resume_outside_the_managed_root(self) -> None:
         outside = Path(self.cwd) / "outside.jsonl"

@@ -286,6 +286,34 @@ Multiple viewers share one agent, tmux-style. Any authenticated viewer may
 answer; first response wins; there is no owner concept. Dialog text, options,
 widgets, and notifications are rendered as text, never through `innerHTML`.
 
+## Prompt context
+
+A pi process learns that it runs inside webterm through the bundled extension, not
+through shared configuration, so a `pi` you start in a terminal stays untouched:
+
+- `webterm/integration/pi/extension.ts` sets a named system-prompt section
+  (`sections.webterm`) from its `before_agent_start` handler. Pi renders named
+  sections as XML-wrapped `<webterm>` blocks and records them in the transcript's
+  first system message.
+- Only pi processes webterm starts get it. Every profile mode (`print`,
+  `interactive`, `rpc`) and the default sidebar launcher pass `-e <extension>`,
+  so the context and the `webtermctl` tools arrive together; children inherit it
+  and can spawn their own children.
+- The hook deletes the section when `spawn_agent` is not in
+  `systemPromptOptions.selectedTools`, so nothing advertises control that is not
+  loaded.
+- The text is deliberately static. Pi diffs prompt sections and appends a delta
+  when one changes, so interpolating session ids, child counts, or
+  `WEBTERM_DEPTH` would rewrite the prompt prefix on every request and invalidate
+  the provider cache. Volatile facts come back in tool results instead.
+- The extension also registers `/webterm`, which reports the control surface on
+  demand and appears in `get_commands`, so the webterm command palette lists it.
+
+Rejected alternatives: `<agent-dir>/APPEND_SYSTEM.md` leaks into every pi on the
+machine, and a project `.pi/APPEND_SYSTEM.md` leaks into every pi in that folder,
+including the human's own. `--append-system-prompt` is correctly scoped but
+static and cannot adapt to the active tool set.
+
 ## Subagents
 
 Pi subagents are ordinary webterm sessions with `origin: "agent"`,

@@ -1,16 +1,49 @@
 /**
- * Webterm sub-agent tools.
+ * Webterm's pi integration: prompt context and sub-agent tools.
  *
- * Webterm injects this extension into pi sessions it owns. The tools call the
- * local `webtermctl` control socket, which fills in the parent session id from
- * WEBTERM_SESSION_ID, so child agents appear under the current session in the
- * browser tree.
+ * Webterm injects this extension into every pi process it starts. It teaches the
+ * model that it is running inside webterm (see `before_agent_start` below) and
+ * exposes the sub-agent tools, which call the local `webtermctl` control socket.
+ * That client fills in the parent session id from WEBTERM_SESSION_ID, so child
+ * agents appear under the current session in the browser tree.
  */
 
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type ExecResult = { stdout: string; stderr: string; code: number };
+
+/**
+ * Prompt context for the sessions webterm owns.
+ *
+ * It reaches the model as a named system-prompt section set from
+ * `before_agent_start`, so it exists only in pi processes webterm launched with
+ * `-e <this file>`. A plain `pi` in a terminal never loads it, and nothing is
+ * written to a shared `APPEND_SYSTEM.md`.
+ *
+ * Keep this text static. Pi records prompt sections in the transcript and sends
+ * a delta when one changes, so interpolating anything per-turn (session ids,
+ * child counts, depth) would rewrite the prompt prefix on every request and
+ * invalidate the provider's cache. Volatile facts belong in tool results.
+ */
+const WEBTERM_CONTEXT = `You are running inside webterm, a browser terminal multiplexer. The human watches
+this session live, and every session you create appears as a child tab they can
+open, watch, or take over.
+
+Control is on PATH as \`webtermctl\` ($WEBTERM_SOCKET, $WEBTERM_SESSION_ID and
+$WEBTERM_DEPTH are set for this process). The webterm tools wrap it: spawn_agent,
+agent_send, agent_wait, agent_result, agent_list, and agent_kill.
+
+- Delegate work that is separable, long-running, or would flood this transcript
+  with output; do work whose result is a few lines yourself.
+- A sub-agent sees only the task text you give it, never this conversation.
+- Children are attributed to you and visible to the human; keep task labels short.
+- Depth is capped, so do not recurse without a reason ($WEBTERM_DEPTH is yours).
+- Read a child's answer with agent_result instead of asking the human to relay it.`;
+
+/** One-line reminder for the `/webterm` command. */
+const WEBTERM_SUMMARY =
+	"webterm session pool: webtermctl on PATH plus spawn_agent/agent_send/agent_wait/agent_result/agent_list/agent_kill. Children appear as tabs under this session.";
 
 function errorText(result: ExecResult): string {
 	const stderr = result.stderr.trim();
@@ -41,6 +74,24 @@ function jsonContent(value: unknown): { type: "text"; text: string }[] {
 }
 
 export default function (pi: ExtensionAPI) {
+	pi.on("before_agent_start", (event) => {
+		const options = event.systemPromptOptions;
+		// Only claim control that exists: an extension load with the tools hidden
+		// (or a host that injects this file for another reason) stays silent.
+		if (!options.selectedTools.includes("spawn_agent")) {
+			delete options.sections.webterm;
+			return;
+		}
+		options.sections.webterm = WEBTERM_CONTEXT;
+	});
+
+	pi.registerCommand("webterm", {
+		description: "Explain the webterm session pool and sub-agent tools",
+		handler: async (_args, ctx) => {
+			ctx.ui.notify(WEBTERM_SUMMARY, "info");
+		},
+	});
+
 	pi.registerTool({
 		name: "spawn_agent",
 		label: "Spawn sub-agent",

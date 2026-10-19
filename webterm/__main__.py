@@ -322,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.launcher:
         launchers = parse_launchers(args.launcher, parser.error)
     else:
-        launchers = pi_config.default_launcher()
+        launchers = pi_config.default_launcher(manager.pi_extension)
     if launchers:
         config["launchers"] = launchers
     config["pi"] = pi_config.frontend_config(

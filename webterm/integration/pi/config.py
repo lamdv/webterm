@@ -66,25 +66,30 @@ def frontend_config(
 def default_agent_profiles(
     extension: str | None = None,
 ) -> dict[str, dict[str, list[str]]]:
-    """Built-in pi agent profile when pi is installed."""
+    """Built-in pi agent profile when pi is installed.
+
+    Every mode loads the bundled extension, so a pi process webterm starts always
+    has the webterm tools and the prompt context that describes them.  Children
+    inherit it, which is what lets a sub-agent spawn its own children.
+    """
     pi = shutil.which("pi")
     if not pi:
         return {}
-    rpc = [pi, "--mode", "rpc", "--no-session", "--no-approve"]
-    if extension:
-        rpc.extend(["-e", extension])
+    extension_args = ["-e", extension] if extension else []
+    rpc = [pi, "--mode", "rpc", "--no-session", "--no-approve", *extension_args]
     return {
         "pi": {
-            "print": [pi, "-p", "{task}"],
-            "interactive": [pi, "{task}"],
+            "print": [pi, *extension_args, "-p", "{task}"],
+            "interactive": [pi, *extension_args, "{task}"],
             "rpc": rpc,
         }
     }
 
 
-def default_launcher() -> list[dict[str, object]]:
+def default_launcher(extension: str | None = None) -> list[dict[str, object]]:
     """The default sidebar launcher for the pi TUI, when pi is installed."""
     pi = shutil.which("pi")
     if not pi:
         return []
-    return [{"label": "pi agent", "command": [pi]}]
+    command = [pi, "-e", extension] if extension else [pi]
+    return [{"label": "pi agent", "command": command}]
