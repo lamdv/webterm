@@ -433,17 +433,57 @@ body {
   opacity: 0.7;
 }
 
-.tab-badge {
+.tab-tag-close {
   flex: 0 0 auto;
+  display: inline-grid;
+  align-items: center;
+  justify-items: center;
+  min-width: 18px;
+  font-family: inherit;
   font-size: 10px;
   line-height: 15px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--accent);
+  background: none;
   border: 1px solid var(--accent);
   border-radius: 999px;
   padding: 0 6px;
   opacity: 0.85;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.tab-tag-close:hover,
+.tab-tag-close:focus-visible {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+  opacity: 1;
+}
+
+/* The label and the close glyph share one cell, so swapping them on hover
+   cannot change the pill's width. */
+.tab-tag-label,
+.tab-tag-x {
+  grid-area: 1 / 1;
+}
+
+.tab-tag-x {
+  visibility: hidden;
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.tab-tag-close:hover .tab-tag-label,
+.tab-tag-close:focus-visible .tab-tag-label {
+  visibility: hidden;
+}
+
+.tab-tag-close:hover .tab-tag-x,
+.tab-tag-close:focus-visible .tab-tag-x {
+  visibility: visible;
 }
 
 .tab-exit {
@@ -667,7 +707,6 @@ button,
     padding-top: 11px;
     padding-bottom: 11px;
   }
-
   /* A finger needs more than a 5px divider. */
   #sidebar-resizer {
     flex-basis: 14px;
@@ -684,6 +723,15 @@ button,
     opacity: 1;
     padding: 4px 7px;
     font-size: 17px;
+  }
+
+  /* No hover on touch, so the tag keeps its label; a tap closes (the tab row
+     is already exempted from the rename long-press there). */
+  .tab-tag-close {
+    opacity: 1;
+    min-width: 24px;
+    padding: 3px 8px;
+    font-size: 11px;
   }
 
   #new-session,

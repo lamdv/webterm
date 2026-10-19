@@ -155,12 +155,17 @@ Unknown ids are ignored.
 - `renderTabs` rebuilds `#sessions` from `sessionsMeta` as a **tree**: sessions
   are ordered by `parent_id` (`orderedSessions`), children are indented with a
   `--depth` custom property, and a child whose parent is gone falls back to the
-  root so nothing disappears. Agent sessions get a badge (`session.agent`) and,
-  once dead, an `exit N` chip. Each tab has an inline-rename title
-  (double-click, or a ~600 ms long-press / right-click on touch, via
-  `attachLongPress` — the close button is excluded) and a `×` close button that
-  sends `{"type":"kill"}` (which cascades to the session's descendants
-  server-side).
+  root so nothing disappears. Trailing chips read left-to-right by how transient
+  they are: cost (`$0.012`, agent sessions only), child count, a pulsing
+  streaming dot, a `!` for `needs_input`, and an `exit N` chip once dead. The
+  right-most control is always the close button: tagged sessions
+  (`session.agent`, else `pi` for `kind:"pi"`, else `agent`) render it as a
+  `.tab-tag-close` pill that shows the tag and swaps it for a `×` on hover,
+  while untagged shells keep the plain `.tab-close` `×`. A click sends
+  `{"type":"kill"}` (which cascades to the session's descendants server-side).
+  Each tab has an inline-rename title (double-click, or a ~600 ms long-press /
+  right-click on touch, via `attachLongPress` — both close controls are
+  excluded).
 - A session created by an agent does **not** steal focus: only a session the
   user created (`activateNext`) is activated on arrival.
 - `activate(id)` persists the choice, toggles the `active` class on wrappers,

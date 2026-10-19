@@ -835,16 +835,8 @@
       title.title = session.title;
       tab.appendChild(title);
 
-      if (session.role === "agent") {
-        const badge = document.createElement("span");
-        badge.className = "tab-badge";
-        badge.textContent = session.agent || "agent";
-        badge.title = [session.task || "agent session", session.model]
-          .filter(Boolean)
-          .join(" · ");
-        tab.appendChild(badge);
-      }
-
+      // Trailing chips read left-to-right by how transient they are: cost,
+      // child count, live activity, then the close control.
       const cost = Number(session.cost);
       if (session.role === "agent" && Number.isFinite(cost) && cost > 0) {
         const costEl = document.createElement("span");
@@ -887,29 +879,70 @@
         tab.appendChild(status);
       }
 
-      const close = document.createElement("button");
-      close.className = "tab-close";
-      close.textContent = "\u00d7";
-      close.title = "Close session";
-      close.addEventListener("click", (event) => {
-        event.stopPropagation();
-        send({ type: "kill", session_id: session.id });
-      });
-      tab.appendChild(close);
+      tab.appendChild(closeControl(session));
 
       tab.addEventListener("click", () => activate(session.id));
       tab.addEventListener("dblclick", () => startRename(tab, title, session));
       // Touch-friendly rename: long-press the tab, matching the create button.
-      // The close button keeps its own tap behaviour.
+      // The close control keeps its own tap behaviour.
       attachLongPress(
         tab,
         () => startRename(tab, title, session),
-        (event) => !(event.target instanceof Element) || !event.target.closest(".tab-close")
+        (event) =>
+          !(event.target instanceof Element) ||
+          !event.target.closest(".tab-close, .tab-tag-close")
       );
       sessionsList.appendChild(tab);
     }
     updateActiveTab();
     emptyState.hidden = sessionsMeta.length > 0;
+  }
+
+  // The right-most control doubles as the session-type tag: agent sessions show
+  // their agent name, pi sessions without one show "pi", and every tab keeps a
+  // close button either way. Hovering the tag swaps its label for a ×.
+  function closeControl(session) {
+    const tag = tabTag(session);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.title = "Close session";
+    button.setAttribute("aria-label", "Close " + session.title);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      send({ type: "kill", session_id: session.id });
+    });
+
+    if (!tag) {
+      button.className = "tab-close";
+      button.textContent = "\u00d7";
+      return button;
+    }
+
+    button.className = "tab-tag-close";
+    const detail = [
+      session.role === "agent" ? session.task || "agent session" : "",
+      session.model,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    button.title = detail ? `${detail} · click to close` : "Click to close";
+
+    const label = document.createElement("span");
+    label.className = "tab-tag-label";
+    label.textContent = tag;
+    const cross = document.createElement("span");
+    cross.className = "tab-tag-x";
+    cross.setAttribute("aria-hidden", "true");
+    cross.textContent = "\u00d7";
+    button.append(label, cross);
+    return button;
+  }
+
+  function tabTag(session) {
+    if (session.agent) return String(session.agent);
+    if (session.kind === "pi") return "pi";
+    if (session.role === "agent") return "agent";
+    return "";
   }
 
   // Double-clicking a tab swaps its label for an inline text input; Enter or
