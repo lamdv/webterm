@@ -507,9 +507,9 @@
       const text = input.value.trim();
       if (!text || state.exited) return;
       input.value = "";
-      // pi rejects a prompt sent during a run unless the caller says how to
-      // queue it.  The canonical view uses follow-up by default; Ctrl+Enter
-      // requests steering, matching the pi view's gesture.
+      // A prompt sent during a run must say how to queue it.  The canonical
+      // view asks for follow-up by default; Ctrl+Enter requests steering,
+      // matching the pi view's gesture.
       const streamingBehavior = state.busy ? behavior || "followUp" : undefined;
       state.entries.push({
         id: "local-" + ++state.localCounter,

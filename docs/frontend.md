@@ -238,10 +238,10 @@ chips (`setStatus`), pre-composer widgets (`setWidget`), the chat header title
 
 When enabled, `app.js` subscribes with `"agent_api":true`, routes
 `agent_resync` / `agent_event` / `agent_dialog_*` to the canonical view, and
-sends prompts, aborts, and dialog responses through the existing pi command
-envelope. This is a validation bridge, not the final agent command surface: the
-view is agnostic about rendering, but its control path still goes through pi
-until generic `agent` commands and the MVA adapter land.
+drives it through the canonical `agent` command envelope: `prompt`, `steer`
+(busy + Ctrl/Cmd+Enter), `follow_up` (busy + Enter), `abort`, and
+`dialog_response`. The view never sees pi's RPC dialect; the server maps each
+canonical command onto the adapter.
 
 The view keeps a canonical transcript (entries from `agent_resync`, then live
 `message.*` events), tool execution state keyed by `call_id`, usage/model

@@ -271,7 +271,7 @@ form.dispatch("submit");
 assert.deepStrictEqual(calls[calls.length - 1], ["prompt", "next prompt", undefined]);
 assert.ok(textOf(view.element).includes("next prompt"), "optimistic prompt rendered");
 
-// A prompt during a run must carry pi's streamingBehavior, or pi rejects it.
+// A prompt during a run must say how to queue it, or the adapter rejects it.
 view.handle({
   type: "agent_event",
   event: { event: "run.started", run_id: "r1" },

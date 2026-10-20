@@ -321,10 +321,22 @@
     });
   }
 
-  function toPiDialogResponse(kind, response) {
-    if (response && response.cancelled) return { cancelled: true };
-    if (kind === "confirm") return { confirmed: Boolean(response && response.approved) };
-    return { value: response && response.value };
+  function sendAgentCommand(sessionId, command) {
+    return request({ type: "agent", session_id: sessionId, command }).then((result) => {
+      const response = result && result.agent_response;
+      if (!response || response.success === false) {
+        throw new Error((response && response.error) || "agent command failed");
+      }
+      return response;
+    });
+  }
+
+  function sendAgentDialogResponse(sessionId, dialogId, response) {
+    return sendAgentCommand(sessionId, {
+      type: "dialog_response",
+      dialog_id: dialogId,
+      response,
+    });
   }
 
   // ----------------------------------------------------------- control plane
@@ -711,18 +723,21 @@
     let view = null;
     if (window.WebtermAgent) {
       view = window.WebtermAgent.create(session, {
-        onPrompt: (text, streamingBehavior) => {
-          const command = { type: "prompt", message: text };
-          if (streamingBehavior) command.streamingBehavior = streamingBehavior;
-          return sendPiCommand(session.id, command);
-        },
-        onAbort: () => sendPiCommand(session.id, { type: "abort" }),
-        onDialogResponse: (dialogId, kind, response) =>
-          sendPiUiResponse(
-            session.id,
-            dialogId,
-            toPiDialogResponse(kind, response)
-          ),
+        onPrompt: (text, streamingBehavior) =>
+          sendAgentCommand(session.id, {
+            // A prompt during a run becomes the canonical mid-run command; the
+            // adapter decides how the agent queues it.
+            type:
+              streamingBehavior === "steer"
+                ? "steer"
+                : streamingBehavior
+                  ? "follow_up"
+                  : "prompt",
+            message: text,
+          }),
+        onAbort: () => sendAgentCommand(session.id, { type: "abort" }),
+        onDialogResponse: (dialogId, _kind, response) =>
+          sendAgentDialogResponse(session.id, dialogId, response),
       });
       wrapper.appendChild(view.element);
     } else {

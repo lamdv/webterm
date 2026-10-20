@@ -23,11 +23,18 @@ from .control import ControlServer, default_control_socket, looks_like_tcp
 from .integration.pi import (
     HISTORY_ENTRY_LIMIT,
     MAX_HISTORY_ENTRY_LIMIT,
+    PI_COMMANDS,
+    CanonicalCommandError,
     PiCanonicalTranslator,
     PiError,
     PiSession,
     PiSessionClosed,
+    canonical_response,
+    pi_command_from_canonical,
+    pi_dialog_response_to_pi,
     pi_dialog_to_canonical,
+    pi_history_to_canonical,
+    pi_models_to_canonical,
     pi_snapshot_to_canonical,
     pi_ui_resolved_to_canonical,
 )
@@ -55,6 +62,8 @@ DISCOVERY_PATH = "/.well-known/webterm.json"
 #: it to refuse a server whose protocol it does not understand.
 DISCOVERY_PROTOCOL = 1
 MAX_HTTP_HEADER = 64 * 1024
+#: Timeout for one canonical agent command round trip.
+AGENT_COMMAND_TIMEOUT = 30.0
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -397,6 +406,7 @@ class ClientConnection:
         #: stream.  The legacy ``pi_*`` messages stay unchanged.
         self.agent_api = False
         self._pi_translators: dict[str, PiCanonicalTranslator] = {}
+        self._agent_command_counter = 0
 
     # ---------------------------------------------------- Subscriber protocol
 
@@ -625,6 +635,8 @@ class ClientConnection:
             return {"ok": True}
         if kind == "pi":
             return await self._pi_command(message)
+        if kind == "agent":
+            return await self._agent_command(message)
         if kind == "pi_snapshot":
             return await self._pi_snapshot(message)
         if kind == "pi_history":
@@ -734,15 +746,22 @@ class ClientConnection:
             await self._send_agent_snapshot(session, snapshot=snapshot)
 
     async def _send_agent_snapshot(
-        self, session: PiSession, *, snapshot: dict | None = None
-    ) -> None:
-        """Send the canonical shadow snapshot for one attached pi session."""
+        self, session: PiSession, *, snapshot: dict | None = None, strict: bool = False
+    ) -> dict | None:
+        """Send the canonical shadow snapshot for one attached pi session.
+
+        Returns the canonical payload so a command can answer with the same
+        data it pushed, or ``None`` when the snapshot failed and *strict* is
+        false.
+        """
         try:
             if snapshot is None:
                 snapshot = await session.snapshot()
         except (PiError, PiSessionClosed, TimeoutError) as exc:
             log.warning("pi session %s: canonical snapshot failed: %s", session.id, exc)
-            return
+            if strict:
+                raise RequestError("pi_error", str(exc)) from exc
+            return None
         canonical = pi_snapshot_to_canonical(
             snapshot, tokens=session.tokens, cost=session.cost
         )
@@ -756,6 +775,7 @@ class ClientConnection:
         # The snapshot is authoritative; later live events must not continue
         # the translator's pre-resync message ids.
         self._pi_translators[session.id] = PiCanonicalTranslator()
+        return canonical
 
     def _unsubscribe(self, session_id: str) -> None:
         session = self.manager.get(session_id)
@@ -1013,6 +1033,113 @@ class ClientConnection:
         except PiError as exc:
             raise RequestError("bad_request", str(exc)) from exc
         return {"ok": True}
+
+    def _agent_command_id(self, message: dict) -> str:
+        """Return the command id to echo, generating one when the client omits it."""
+        raw = message.get("id")
+        if isinstance(raw, str) and raw:
+            return raw
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+            return str(raw)
+        self._agent_command_counter += 1
+        return f"webterm-{os.getpid()}-{self._agent_command_counter}"
+
+    async def _agent_command(self, message: dict) -> dict:
+        """Answer one canonical command from the canonical browser view.
+
+        The client sends a flat canonical record inside the envelope, e.g.
+        ``{"type":"agent","session_id":...,"command":{"type":"prompt"}}``.
+        The answer is a canonical ``response`` record, so the canonical view
+        never speaks pi's RPC dialect.  The pi adapter underneath is an
+        implementation detail of this stage.
+        """
+        session = self._require(message)
+        if session.kind != "pi":
+            raise RequestError(
+                "bad_request", "session is not a structured agent session"
+            )
+        command = message.get("command")
+        if not isinstance(command, dict):
+            raise RequestError("bad_request", "command must be an object")
+        name = command.get("type")
+        if not isinstance(name, str) or not name:
+            raise RequestError("bad_request", "command.type is required")
+        if name not in PI_COMMANDS:
+            raise RequestError("bad_request", f"unsupported agent command {name!r}")
+        command_id = self._agent_command_id(message)
+        try:
+            response = await self._run_agent_command(
+                session, name, command, command_id
+            )
+        except CanonicalCommandError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        except TimeoutError as exc:
+            raise RequestError("timeout", f"agent command {name} timed out") from exc
+        except PiSessionClosed as exc:
+            raise RequestError("not_found", str(exc)) from exc
+        except PiError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        return {"agent_response": response}
+
+    async def _run_agent_command(
+        self, session: PiSession, name: str, command: dict, command_id: str
+    ) -> dict:
+        """Execute one validated canonical command against a pi session."""
+        if name == "get_snapshot":
+            limit = _nonneg_int(command.get("limit")) or None
+            snapshot = await session.snapshot(entry_limit=limit)
+            if self.agent_api:
+                data = await self._send_agent_snapshot(
+                    session, snapshot=snapshot, strict=True
+                )
+            else:
+                data = pi_snapshot_to_canonical(
+                    snapshot, tokens=session.tokens, cost=session.cost
+                )
+            return _agent_response(name, command_id, data=data)
+        if name == "get_history":
+            before = command.get("before")
+            if not isinstance(before, str) or not before:
+                raise CanonicalCommandError("get_history needs a 'before' entry id")
+            limit = _nonneg_int(command.get("limit")) or HISTORY_ENTRY_LIMIT
+            limit = min(limit, MAX_HISTORY_ENTRY_LIMIT)
+            page = await session.history(before, limit)
+            return _agent_response(name, command_id, data=pi_history_to_canonical(page))
+        if name == "list_models":
+            payload = await self.manager.pi_models(
+                session.cwd, refresh=bool(command.get("refresh"))
+            )
+            return _agent_response(name, command_id, data=pi_models_to_canonical(payload))
+        if name == "dialog_response":
+            dialog_id = command.get("dialog_id")
+            response = command.get("response")
+            if not isinstance(dialog_id, str) or not dialog_id:
+                raise CanonicalCommandError("dialog_response needs a dialog_id")
+            if not isinstance(response, dict):
+                raise CanonicalCommandError("dialog_response needs a response object")
+            kind = self._dialog_kind(session, dialog_id)
+            if kind is None:
+                raise RequestError("not_found", f"unknown dialog {dialog_id!r}")
+            session.resolve_ui(dialog_id, pi_dialog_response_to_pi(kind, response))
+            return _agent_response(name, command_id)
+        if name == "shutdown":
+            session.close()
+            return _agent_response(name, command_id)
+        rpc = await session.rpc(
+            pi_command_from_canonical(command), timeout=AGENT_COMMAND_TIMEOUT
+        )
+        return canonical_response(
+            name, command_id, rpc, tokens=session.tokens, cost=session.cost
+        )
+
+    @staticmethod
+    def _dialog_kind(session: PiSession, dialog_id: str) -> str | None:
+        """Return the pi extension UI method for a pending dialog."""
+        for request in session.ui_snapshot()["requests"]:
+            if request.get("id") == dialog_id:
+                method = request.get("method")
+                return method if isinstance(method, str) else None
+        return None
 
     async def _pi_command(self, message: dict) -> dict:
         session = self._require(message)
@@ -1346,6 +1473,22 @@ def _valid_command(command) -> list[str] | str | None:
         return command
     log.debug("ignoring invalid command %r", command)
     return None
+
+
+def _agent_response(name: str, command_id: str, *, data: dict | None = None) -> dict:
+    """Build one successful canonical ``response`` record.
+
+    A command the *agent* refuses is not a transport error: pi's own
+    ``success:false`` becomes a failed canonical response through
+    :func:`webterm.integration.pi.canonical_response`.
+    """
+    return {
+        "type": "response",
+        "id": command_id,
+        "command": name,
+        "success": True,
+        "data": data or {},
+    }
 
 
 def _optional_float(value) -> float | None:

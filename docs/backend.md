@@ -303,6 +303,10 @@ and the tables above for the exact message shapes. The stable invariants are:
 - A connection can opt into the canonical agent shadow stream with
   `{"type":"agent_api","enabled":true}` or `"agent_api":true` on `subscribe`;
   the legacy `pi_*` messages are unchanged either way.
+- Canonical commands travel in
+  `{"type":"agent","session_id":...,"command":{...}}` and answer with a
+  canonical `response` record in `agent_response`. See
+  [agent-protocol.md](agent-protocol.md#browser-envelope).
 
 ## Testing
 

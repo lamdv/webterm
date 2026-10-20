@@ -10,12 +10,16 @@ import unittest
 from pathlib import Path
 
 from webterm.integration.pi.canonical import (
+    CanonicalCommandError,
     PiCanonicalTranslator,
+    canonical_response,
+    pi_command_from_canonical,
     pi_dialog_response_to_pi,
     pi_dialog_to_canonical,
     pi_history_to_canonical,
     pi_models_to_canonical,
     pi_snapshot_to_canonical,
+    pi_state_to_canonical,
     pi_ui_request_to_events,
     pi_ui_resolved_to_canonical,
 )
@@ -537,6 +541,124 @@ class PiSnapshotTests(unittest.TestCase):
         self.assertEqual(canonical["fetched_at"], 123.0)
 
 
+class PiCommandTests(unittest.TestCase):
+    """Canonical commands translate to pi RPC without leaking pi vocabulary."""
+
+    def test_prompt_and_mid_run_commands_map_to_streaming_behavior(self) -> None:
+        self.assertEqual(
+            pi_command_from_canonical({"type": "prompt", "message": "go"}),
+            {"type": "prompt", "message": "go"},
+        )
+        self.assertEqual(
+            pi_command_from_canonical({"type": "steer", "message": "wait"}),
+            {"type": "prompt", "message": "wait", "streamingBehavior": "steer"},
+        )
+        self.assertEqual(
+            pi_command_from_canonical({"type": "follow_up", "message": "then"}),
+            {"type": "prompt", "message": "then", "streamingBehavior": "followUp"},
+        )
+
+    def test_prompt_rejects_an_empty_message(self) -> None:
+        for message in ("", "   ", None, 3):
+            with self.subTest(message=message), self.assertRaises(CanonicalCommandError):
+                pi_command_from_canonical({"type": "prompt", "message": message})
+
+    def test_selection_commands_map_to_pi_fields(self) -> None:
+        self.assertEqual(
+            pi_command_from_canonical(
+                {"type": "set_model", "provider": "openai", "model": "gpt-5"}
+            ),
+            {"type": "set_model", "modelId": "gpt-5", "provider": "openai"},
+        )
+        self.assertEqual(
+            pi_command_from_canonical({"type": "set_thinking", "level": "high"}),
+            {"type": "set_thinking_level", "level": "high"},
+        )
+        self.assertEqual(
+            pi_command_from_canonical({"type": "set_session_name", "name": "chat"}),
+            {"type": "set_session_name", "name": "chat"},
+        )
+
+    def test_session_level_and_unknown_commands_are_refused(self) -> None:
+        for name in ("get_snapshot", "get_history", "list_models", "dialog_response", "fork"):
+            with self.subTest(name=name), self.assertRaises(CanonicalCommandError):
+                pi_command_from_canonical({"type": name})
+
+    def test_raw_passes_through_but_keeps_dialogs_server_owned(self) -> None:
+        self.assertEqual(
+            pi_command_from_canonical(
+                {"type": "raw", "command": {"type": "get_tree"}}
+            ),
+            {"type": "get_tree"},
+        )
+        with self.assertRaises(CanonicalCommandError):
+            pi_command_from_canonical(
+                {
+                    "type": "raw",
+                    "command": {"type": "extension_ui_response", "id": "ui-1"},
+                }
+            )
+
+    def test_prompt_response_reports_a_disposition(self) -> None:
+        response = canonical_response(
+            "prompt",
+            "c1",
+            {"type": "response", "success": True, "data": {"disposition": "started"}},
+        )
+        self.assertTrue(response["success"])
+        self.assertEqual(response["id"], "c1")
+        self.assertEqual(response["command"], "prompt")
+        self.assertEqual(response["data"], {"disposition": "started"})
+        # A queued mid-run command is queued even when pi omits the field.
+        queued = canonical_response("follow_up", "c2", {"success": True})
+        self.assertEqual(queued["data"], {"disposition": "queued"})
+
+    def test_failed_pi_command_becomes_a_failed_canonical_response(self) -> None:
+        response = canonical_response(
+            "set_thinking",
+            "c3",
+            {"success": False, "error": "invalid thinking level"},
+        )
+        self.assertFalse(response["success"])
+        self.assertEqual(response["error"], "invalid thinking level")
+        self.assertNotIn("data", response)
+
+    def test_set_model_and_state_data_are_canonical(self) -> None:
+        applied = canonical_response(
+            "set_model",
+            "c4",
+            {"success": True, "data": {"provider": "p", "id": "m2"}},
+        )
+        self.assertEqual(applied["data"], {"model": "m2", "provider": "p"})
+        state = canonical_response(
+            "get_state",
+            "c5",
+            {
+                "success": True,
+                "data": {
+                    "model": {"provider": "p", "id": "m1", "name": "M1"},
+                    "thinkingLevel": "low",
+                    "isStreaming": False,
+                    "pendingMessageCount": 2,
+                },
+            },
+            tokens=7,
+            cost=0.25,
+        )
+        self.assertEqual(state["data"]["model"], "m1")
+        self.assertEqual(state["data"]["thinking_level"], "low")
+        self.assertEqual(state["data"]["pending_message_count"], 2)
+        self.assertEqual(state["data"]["tokens"], 7)
+        self.assertEqual(state["data"]["cost"], 0.25)
+        self.assertTrue(state["data"]["settled"])
+
+    def test_state_helper_prefers_explicit_streaming(self) -> None:
+        state = pi_state_to_canonical({"isStreaming": True}, streaming=False, settled=True)
+        self.assertFalse(state["streaming"])
+        self.assertTrue(state["settled"])
+        self.assertTrue(pi_state_to_canonical({})["settled"])
+
+
 class PiDialogTests(unittest.TestCase):
     def test_blocking_dialog_maps_to_canonical_request(self) -> None:
         dialog = pi_dialog_to_canonical(
@@ -942,6 +1064,375 @@ class PiShadowServerTests(unittest.IsolatedAsyncioTestCase):
             and message.get("record", {}).get("type") == "agent_settled"
         )
         self.assertFalse(any(message.get("type") == "agent_event" for message in messages))
+
+
+class PiAgentCommandServerTests(unittest.IsolatedAsyncioTestCase):
+    """The canonical ``agent`` envelope is the canonical view's command path."""
+
+    async def asyncSetUp(self) -> None:
+        self.cwd = tempfile.mkdtemp(prefix="webterm-pi-agent-cmd-")
+        self.manager = SessionManager(
+            shell="/bin/sh",
+            cwd=self.cwd,
+            retained_ttl=None,
+            pi_command=[sys.executable, str(FAKE_PI)],
+        )
+        self.handle = await start_server(
+            "127.0.0.1",
+            0,
+            self.manager,
+            enable_control=False,
+            discovery=False,
+        )
+        self.client = await WSClient.connect("127.0.0.1", self.handle.port)
+        await self.client.recv_json()  # initial sessions broadcast
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.handle.stop()
+        shutil.rmtree(self.cwd, ignore_errors=True)
+
+    async def _create(self, message: dict) -> dict:
+        await self.client.send_json({**message, "id": "create"})
+        result = await self.client.recv_json_until(
+            lambda reply: reply.get("type") == "result" and reply.get("id") == "create"
+        )
+        return result["result"]["session"]
+
+    async def _create_pi(self) -> dict:
+        return await self._create(
+            {
+                "type": "create",
+                "mode": "pi",
+                "cwd": self.cwd,
+                "title": "agent command chat",
+                "trust": "allow",
+            }
+        )
+
+    async def _attach(self, session_id: str, *, agent_api: bool = True) -> None:
+        message = {"type": "subscribe", "session_id": session_id}
+        if agent_api:
+            message["agent_api"] = True
+        await self.client.send_json(message)
+        await self.client.recv_json_until(
+            lambda reply: reply.get("type") == "attached"
+            and reply["session"]["id"] == session_id
+        )
+        await self.client.recv_json_until(
+            lambda reply: reply.get("type") == "pi_resync"
+            and reply.get("session_id") == session_id
+        )
+        if agent_api:
+            await self.client.recv_json_until(
+                lambda reply: reply.get("type") == "agent_resync"
+                and reply.get("session_id") == session_id
+            )
+
+    async def _send(self, session_id: str, command: dict, *, request_id: str) -> None:
+        await self.client.send_json(
+            {
+                "type": "agent",
+                "id": request_id,
+                "session_id": session_id,
+                "command": command,
+            }
+        )
+
+    async def _collect(self, *predicates, timeout: float = 15.0) -> list[dict]:
+        """Collect messages until every predicate matched one of them."""
+        messages: list[dict] = []
+        pending = list(predicates)
+
+        async def _loop() -> list[dict]:
+            while True:
+                message = await self.client.recv_json()
+                messages.append(message)
+                pending[:] = [check for check in pending if not check(message)]
+                if not pending:
+                    return messages
+
+        return await asyncio.wait_for(_loop(), timeout)
+
+    @staticmethod
+    def _result(request_id: str):
+        def _match(message: dict) -> bool:
+            return message.get("type") == "result" and message.get("id") == request_id
+
+        return _match
+
+    @staticmethod
+    def _reply(request_id: str):
+        def _match(message: dict) -> bool:
+            return message.get("type") in ("result", "error") and message.get(
+                "id"
+            ) == request_id
+
+        return _match
+
+    @staticmethod
+    def _event(name: str):
+        def _match(message: dict) -> bool:
+            return message.get("type") == "agent_event" and message["event"].get(
+                "event"
+            ) == name
+
+        return _match
+
+    async def test_prompt_envelope_answers_canonically(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"], {"type": "prompt", "message": "hello agent"}, request_id="p1"
+        )
+        messages = await self._collect(self._result("p1"), self._event("run.settled"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "p1"
+        )
+        response = result["result"]["agent_response"]
+        self.assertEqual(response["type"], "response")
+        self.assertEqual(response["id"], "p1")
+        self.assertEqual(response["command"], "prompt")
+        self.assertTrue(response["success"])
+        self.assertEqual(response["data"], {"disposition": "started"})
+        names = [
+            message["event"]["event"]
+            for message in messages
+            if message.get("type") == "agent_event"
+        ]
+        self.assertIn("run.started", names)
+        self.assertIn("message.finished", names)
+        # The legacy pi stream is untouched by the canonical command path.
+        self.assertTrue(any(message.get("type") == "pi_event" for message in messages))
+
+    async def test_mid_run_commands_queue_instead_of_prompting(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        for name, request_id in (("follow_up", "f1"), ("steer", "s1")):
+            with self.subTest(name=name):
+                await self._send(
+                    session["id"], {"type": name, "message": name}, request_id=request_id
+                )
+                messages = await self._collect(self._result(request_id))
+                result = next(
+                    message
+                    for message in messages
+                    if message.get("type") == "result"
+                    and message.get("id") == request_id
+                )
+                response = result["result"]["agent_response"]
+                self.assertTrue(response["success"])
+                self.assertEqual(response["data"], {"disposition": "queued"})
+
+    async def test_abort_is_accepted(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(session["id"], {"type": "abort"}, request_id="a1")
+        messages = await self._collect(self._result("a1"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "a1"
+        )
+        self.assertTrue(result["result"]["agent_response"]["success"])
+
+    async def test_get_snapshot_answers_and_resyncs(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"], {"type": "get_snapshot", "limit": 5}, request_id="snap"
+        )
+        messages = await self._collect(self._result("snap"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "snap"
+        )
+        data = result["result"]["agent_response"]["data"]
+        self.assertEqual([entry["id"] for entry in data["entries"]], ["entry-1", "entry-2"])
+        self.assertIn("cursor", data)
+        self.assertIn("capabilities", data)
+        self.assertEqual(
+            data["capabilities"]["dialogs"], ["confirm", "select", "input", "editor"]
+        )
+
+    async def test_get_snapshot_without_the_shadow_stream_returns_data(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"], agent_api=False)
+        await self._send(session["id"], {"type": "get_snapshot"}, request_id="snap2")
+        messages = await self._collect(self._result("snap2"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "snap2"
+        )
+        data = result["result"]["agent_response"]["data"]
+        self.assertEqual([entry["id"] for entry in data["entries"]], ["entry-1", "entry-2"])
+        # No canonical traffic unless the client opted in.
+        self.assertFalse(any(message.get("type") == "agent_resync" for message in messages))
+
+    async def test_get_history_returns_one_backwards_page(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"],
+            {"type": "get_history", "before": "entry-2", "limit": 10},
+            request_id="hist",
+        )
+        messages = await self._collect(self._result("hist"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "hist"
+        )
+        data = result["result"]["agent_response"]["data"]
+        self.assertEqual([entry["id"] for entry in data["entries"]], ["entry-1"])
+        self.assertEqual(data["first_entry_id"], "entry-1")
+        self.assertFalse(data["has_more"])
+
+    async def test_history_needs_a_cursor(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(session["id"], {"type": "get_history"}, request_id="hist2")
+        error = await self.client.recv_json_until(self._reply("hist2"))
+        self.assertEqual(error["type"], "error")
+        self.assertEqual(error["error"]["code"], "bad_request")
+
+    async def test_list_models_answers_with_canonical_models(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(session["id"], {"type": "list_models"}, request_id="models")
+        messages = await self._collect(self._result("models"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "models"
+        )
+        data = result["result"]["agent_response"]["data"]
+        self.assertEqual(
+            [model["id"] for model in data["models"]],
+            ["fake-model", "fake-model-2", "other-model"],
+        )
+
+    async def test_set_model_answers_with_the_applied_model(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"],
+            {"type": "set_model", "provider": "fake", "model": "fake-model-2"},
+            request_id="model",
+        )
+        messages = await self._collect(self._result("model"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "model"
+        )
+        data = result["result"]["agent_response"]["data"]
+        self.assertEqual(data["model"], "fake-model-2")
+        self.assertEqual(data["provider"], "fake")
+
+    async def test_dialog_response_resolves_the_pending_dialog(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"], {"type": "prompt", "message": "please ask"}, request_id="ask"
+        )
+        await self._collect(
+            lambda message: message.get("type") == "agent_dialog_request"
+            and message.get("session_id") == session["id"]
+        )
+        await self._send(
+            session["id"],
+            {
+                "type": "dialog_response",
+                "dialog_id": "ui-1",
+                "response": {"approved": True},
+            },
+            request_id="answer",
+        )
+        messages = await self._collect(
+            self._result("answer"),
+            lambda message: message.get("type") == "agent_dialog_resolved"
+            and message.get("dialog_id") == "ui-1",
+        )
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "answer"
+        )
+        self.assertTrue(result["result"]["agent_response"]["success"])
+        resolved = next(
+            message
+            for message in messages
+            if message.get("type") == "agent_dialog_resolved"
+        )
+        self.assertEqual(resolved["reason"], "answered")
+
+    async def test_dialog_response_needs_a_pending_dialog(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"],
+            {"type": "dialog_response", "dialog_id": "ui-404", "response": {}},
+            request_id="answer2",
+        )
+        error = await self.client.recv_json_until(self._reply("answer2"))
+        self.assertEqual(error["type"], "error")
+        self.assertEqual(error["error"]["code"], "not_found")
+
+    async def test_raw_passes_through_but_not_dialog_responses(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"],
+            {"type": "raw", "command": {"type": "get_tree"}},
+            request_id="raw1",
+        )
+        messages = await self._collect(self._result("raw1"))
+        result = next(
+            message
+            for message in messages
+            if message.get("type") == "result" and message.get("id") == "raw1"
+        )
+        self.assertTrue(result["result"]["agent_response"]["success"])
+
+        await self._send(
+            session["id"],
+            {
+                "type": "raw",
+                "command": {"type": "extension_ui_response", "id": "ui-1"},
+            },
+            request_id="raw2",
+        )
+        error = await self.client.recv_json_until(self._reply("raw2"))
+        self.assertEqual(error["type"], "error")
+        self.assertEqual(error["error"]["code"], "bad_request")
+
+    async def test_unsupported_commands_are_refused(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        for name, request_id in (("fork", "u1"), ("", "u2")):
+            with self.subTest(name=name):
+                await self._send(session["id"], {"type": name}, request_id=request_id)
+                error = await self.client.recv_json_until(self._reply(request_id))
+                self.assertEqual(error["type"], "error")
+                self.assertEqual(error["error"]["code"], "bad_request")
+
+    async def test_shell_sessions_reject_agent_commands(self) -> None:
+        session = await self._create({"type": "create", "title": "shell"})
+        await self._send(session["id"], {"type": "get_snapshot"}, request_id="shell1")
+        error = await self.client.recv_json_until(self._reply("shell1"))
+        self.assertEqual(error["type"], "error")
+        self.assertEqual(error["error"]["code"], "bad_request")
+        self.assertIn("structured agent", error["error"]["message"])
+
+    async def test_unknown_sessions_are_not_found(self) -> None:
+        await self._send("missing", {"type": "get_snapshot"}, request_id="nope")
+        error = await self.client.recv_json_until(self._reply("nope"))
+        self.assertEqual(error["error"]["code"], "not_found")
 
 
 if __name__ == "__main__":

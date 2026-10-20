@@ -774,26 +774,48 @@ def pi_snapshot_to_canonical(
     first_entry_id = page.get("firstEntryId")
     if not isinstance(first_entry_id, str):
         first_entry_id = entries[0]["id"] if entries else None
+    streaming = data.get("streaming")
     return {
         "entries": entries,
         "has_more": bool(page.get("hasMore", False)),
         "first_entry_id": first_entry_id,
-        "state": {
-            "model": _model_name(state.get("model")),
-            "thinking_level": state.get("thinkingLevel"),
-            "session_file": state.get("sessionFile"),
-            "name": state.get("sessionName"),
-            "streaming": bool(data.get("streaming", state.get("isStreaming", False))),
-            "settled": bool(data.get("settled", True)),
-            "tokens": tokens,
-            "cost": cost,
-            "pending_message_count": state.get("pendingMessageCount", 0),
-        },
+        "state": pi_state_to_canonical(
+            state,
+            tokens=tokens,
+            cost=cost,
+            streaming=streaming if isinstance(streaming, bool) else None,
+            settled=bool(data.get("settled", True)),
+        ),
         "dialogs": dialogs,
         "ui": ui,
         "commands": data.get("commands") if isinstance(data.get("commands"), dict) else {},
         "capabilities": PI_CAPABILITIES.to_dict(),
         "cursor": {"seq": data.get("seq", 0)},
+    }
+
+
+def pi_state_to_canonical(
+    state: object,
+    *,
+    tokens: int = 0,
+    cost: float = 0.0,
+    streaming: bool | None = None,
+    settled: bool | None = None,
+) -> dict:
+    """Convert pi's ``get_state`` payload into the canonical session state."""
+    data = state if isinstance(state, dict) else {}
+    if streaming is None:
+        streaming = bool(data.get("isStreaming", False))
+    return {
+        "model": _model_name(data.get("model")),
+        "thinking_level": data.get("thinkingLevel"),
+        "session_file": data.get("sessionFile"),
+        "name": data.get("sessionName"),
+        "streaming": streaming,
+        "settled": (not streaming) if settled is None else settled,
+        "tokens": tokens,
+        "cost": cost,
+        "pending_message_count": data.get("pendingMessageCount", 0),
     }
 
 
@@ -935,3 +957,166 @@ def pi_dialog_response_to_pi(kind: str, response: dict) -> dict:
     if "value" in response:
         return {"value": response["value"]}
     return {"cancelled": True}
+
+
+# ---------------------------------------------------------------------------
+# Canonical commands
+# ---------------------------------------------------------------------------
+
+#: Canonical commands the pi adapter answers with exactly one RPC call.
+PI_DIRECT_COMMANDS = frozenset(
+    {
+        "prompt",
+        "steer",
+        "follow_up",
+        "abort",
+        "get_state",
+        "set_model",
+        "set_thinking",
+        "set_session_name",
+        "compact",
+        "clear_queue",
+        "raw",
+    }
+)
+
+#: Canonical commands that need :class:`PiSession` state, not one RPC call.
+PI_SESSION_COMMANDS = frozenset(
+    {"get_snapshot", "get_history", "list_models", "dialog_response", "shutdown"}
+)
+
+#: Every canonical command this adapter understands.
+PI_COMMANDS = PI_DIRECT_COMMANDS | PI_SESSION_COMMANDS
+
+#: pi RPC records a browser may never smuggle through ``raw``.  Dialog
+#: responses are correlated and validated by the server instead.
+PI_RAW_DENYLIST = frozenset({"extension_ui_response"})
+
+#: pi's ``streamingBehavior`` for the canonical mid-run commands.
+_STREAMING_BEHAVIOR = {"steer": "steer", "follow_up": "followUp"}
+
+
+class CanonicalCommandError(ValueError):
+    """A canonical command that the pi adapter cannot express."""
+
+
+def _require_message(command: dict) -> str:
+    message = command.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise CanonicalCommandError("prompt message must be a non-empty string")
+    return message
+
+
+def pi_command_from_canonical(command: dict) -> dict:
+    """Translate one canonical command record into a pi RPC command.
+
+    ``command`` is a flat canonical record such as
+    ``{"type": "set_model", "model": "gpt", "provider": "openai"}``.  Only the
+    commands in :data:`PI_DIRECT_COMMANDS` translate to a single RPC call;
+    snapshot, history, models, dialogs, and shutdown need session state and are
+    handled by the server.
+
+    Raises :class:`CanonicalCommandError` for an unknown command, a missing
+    field, or a ``raw`` record that must stay server-owned.
+    """
+    if not isinstance(command, dict):
+        raise CanonicalCommandError("command must be an object")
+    name = command.get("type")
+    if not isinstance(name, str) or not name:
+        raise CanonicalCommandError("command.type is required")
+    if name not in PI_DIRECT_COMMANDS:
+        if name in PI_SESSION_COMMANDS:
+            raise CanonicalCommandError(f"{name} is resolved from session state")
+        raise CanonicalCommandError(f"unsupported agent command {name!r}")
+
+    if name in ("prompt", "steer", "follow_up"):
+        rpc: dict[str, Any] = {"type": "prompt", "message": _require_message(command)}
+        behavior = _STREAMING_BEHAVIOR.get(name)
+        if behavior is not None:
+            rpc["streamingBehavior"] = behavior
+        return rpc
+    if name == "abort":
+        return {"type": "abort"}
+    if name == "get_state":
+        return {"type": "get_state"}
+    if name == "set_model":
+        model = command.get("model")
+        if not isinstance(model, str) or not model.strip():
+            raise CanonicalCommandError("set_model needs a model id")
+        rpc = {"type": "set_model", "modelId": model}
+        provider = command.get("provider")
+        if isinstance(provider, str) and provider.strip():
+            rpc["provider"] = provider
+        return rpc
+    if name == "set_thinking":
+        level = command.get("level")
+        if not isinstance(level, str) or not level.strip():
+            raise CanonicalCommandError("set_thinking needs a level")
+        return {"type": "set_thinking_level", "level": level}
+    if name == "set_session_name":
+        session_name = command.get("name")
+        if not isinstance(session_name, str):
+            raise CanonicalCommandError("set_session_name needs a name")
+        return {"type": "set_session_name", "name": session_name}
+    if name == "compact":
+        return {"type": "compact"}
+    if name == "clear_queue":
+        return {"type": "clear_queue"}
+    # raw
+    native = command.get("command")
+    if not isinstance(native, dict):
+        raise CanonicalCommandError("raw needs a native command object")
+    native_type = native.get("type")
+    if not isinstance(native_type, str) or not native_type:
+        raise CanonicalCommandError("raw command.type is required")
+    if native_type in PI_RAW_DENYLIST:
+        raise CanonicalCommandError(f"raw {native_type} is server-owned")
+    return dict(native)
+
+
+def canonical_command_data(name: str, data: object) -> dict:
+    """Normalize a pi RPC ``data`` payload for a canonical command response."""
+    payload = data if isinstance(data, dict) else {}
+    if name in ("prompt", "steer", "follow_up"):
+        if name in _STREAMING_BEHAVIOR:
+            # A mid-run command is queued by definition, whatever pi echoes.
+            return {"disposition": "queued"}
+        disposition = payload.get("disposition")
+        if disposition not in ("started", "queued", "handled"):
+            disposition = "started"
+        return {"disposition": disposition}
+    if name == "set_model":
+        model = _model_name(payload)
+        result: dict[str, Any] = {} if model is None else {"model": model}
+        provider = payload.get("provider")
+        if isinstance(provider, str) and provider:
+            result["provider"] = provider
+        return result
+    return dict(payload)
+
+
+def canonical_response(
+    name: str,
+    command_id: str,
+    response: object,
+    *,
+    tokens: int = 0,
+    cost: float = 0.0,
+) -> dict:
+    """Build a canonical ``response`` record from a pi RPC response."""
+    payload = response if isinstance(response, dict) else {}
+    record: dict[str, Any] = {
+        "type": "response",
+        "id": command_id,
+        "command": name,
+        "success": payload.get("success") is not False,
+    }
+    if not record["success"]:
+        record["error"] = str(payload.get("error") or f"{name} failed")
+        return record
+    data = payload.get("data")
+    if name == "get_state":
+        record["data"] = pi_state_to_canonical(data, tokens=tokens, cost=cost)
+    else:
+        record["data"] = canonical_command_data(name, data)
+    return record

@@ -212,9 +212,19 @@ Keep the existing text-JSON control plane and binary terminal frames. Add:
   `model`, and `resume`.
 - Client to server: `{"type":"pi","session_id":...,"command":{...}}`, a raw
   RPC command envelope. Webterm does not model every RPC command.
+- Client to server: `{"type":"agent","session_id":...,"command":{...}}`,
+  the canonical agent envelope: `prompt`, `steer`, `follow_up`, `abort`,
+  `get_snapshot`, `get_history`, `list_models`, `set_model`, `set_thinking`,
+  `set_session_name`, `compact`, `clear_queue`, `dialog_response`, `shutdown`,
+  and `raw`. It maps onto the RPC below, so a canonical client needs no pi
+  vocabulary; `raw` forwards a native command except `extension_ui_response`,
+  which stays server-owned.
 - Server to client: the RPC response is returned as `pi_response` in the
   correlated `result` for the browser's request id. Server-generated RPC ids
-  avoid collisions when two clients drive the same session.
+  avoid collisions when two clients drive the same session. Errors for a
+  request without an `id` are dropped, so an uncorrelated request only learns
+  that it failed by seeing nothing (e.g. a rejected `input` on a pi session
+  surfaces as `bad_kind` only to a client that correlates).
 - Server to client: `pi_event`, `{session_id, seq, record}`.
 - Server to client: `pi_resync` when a client attaches or a gap is detected.
 - Client to server: `pi_history`, `{session_id, before, limit}`, answers

@@ -165,10 +165,11 @@ restart always drops all sessions and scrollback.
 A connection may opt into the canonical agent shadow stream with
 `{"type":"agent_api","enabled":true}` (or `"agent_api":true` on `subscribe`).
 It then also receives `agent_event`, `agent_resync`,
-`agent_dialog_request`, and `agent_dialog_resolved` for pi sessions. The legacy
+`agent_dialog_request`, and `agent_dialog_resolved` for pi sessions, and can
+drive the session with canonical commands in an `agent` envelope. The legacy
 `pi_event` / `pi_resync` / `pi_ui_*` messages are unchanged, so existing clients
 see exactly the old protocol. See
-[agent-protocol.md](agent-protocol.md#shadow-server-surface).
+[agent-protocol.md](agent-protocol.md#browser-envelope).
 
 Terminal bytes are never interpreted by the server (except that future features
 may parse escape sequences for metadata such as titles); they are passed through

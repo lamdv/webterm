@@ -1,11 +1,11 @@
 # Agent protocol and `AgentSession`
 
-Status: **canonical core and pi shadow path implemented** — the JSONL
-protocol, generic `AgentSession`, manager spawn path, fake-agent conformance
-suite, pi translation layer, opt-in `agent_api` server stream, and the
-experimental `?agentui=1` browser view. pi still runs through its existing
-`PiSession`; the canonical view is a validation bridge over pi commands, and
-`webtermctl` is not wired to the generic layer yet.
+Status: **canonical core, pi shadow path, and canonical command surface
+implemented** — the JSONL protocol, generic `AgentSession`, manager spawn path,
+fake-agent conformance suite, pi translation layer, opt-in `agent_api` server
+stream, the canonical `agent` command envelope, and the experimental
+`?agentui=1` browser view that drives it. pi still runs through its existing
+`PiSession`; `webtermctl` is not wired to the generic layer yet.
 
 This document defines the agent-agnostic layer. The goal is to separate three
 concerns that pi currently handles together:
@@ -137,6 +137,49 @@ A failed command returns `success:false` and a human-readable `error`:
 {"type":"response","id":"c1","command":"set_model","success":false,
  "error":"unknown model"}
 ```
+
+### Browser envelope
+
+The protocol describes agent pipes. A browser wraps the same flat record in an
+`agent` message and gets a canonical response back, so it never speaks an
+adapter's dialect:
+
+```json
+{"type":"agent","id":"r7","session_id":"1-3",
+ "command":{"type":"prompt","message":"run the tests"}}
+```
+
+```json
+{"type":"result","id":"r7","result":{"agent_response":
+ {"type":"response","id":"r7","command":"prompt","success":true,
+  "data":{"disposition":"started"}}}}
+```
+
+The outer `id` is the transport correlation id and becomes the canonical `id`
+when it is a string or number; the server generates `webterm-<pid>-<n>` when it
+is missing. Local validation failures use the transport error shape
+(`{"type":"error","error":{"code":...,"message":...}}`): an unknown
+session, a session that is not a structured agent, an unknown command name, or
+a malformed field. A command the *agent* refuses is a `success:false` response
+with `error`, so the client can show the agent's own wording.
+
+A mid-run prompt is expressed with the canonical `steer` or `follow_up`
+command, not an adapter-specific field. The `prompt` disposition is `started`
+or `handled`; the mid-run forms report `queued` because the agent chose to
+queue rather than start a run.
+
+The current pi adapter answers:
+
+| Command | Adapter behavior |
+|---|---|
+| `prompt`, `steer`, `follow_up` | one pi prompt; the mid-run forms set `streamingBehavior` |
+| `abort`, `get_state`, `set_model`, `set_thinking`, `set_session_name`, `compact`, `clear_queue` | one pi RPC call, with the response data normalized |
+| `get_snapshot` | newest transcript page plus `cursor.seq`; also emits `agent_resync` when the connection opted into the shadow stream |
+| `get_history` | one backwards page before `before` |
+| `list_models` | the cached model probe for the session's cwd |
+| `dialog_response` | the server-owned dialog queue; `approved` becomes pi's `confirmed` |
+| `shutdown` | graceful close |
+| `raw` | passes the native command through, except server-owned `extension_ui_response` |
 
 ### Events
 
@@ -330,6 +373,10 @@ changing the legacy pi messages:
   expands into more than one canonical event.
 - `agent_dialog_request` and `agent_dialog_resolved` mirror
   `pi_ui_request`/`pi_ui_resolved` for blocking extension dialogs.
+- Commands travel in the `agent` envelope described above; a session-level
+  `get_snapshot` or `list_models` answer works even when the connection never
+  opted in, but only an opted-in connection is also pushed `agent_resync` and
+  live `agent_event`s.
 - `pi_event`, `pi_resync`, `pi_ui_request`, and `pi_ui_resolved` are still sent
   exactly as before. A client that never enables `agent_api` sees byte-for-byte
   the same pi protocol (plus no canonical traffic).
@@ -337,25 +384,26 @@ changing the legacy pi messages:
   already-attached pi session, then continues live.
 
 The browser can opt in with `?agentui=1`. `agent.js` renders the canonical
-transcript and dialogs, while `app.js` still sends prompts/aborts through the pi
-command envelope for now. The legacy pi view remains the default, and the
-generic agent command surface is the next step.
+transcript and dialogs, and `app.js` drives it through the `agent` envelope
+(`prompt`/`steer`/`follow_up`, `abort`, `dialog_response`). The legacy pi view
+remains the default and keeps using `pi` / `pi_ui_response`.
 
 ## Next steps
 
-1. **Generic agent command surface**: map canonical `prompt`, `abort`,
-   `get_snapshot`, `get_history`, `list_models`, and `dialog_response` onto the
-   pi adapter, then switch the canonical view off the legacy pi command
-   envelope.
-2. **MVA reference implementation**: `mva-core` speaks this protocol directly
+1. **MVA reference implementation**: `mva-core` speaks this protocol directly
    over `mva --mode rpc`; the worker-thread run loop, per-session cancellation,
    dialog round trip, and JSONL session store are the prerequisites.
-3. **Move pi behind `AgentSession`**: introduce the codec seam, migrate
+2. **Move pi behind `AgentSession`**: introduce the codec seam, migrate
    `PiSession`'s generic process/replay/dialog machinery, and change `kind`
-   from `"pi"` to `"agent"` with `adapter: "pi"`.
-4. **Capability-driven UI**: hide queue/steer, model picker, thinking, cost,
+   from `"pi"` to `"agent"` with `adapter: "pi"`. The `agent` envelope then
+   answers from `AgentSession` instead of the pi-specific branch.
+3. **Capability-driven UI**: hide queue/steer, model picker, thinking, cost,
    fork/tree, and export when the adapter does not advertise them. Add
-   canonical history paging and shadow fire-and-forget extension UI.
+   canonical history paging to the browser (the server already answers
+   `get_history`) and shadow fire-and-forget extension UI.
+4. **Generic sessions everywhere**: teach `webtermctl` / the control socket to
+   spawn a structured agent session so sub-agents can be canonical sessions
+   rather than pi-shaped ones.
 
 ## Non-goals
 
