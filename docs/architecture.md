@@ -162,6 +162,14 @@ Because the process image is replaced with `os.execv`, the PID and listening
 port are preserved and no external supervisor is needed. This is deliberate: a
 restart always drops all sessions and scrollback.
 
+A connection may opt into the canonical agent shadow stream with
+`{"type":"agent_api","enabled":true}` (or `"agent_api":true` on `subscribe`).
+It then also receives `agent_event`, `agent_resync`,
+`agent_dialog_request`, and `agent_dialog_resolved` for pi sessions. The legacy
+`pi_event` / `pi_resync` / `pi_ui_*` messages are unchanged, so existing clients
+see exactly the old protocol. See
+[agent-protocol.md](agent-protocol.md#shadow-server-surface).
+
 Terminal bytes are never interpreted by the server (except that future features
 may parse escape sequences for metadata such as titles); they are passed through
 verbatim to xterm.js.

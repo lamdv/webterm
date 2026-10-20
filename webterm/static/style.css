@@ -2145,3 +2145,212 @@ h6.pi-md-heading {
 .pi-msg > .pi-code-block:first-child {
   margin-top: 0;
 }
+
+/* ------------------------------------------------ canonical agent view */
+
+.agent-header-meta {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.agent-msg.optimistic {
+  opacity: 0.7;
+}
+
+.agent-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-pre {
+  margin: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agent-thinking {
+  padding: 6px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.agent-thinking summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+
+.agent-thinking .agent-pre {
+  margin-top: 6px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.agent-tool {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+
+.agent-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 12px;
+}
+
+.agent-tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--accent);
+}
+
+.agent-tool-status {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.agent-tool-status.ok {
+  color: var(--ok);
+}
+
+.agent-tool-status.error {
+  color: var(--danger);
+}
+
+.agent-tool-args,
+.agent-tool-output {
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-x: auto;
+}
+
+.agent-tool-output {
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.agent-image,
+.agent-file {
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.agent-dialog-host {
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow-y: auto;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.agent-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 10px 12px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  background: var(--bg-alt);
+}
+
+.agent-dialog-title {
+  font-weight: 600;
+}
+
+.agent-dialog-message {
+  color: var(--text-dim);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+
+.agent-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-dialog-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.agent-dialog-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.agent-dialog-actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.agent-dialog-actions button.agent-dialog-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.agent-dialog-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+.agent-dialog-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.agent-banner.error {
+  color: var(--danger);
+}
+
+.agent-banner.warning {
+  color: var(--warn);
+}
+
+.agent-stop {
+  border-color: var(--danger) !important;
+  color: var(--danger) !important;
+}

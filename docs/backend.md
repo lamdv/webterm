@@ -17,6 +17,7 @@ for the client see [frontend.md](frontend.md).
 | `webterm/agent/protocol.py` | Canonical agent protocol: capabilities, hello validation, event names, and payload validation. |
 | `webterm/agent/process.py` | Fork/exec into stdin/stdout/stderr pipes with the shared `WEBTERM_*` child environment. |
 | `webterm/integration/pi/session.py` | `PiSession`: a `pi --mode rpc` child over three pipes, JSONL event fan-out, snapshot/resync, server-owned extension dialogs/UI state, and two-phase close. |
+| `webterm/integration/pi/canonical.py` | Translation from pi RPC events, snapshots, history, models, and extension UI into the canonical agent protocol. The server exposes it as an opt-in `agent_api` shadow stream. |
 | `webterm/integration/pi/models.py` | Model probe for the new-session picker: throwaway RPC child, field whitelist, per-cwd cache. |
 | `webterm/integration/pi/storage.py` | pi session-file root, header parsing, path containment, and picker listing. |
 | `webterm/integration/pi/config.py` | pi CLI defaults, availability/detection, frontend config, agent profile, and launcher. |
@@ -299,6 +300,9 @@ and the tables above for the exact message shapes. The stable invariants are:
 - Text frames are always JSON objects with a `type` field.
 - Binary frames are always `[len(id)][id][payload]`.
 - Session ids are opaque strings chosen by the server.
+- A connection can opt into the canonical agent shadow stream with
+  `{"type":"agent_api","enabled":true}` or `"agent_api":true` on `subscribe`;
+  the legacy `pi_*` messages are unchanged either way.
 
 ## Testing
 

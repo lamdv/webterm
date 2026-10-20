@@ -16,6 +16,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/app.js` | Client logic (a single IIFE). |
 | `webterm/static/highlight.js` | Safe fenced-code and diff highlighter, exposed as `window.WebtermHighlight`. |
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
+| `webterm/static/agent.js` | Experimental canonical agent chat view, exposed as `window.WebtermAgent`. Enabled with `?agentui=1`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
 
 ### Load order
@@ -28,7 +29,8 @@ layout and the structure of `app.js`. For the server side see
 4. `/config.js` (generated).
 5. `/highlight.js`.
 6. `/pi.js`.
-7. `/app.js`.
+7. `/agent.js`.
+8. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -227,6 +229,26 @@ viewer. Fire-and-forget requests render as toasts (`notify`), keyed header
 chips (`setStatus`), pre-composer widgets (`setWidget`), the chat header title
 (`setTitle`), and composer prefill (`set_editor_text`). A pending dialog adds a
 `!` badge to the session tab and `needs_input` to session metadata.
+
+### Canonical agent view (experimental)
+
+`?agentui=1` switches pi-backed sessions to `window.WebtermAgent.create()` in
+`agent.js`. The legacy `pi.js` view remains the default; without the query flag
+`app.js` never sends `agent_api` and the server emits no canonical traffic.
+
+When enabled, `app.js` subscribes with `"agent_api":true`, routes
+`agent_resync` / `agent_event` / `agent_dialog_*` to the canonical view, and
+sends prompts, aborts, and dialog responses through the existing pi command
+envelope. This is a validation bridge, not the final agent command surface: the
+view is agnostic about rendering, but its control path still goes through pi
+until generic `agent` commands and the MVA adapter land.
+
+The view keeps a canonical transcript (entries from `agent_resync`, then live
+`message.*` events), tool execution state keyed by `call_id`, usage/model
+status, and a server-owned dialog panel. It renders text, thinking, tool cards,
+images as placeholders, and user/assistant/tool entries. Backwards history
+paging is not yet wired in the canonical view; an attach shows the newest
+snapshot page.
 
 ### Resize and fitting
 

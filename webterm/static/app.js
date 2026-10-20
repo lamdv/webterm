@@ -37,6 +37,7 @@
   /** @type {Map<string, {term: any, wrapper: HTMLElement}>} */
   const terminals = new Map();
   const piViews = new Map();
+  const agentViews = new Map();
   const subscribed = new Set();
   let activeId = localStorage.getItem("webterm.active") || null;
   let sessionsMeta = [];
@@ -55,6 +56,20 @@
   let requestCounter = 0;
 
   const CONFIG = window.WEBTERM_CONFIG || {};
+  // Opt-in canonical chat view for pi-backed sessions.  The legacy pi view
+  // stays the default until the canonical renderer reaches parity.
+  const USE_AGENT_UI =
+    (() => {
+      try {
+        return (
+          new URLSearchParams(window.location.search).get("agentui") === "1" &&
+          CONFIG.agentApi === true &&
+          Boolean(window.WebtermAgent)
+        );
+      } catch (_error) {
+        return false;
+      }
+    })();
   const DEFAULT_FONT_FAMILY =
     '"MesloLGS Nerd Font Mono", "MesloLGL Nerd Font Mono", "MesloLGM Nerd Font Mono",' +
     ' "FantasqueSansM Nerd Font Mono", "JetBrainsMono Nerd Font Mono",' +
@@ -306,6 +321,12 @@
     });
   }
 
+  function toPiDialogResponse(kind, response) {
+    if (response && response.cancelled) return { cancelled: true };
+    if (kind === "confirm") return { confirmed: Boolean(response && response.approved) };
+    return { value: response && response.value };
+  }
+
   // ----------------------------------------------------------- control plane
 
   function handleControl(message) {
@@ -320,6 +341,14 @@
       case "pi_ui_request":
       case "pi_ui_resolved": {
         const entry = piViews.get(message.session_id);
+        if (entry && entry.view) entry.view.handle(message);
+        break;
+      }
+      case "agent_resync":
+      case "agent_event":
+      case "agent_dialog_request":
+      case "agent_dialog_resolved": {
+        const entry = agentViews.get(message.session_id);
         if (entry && entry.view) entry.view.handle(message);
         break;
       }
@@ -358,16 +387,23 @@
   function reconcileSessions(sessions) {
     sessionsMeta = sessions;
     trackAnswers(sessions);
-    const knownBefore = new Set([...terminals.keys(), ...piViews.keys()]);
+    const knownBefore = new Set([
+      ...terminals.keys(),
+      ...piViews.keys(),
+      ...agentViews.keys(),
+    ]);
     const seen = new Set();
 
     for (const session of sessions) {
       seen.add(session.id);
       if (session.kind === "pi") {
-        ensurePiView(session);
+        if (USE_AGENT_UI) ensureAgentView(session);
+        else ensurePiView(session);
         if (!subscribed.has(session.id)) {
           subscribed.add(session.id);
-          send({ type: "subscribe", session_id: session.id });
+          const subscribe = { type: "subscribe", session_id: session.id };
+          if (USE_AGENT_UI) subscribe.agent_api = true;
+          send(subscribe);
         }
         continue;
       }
@@ -394,6 +430,14 @@
         if (entry.view) entry.view.destroy();
         entry.wrapper.remove();
         piViews.delete(id);
+        subscribed.delete(id);
+      }
+    }
+    for (const [id, entry] of Array.from(agentViews)) {
+      if (!seen.has(id)) {
+        if (entry.view) entry.view.destroy();
+        entry.wrapper.remove();
+        agentViews.delete(id);
         subscribed.delete(id);
       }
     }
@@ -655,6 +699,41 @@
     return entry;
   }
 
+  function ensureAgentView(session) {
+    let entry = agentViews.get(session.id);
+    if (entry) return entry;
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "pi-wrapper";
+    wrapper.dataset.sessionId = session.id;
+    terminalArea.appendChild(wrapper);
+
+    let view = null;
+    if (window.WebtermAgent) {
+      view = window.WebtermAgent.create(session, {
+        onPrompt: (text, streamingBehavior) => {
+          const command = { type: "prompt", message: text };
+          if (streamingBehavior) command.streamingBehavior = streamingBehavior;
+          return sendPiCommand(session.id, command);
+        },
+        onAbort: () => sendPiCommand(session.id, { type: "abort" }),
+        onDialogResponse: (dialogId, kind, response) =>
+          sendPiUiResponse(
+            session.id,
+            dialogId,
+            toPiDialogResponse(kind, response)
+          ),
+      });
+      wrapper.appendChild(view.element);
+    } else {
+      wrapper.textContent = "Failed to load the agent view.";
+    }
+
+    entry = { wrapper, view };
+    agentViews.set(session.id, entry);
+    return entry;
+  }
+
   function ensureTerminal(session) {
     if (terminals.has(session.id)) return terminals.get(session.id);
 
@@ -766,6 +845,12 @@
   }
 
   function handleExit(sessionId) {
+    const agentEntry = agentViews.get(sessionId);
+    if (agentEntry) {
+      if (agentEntry.view) agentEntry.view.setExited();
+      subscribed.delete(sessionId);
+      return;
+    }
     const piEntry = piViews.get(sessionId);
     if (piEntry) {
       if (piEntry.view) piEntry.view.setExited();
@@ -1048,10 +1133,21 @@
     for (const [sessionId, entry] of piViews) {
       entry.wrapper.classList.toggle("active", sessionId === id);
     }
+    for (const [sessionId, entry] of agentViews) {
+      entry.wrapper.classList.toggle("active", sessionId === id);
+    }
     updateActiveTab();
     // On a narrow viewport, choosing a shell gets the switcher out of the way.
     if (isNarrow()) {
       applySidebarCollapsed(true);
+    }
+    const agentEntry = id ? agentViews.get(id) : null;
+    if (agentEntry && agentEntry.view) {
+      requestAnimationFrame(() => {
+        if (editingTabId !== null) return;
+        agentEntry.view.activate();
+      });
+      return;
     }
     const piEntry = id ? piViews.get(id) : null;
     if (piEntry && piEntry.view) {

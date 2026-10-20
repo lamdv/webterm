@@ -1,9 +1,11 @@
 # Agent protocol and `AgentSession`
 
-Status: **stage 1 implemented** — canonical JSONL protocol, generic
-`webterm.agent.AgentSession`, manager spawn path, and a fake-agent conformance
-suite. pi still runs through its existing `PiSession`; no browser or
-`webtermctl` surface is wired to the generic layer yet.
+Status: **canonical core and pi shadow path implemented** — the JSONL
+protocol, generic `AgentSession`, manager spawn path, fake-agent conformance
+suite, pi translation layer, opt-in `agent_api` server stream, and the
+experimental `?agentui=1` browser view. pi still runs through its existing
+`PiSession`; the canonical view is a validation bridge over pi commands, and
+`webtermctl` is not wired to the generic layer yet.
 
 This document defines the agent-agnostic layer. The goal is to separate three
 concerns that pi currently handles together:
@@ -290,19 +292,70 @@ covers hello/capabilities, streaming, tools, usage, snapshots, history, models,
 dialogs (answer and timeout), abort, large tool output, crash, handshake
 timeout, unsupported protocol, and close.
 
+### pi translation
+
+`webterm/integration/pi/canonical.py` is the first adapter translation layer.
+It is side-effect free and is not wired into the server yet:
+
+- `PiCanonicalTranslator.feed()` maps pi session events (`agent_*`,
+  `message_*`, `tool_execution_*`, `queue_update`, compaction/retry, extension
+  errors) to canonical events. pi message deltas have no message id, so the
+  translator assigns live ids; a snapshot later replaces them with pi entry
+  ids.
+- `pi_snapshot_to_canonical()` and `pi_history_to_canonical()` convert pi
+  entries to canonical entries, keeping pi entry ids as the paging cursor.
+- `pi_dialog_to_canonical()`, `pi_ui_request_to_events()`, and
+  `pi_ui_resolved_to_canonical()` map extension UI. Blocking dialogs become
+  canonical dialogs; `notify`/`setTitle` become events; other fire-and-forget
+  UI state is preserved as `raw`.
+- `pi_models_to_canonical()` normalizes the model probe payload.
+- `PI_CAPABILITIES` declares pi's full surface, including steering, fork,
+  clone, compaction, export, and images.
+
+`tests/test_pi_canonical.py` checks the mapping against both synthetic
+realistic pi records and the `fake_pi.py` process. pi's existing session and
+browser paths are untouched.
+
+### Shadow server surface
+
+The canonical projection is now available as an opt-in shadow stream, without
+changing the legacy pi messages:
+
+- Send `{"type":"agent_api","enabled":true}` to enable it for a connection, or
+  pass `"agent_api":true` with `subscribe`.
+- `agent_resync` mirrors `pi_resync`: `{type, session_id, entries, has_more,
+  first_entry_id, state, dialogs, ui, commands, capabilities, cursor}`.
+- `agent_event` mirrors each translated `pi_event`: `{type, session_id, seq,
+  event}`. Several canonical events may share one pi `seq` when a pi record
+  expands into more than one canonical event.
+- `agent_dialog_request` and `agent_dialog_resolved` mirror
+  `pi_ui_request`/`pi_ui_resolved` for blocking extension dialogs.
+- `pi_event`, `pi_resync`, `pi_ui_request`, and `pi_ui_resolved` are still sent
+  exactly as before. A client that never enables `agent_api` sees byte-for-byte
+  the same pi protocol (plus no canonical traffic).
+- Enabling `agent_api` after subscribing sends an `agent_resync` for each
+  already-attached pi session, then continues live.
+
+The browser can opt in with `?agentui=1`. `agent.js` renders the canonical
+transcript and dialogs, while `app.js` still sends prompts/aborts through the pi
+command envelope for now. The legacy pi view remains the default, and the
+generic agent command surface is the next step.
+
 ## Next steps
 
-1. **`PiAdapter`**: translate pi's RPC records into canonical events, and
-   canonical commands into pi commands. Keep pi's entry ids for replay, and
-   keep fork/tree/compaction/dialogs as capability-gated pi features.
-2. **Server/browser surface**: add `agent_*` messages and a canonical reducer.
-   Translate pi events server-side first so the existing UI can validate the
-   schema without a backend rewrite.
-3. **MVA reference implementation**: `mva-core` speaks this protocol directly
+1. **Generic agent command surface**: map canonical `prompt`, `abort`,
+   `get_snapshot`, `get_history`, `list_models`, and `dialog_response` onto the
+   pi adapter, then switch the canonical view off the legacy pi command
+   envelope.
+2. **MVA reference implementation**: `mva-core` speaks this protocol directly
    over `mva --mode rpc`; the worker-thread run loop, per-session cancellation,
    dialog round trip, and JSONL session store are the prerequisites.
+3. **Move pi behind `AgentSession`**: introduce the codec seam, migrate
+   `PiSession`'s generic process/replay/dialog machinery, and change `kind`
+   from `"pi"` to `"agent"` with `adapter: "pi"`.
 4. **Capability-driven UI**: hide queue/steer, model picker, thinking, cost,
-   fork/tree, and export when the adapter does not advertise them.
+   fork/tree, and export when the adapter does not advertise them. Add
+   canonical history paging and shadow fire-and-forget extension UI.
 
 ## Non-goals
 

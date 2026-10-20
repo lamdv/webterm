@@ -23,9 +23,13 @@ from .control import ControlServer, default_control_socket, looks_like_tcp
 from .integration.pi import (
     HISTORY_ENTRY_LIMIT,
     MAX_HISTORY_ENTRY_LIMIT,
+    PiCanonicalTranslator,
     PiError,
     PiSession,
     PiSessionClosed,
+    pi_dialog_to_canonical,
+    pi_snapshot_to_canonical,
+    pi_ui_resolved_to_canonical,
 )
 from .session import (
     DepthExceededError,
@@ -389,6 +393,10 @@ class ClientConnection:
         self.closed = False
         self._backpressure = False
         self._closed_event = asyncio.Event()
+        #: When true, pi sessions also emit the canonical ``agent_*`` shadow
+        #: stream.  The legacy ``pi_*`` messages stay unchanged.
+        self.agent_api = False
+        self._pi_translators: dict[str, PiCanonicalTranslator] = {}
 
     # ---------------------------------------------------- Subscriber protocol
 
@@ -396,17 +404,40 @@ class ClientConnection:
         self._offer(("output", (session.id, offset, data)))
 
     def offer_exit(self, session) -> None:
+        self._pi_translators.pop(session.id, None)
         self._offer(("exit", session.id))
 
     def offer_pi_event(self, session, seq: int, record: dict) -> None:
         self._offer_json(
             {"type": "pi_event", "session_id": session.id, "seq": seq, "record": record}
         )
+        translator = self._pi_translators.get(session.id)
+        if translator is None:
+            return
+        for event in translator.feed(record):
+            self._offer_json(
+                {
+                    "type": "agent_event",
+                    "session_id": session.id,
+                    "seq": seq,
+                    "event": event,
+                }
+            )
 
     def offer_pi_ui_request(self, session, request: dict) -> None:
         self._offer_json(
             {"type": "pi_ui_request", "session_id": session.id, "request": request}
         )
+        if session.id in self._pi_translators:
+            dialog = pi_dialog_to_canonical(request)
+            if dialog is not None:
+                self._offer_json(
+                    {
+                        "type": "agent_dialog_request",
+                        "session_id": session.id,
+                        "request": dialog,
+                    }
+                )
 
     def offer_pi_ui_resolved(self, session, request_id: str, reason: str) -> None:
         self._offer_json(
@@ -417,6 +448,17 @@ class ClientConnection:
                 "reason": reason,
             }
         )
+        if session.id in self._pi_translators:
+            resolved = pi_ui_resolved_to_canonical({"id": request_id, "reason": reason})
+            if resolved is not None:
+                self._offer_json(
+                    {
+                        "type": "agent_dialog_resolved",
+                        "session_id": session.id,
+                        "dialog_id": resolved["id"],
+                        "reason": resolved["reason"],
+                    }
+                )
 
     def _offer_json(self, message: dict) -> None:
         self._offer(("json", message))
@@ -554,10 +596,15 @@ class ClientConnection:
     async def _dispatch(self, message: dict) -> dict:
         kind = message.get("type")
         if kind == "subscribe":
+            if bool(message.get("agent_api", False)):
+                self.agent_api = True
             info = await self._subscribe(
                 str(message.get("session_id", "")), _nonneg_int(message.get("since"))
             )
             return {"session": info}
+        if kind == "agent_api":
+            await self._set_agent_api(bool(message.get("enabled", True)))
+            return {"enabled": self.agent_api}
         if kind == "unsubscribe":
             self._unsubscribe(str(message.get("session_id", "")))
             return {"ok": True}
@@ -624,11 +671,24 @@ class ClientConnection:
         log.info("restart requested by client")
         self.control.request_restart()
 
+    async def _set_agent_api(self, enabled: bool) -> None:
+        """Enable or disable the canonical shadow stream for this client."""
+        self.agent_api = enabled
+        if not enabled:
+            self._pi_translators.clear()
+            return
+        for session in list(self.subscriptions):
+            if getattr(session, "kind", "") == "pi":
+                self._pi_translators.setdefault(session.id, PiCanonicalTranslator())
+                await self._send_agent_snapshot(session)
+
     async def _subscribe(self, session_id: str, since: int = 0) -> dict | None:
         session = self.manager.get(session_id)
         if session is None:
             await self.send_sessions()
             return None
+        if self.agent_api and getattr(session, "kind", "") == "pi":
+            self._pi_translators.setdefault(session.id, PiCanonicalTranslator())
         if session not in self.subscriptions:
             self.subscriptions.add(session)
             session.attach(self)
@@ -670,9 +730,36 @@ class ClientConnection:
                 **snapshot,
             }
         )
+        if self.agent_api:
+            await self._send_agent_snapshot(session, snapshot=snapshot)
+
+    async def _send_agent_snapshot(
+        self, session: PiSession, *, snapshot: dict | None = None
+    ) -> None:
+        """Send the canonical shadow snapshot for one attached pi session."""
+        try:
+            if snapshot is None:
+                snapshot = await session.snapshot()
+        except (PiError, PiSessionClosed, TimeoutError) as exc:
+            log.warning("pi session %s: canonical snapshot failed: %s", session.id, exc)
+            return
+        canonical = pi_snapshot_to_canonical(
+            snapshot, tokens=session.tokens, cost=session.cost
+        )
+        self._offer_json(
+            {
+                "type": "agent_resync",
+                "session_id": session.id,
+                **canonical,
+            }
+        )
+        # The snapshot is authoritative; later live events must not continue
+        # the translator's pre-resync message ids.
+        self._pi_translators[session.id] = PiCanonicalTranslator()
 
     def _unsubscribe(self, session_id: str) -> None:
         session = self.manager.get(session_id)
+        self._pi_translators.pop(session_id, None)
         if session is not None:
             session.detach(self)
             self.subscriptions.discard(session)
@@ -1514,6 +1601,10 @@ async def start_server(
     connections: set[ClientConnection] = set()
     client_tasks: set[asyncio.Task] = set()
     control = ServerControl()
+    # Advertise the opt-in canonical agent stream.  app.js falls back to the
+    # legacy pi view when an older server does not set this flag.
+    config = dict(config or {})
+    config.setdefault("agentApi", True)
 
     # Validate the control path before binding the TCP listener so a
     # misconfiguration cannot leave a half-started server behind.

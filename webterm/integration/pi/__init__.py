@@ -7,6 +7,18 @@ imports it directly.  It is deliberately not a plugin interface.
 
 from __future__ import annotations
 
+from .canonical import (
+    PI_CAPABILITIES,
+    PiCanonicalTranslator,
+    pi_capabilities,
+    pi_dialog_response_to_pi,
+    pi_dialog_to_canonical,
+    pi_history_to_canonical,
+    pi_models_to_canonical,
+    pi_snapshot_to_canonical,
+    pi_ui_request_to_events,
+    pi_ui_resolved_to_canonical,
+)
 from .models import PiModelCache, normalize_models
 from .session import (
     HISTORY_ENTRY_LIMIT,
@@ -21,6 +33,8 @@ from .session import (
 
 __all__ = [
     "HISTORY_ENTRY_LIMIT",
+    "PI_CAPABILITIES",
+    "PiCanonicalTranslator",
     "MAX_HISTORY_ENTRY_LIMIT",
     "SNAPSHOT_ENTRY_LIMIT",
     "PiError",
@@ -30,4 +44,12 @@ __all__ = [
     "PiSubscriber",
     "fork_pi",
     "normalize_models",
+    "pi_capabilities",
+    "pi_dialog_response_to_pi",
+    "pi_dialog_to_canonical",
+    "pi_history_to_canonical",
+    "pi_models_to_canonical",
+    "pi_snapshot_to_canonical",
+    "pi_ui_request_to_events",
+    "pi_ui_resolved_to_canonical",
 ]
