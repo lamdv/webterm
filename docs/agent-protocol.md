@@ -338,7 +338,8 @@ timeout, unsupported protocol, and close.
 ### pi translation
 
 `webterm/integration/pi/canonical.py` is the first adapter translation layer.
-It is side-effect free and is not wired into the server yet:
+It is side-effect free; the server calls it and the canonical view consumes the
+result:
 
 - `PiCanonicalTranslator.feed()` maps pi session events (`agent_*`,
   `message_*`, `tool_execution_*`, `queue_update`, compaction/retry, extension
@@ -347,6 +348,8 @@ It is side-effect free and is not wired into the server yet:
   ids.
 - `pi_snapshot_to_canonical()` and `pi_history_to_canonical()` convert pi
   entries to canonical entries, keeping pi entry ids as the paging cursor.
+- `pi_command_from_canonical()` and `canonical_response()` translate the
+  browser's canonical commands into pi RPC and normalise the answers.
 - `pi_dialog_to_canonical()`, `pi_ui_request_to_events()`, and
   `pi_ui_resolved_to_canonical()` map extension UI. Blocking dialogs become
   canonical dialogs; `notify`/`setTitle` become events; other fire-and-forget
@@ -373,6 +376,10 @@ changing the legacy pi messages:
   expands into more than one canonical event.
 - `agent_dialog_request` and `agent_dialog_resolved` mirror
   `pi_ui_request`/`pi_ui_resolved` for blocking extension dialogs.
+- Fire-and-forget extension UI is shadowed too: extension UI records never
+  reach the event stream, so `notify` becomes a `notice`, `setTitle` a
+  `session.info`, and `setStatus`/`setWidget` a `raw` event, all with the
+  session's current `seq`.
 - Commands travel in the `agent` envelope described above; a session-level
   `get_snapshot` or `list_models` answer works even when the connection never
   opted in, but only an opted-in connection is also pushed `agent_resync` and
@@ -384,9 +391,10 @@ changing the legacy pi messages:
   already-attached pi session, then continues live.
 
 The browser can opt in with `?agentui=1`. `agent.js` renders the canonical
-transcript and dialogs, and `app.js` drives it through the `agent` envelope
-(`prompt`/`steer`/`follow_up`, `abort`, `dialog_response`). The legacy pi view
-remains the default and keeps using `pi` / `pi_ui_response`.
+transcript, dialogs, and backwards history paging (`agent.get_history` through
+the envelope), and `app.js` drives it with `prompt`/`steer`/`follow_up`,
+`abort`, `dialog_response`, and `get_history`. The legacy pi view remains the
+default and keeps using `pi` / `pi_ui_response` / `pi_history`.
 
 ## Next steps
 
@@ -398,9 +406,7 @@ remains the default and keeps using `pi` / `pi_ui_response`.
    from `"pi"` to `"agent"` with `adapter: "pi"`. The `agent` envelope then
    answers from `AgentSession` instead of the pi-specific branch.
 3. **Capability-driven UI**: hide queue/steer, model picker, thinking, cost,
-   fork/tree, and export when the adapter does not advertise them. Add
-   canonical history paging to the browser (the server already answers
-   `get_history`) and shadow fire-and-forget extension UI.
+   fork/tree, and export when the adapter does not advertise them.
 4. **Generic sessions everywhere**: teach `webtermctl` / the control socket to
    spawn a structured agent session so sub-agents can be canonical sessions
    rather than pi-shaped ones.

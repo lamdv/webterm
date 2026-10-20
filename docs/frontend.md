@@ -246,9 +246,10 @@ canonical command onto the adapter.
 The view keeps a canonical transcript (entries from `agent_resync`, then live
 `message.*` events), tool execution state keyed by `call_id`, usage/model
 status, and a server-owned dialog panel. It renders text, thinking, tool cards,
-images as placeholders, and user/assistant/tool entries. Backwards history
-paging is not yet wired in the canonical view; an attach shows the newest
-snapshot page.
+images as placeholders, and user/assistant/tool entries. When the snapshot
+reports `has_more`, a **Load earlier messages** button fetches one backwards
+page with `agent.get_history` and prepends it without moving the reader; it
+disappears once the history is exhausted.
 
 ### Resize and fitting
 

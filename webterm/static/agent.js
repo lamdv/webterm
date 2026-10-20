@@ -33,6 +33,9 @@
 
   const HIGHLIGHT = window.WebtermHighlight || null;
 
+  /** Entries requested per backwards page, matching the pi view. */
+  const HISTORY_PAGE_SIZE = 40;
+
   function renderPlain(parent, text) {
     parent.appendChild(el("div", "pi-text", String(text || "")));
   }
@@ -71,6 +74,8 @@
       typeof options.onDialogResponse === "function"
         ? options.onDialogResponse
         : () => Promise.resolve();
+    const onHistory =
+      typeof options.onHistory === "function" ? options.onHistory : null;
     const root = el("div", "pi-view agent-view");
     const header = el("div", "pi-header agent-header");
     const titleEl = el("span", "pi-title", session.title || "agent");
@@ -116,6 +121,13 @@
       usage: { tokens: 0, cost: 0 },
       toolState: new Map(),
       dialogs: new Map(),
+      history: {
+        hasMore: false,
+        firstId: null,
+        loading: false,
+        error: "",
+        generation: 0,
+      },
       optimisticCounter: 0,
       localCounter: 0,
       noticeTimer: null,
@@ -123,6 +135,7 @@
 
     let stickToBottom = true;
     let renderQueued = false;
+    let scrollAnchor = null;
     messagesEl.addEventListener("scroll", () => {
       const distance =
         messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
@@ -300,9 +313,70 @@
       }
     }
 
+    function historyRow() {
+      const history = state.history;
+      const row = el("div", "pi-history");
+      if (history.loading) {
+        row.append(el("span", "pi-history-status", "Loading earlier messages…"));
+      } else if (history.hasMore) {
+        const button = el("button", "pi-history-more", "Load earlier messages");
+        button.type = "button";
+        button.disabled = state.exited;
+        button.addEventListener("click", loadEarlier);
+        row.append(button);
+      }
+      if (history.error) row.append(el("span", "pi-history-error", history.error));
+      return row;
+    }
+
+    function loadEarlier() {
+      const history = state.history;
+      if (state.exited || history.loading || !history.hasMore || !history.firstId) return;
+      if (!onHistory) {
+        showNotice("earlier messages are unavailable", "warning");
+        scheduleRender();
+        return;
+      }
+      const before = history.firstId;
+      const generation = history.generation;
+      history.loading = true;
+      history.error = "";
+      scrollAnchor = { height: messagesEl.scrollHeight, top: messagesEl.scrollTop };
+      render();
+      Promise.resolve(onHistory(before, HISTORY_PAGE_SIZE))
+        .then((page) => {
+          if (generation !== history.generation) return;
+          const entries = page && Array.isArray(page.entries) ? page.entries : [];
+          const known = new Set(state.entries.map((entry) => entry.id).filter(Boolean));
+          const older = entries.filter((entry) => entry && !known.has(entry.id));
+          history.loading = false;
+          history.hasMore = Boolean(page && page.has_more);
+          if (page && typeof page.first_entry_id === "string") {
+            history.firstId = page.first_entry_id;
+          } else if (!older.length) {
+            history.hasMore = false;
+          }
+          state.entries = older.concat(state.entries);
+          render();
+        })
+        .catch((error) => {
+          if (generation !== history.generation) return;
+          history.loading = false;
+          history.error =
+            error && error.message ? error.message : "could not load earlier messages";
+          render();
+        });
+    }
+
     function render() {
       const atBottom = stickToBottom;
+      const anchor = scrollAnchor;
+      const previousTop = messagesEl.scrollTop;
+      scrollAnchor = null;
       messagesEl.innerHTML = "";
+      if (state.history.hasMore || state.history.loading || state.history.error) {
+        messagesEl.append(historyRow());
+      }
       if (!state.entries.length && !state.live) {
         messagesEl.append(el("div", "pi-empty", "No messages yet."));
       } else {
@@ -311,7 +385,14 @@
       }
       renderDialogs();
       updateStatus();
-      if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (atBottom) {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      } else if (anchor) {
+        // Keep the reader's place when an earlier page is prepended.
+        messagesEl.scrollTop = anchor.top + (messagesEl.scrollHeight - anchor.height);
+      } else {
+        messagesEl.scrollTop = previousTop;
+      }
       stickToBottom = atBottom;
     }
 
@@ -481,6 +562,12 @@
       }
       state.usage.tokens = Number(state.meta.tokens) || 0;
       state.usage.cost = Number(state.meta.cost) || 0;
+      state.history.generation += 1;
+      state.history.loading = false;
+      state.history.error = "";
+      state.history.hasMore = Boolean(message.has_more);
+      state.history.firstId =
+        typeof message.first_entry_id === "string" ? message.first_entry_id : null;
       if (state.meta.name) titleEl.textContent = state.meta.name;
       render();
     }
@@ -569,6 +656,7 @@
         updateStatus();
         input.disabled = true;
         sendButton.disabled = true;
+        scheduleRender();
       },
       activate: () => {
         if (!state.exited) input.focus();

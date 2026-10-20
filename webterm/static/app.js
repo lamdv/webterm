@@ -738,6 +738,10 @@
         onAbort: () => sendAgentCommand(session.id, { type: "abort" }),
         onDialogResponse: (dialogId, _kind, response) =>
           sendAgentDialogResponse(session.id, dialogId, response),
+        onHistory: (before, limit) =>
+          sendAgentCommand(session.id, { type: "get_history", before, limit }).then(
+            (response) => response && response.data
+          ),
       });
       wrapper.appendChild(view.element);
     } else {

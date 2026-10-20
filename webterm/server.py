@@ -36,6 +36,7 @@ from .integration.pi import (
     pi_history_to_canonical,
     pi_models_to_canonical,
     pi_snapshot_to_canonical,
+    pi_ui_request_to_events,
     pi_ui_resolved_to_canonical,
 )
 from .session import (
@@ -425,29 +426,42 @@ class ClientConnection:
         if translator is None:
             return
         for event in translator.feed(record):
-            self._offer_json(
-                {
-                    "type": "agent_event",
-                    "session_id": session.id,
-                    "seq": seq,
-                    "event": event,
-                }
-            )
+            self._offer_agent_event(session, event, seq=seq)
+
+    def _offer_agent_event(self, session, event: dict, *, seq: int | None = None) -> None:
+        """Queue one canonical event; several may share a pi ``seq``."""
+        if seq is None:
+            seq = int(getattr(session, "seq", 0))
+        self._offer_json(
+            {
+                "type": "agent_event",
+                "session_id": session.id,
+                "seq": seq,
+                "event": event,
+            }
+        )
 
     def offer_pi_ui_request(self, session, request: dict) -> None:
         self._offer_json(
             {"type": "pi_ui_request", "session_id": session.id, "request": request}
         )
-        if session.id in self._pi_translators:
-            dialog = pi_dialog_to_canonical(request)
-            if dialog is not None:
-                self._offer_json(
-                    {
-                        "type": "agent_dialog_request",
-                        "session_id": session.id,
-                        "request": dialog,
-                    }
-                )
+        if session.id not in self._pi_translators:
+            return
+        dialog = pi_dialog_to_canonical(request)
+        if dialog is not None:
+            self._offer_json(
+                {
+                    "type": "agent_dialog_request",
+                    "session_id": session.id,
+                    "request": dialog,
+                }
+            )
+            return
+        # Extension UI records never reach ``offer_pi_event``, so the
+        # fire-and-forget methods (notify, setTitle, setStatus, setWidget) are
+        # shadowed here as notices, session info, and raw events.
+        for event in pi_ui_request_to_events(request):
+            self._offer_agent_event(session, event)
 
     def offer_pi_ui_resolved(self, session, request_id: str, reason: str) -> None:
         self._offer_json(

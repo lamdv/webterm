@@ -298,4 +298,49 @@ assert.deepStrictEqual(calls[calls.length - 1], [
 view.setExited();
 assert.ok(textOf(view.element).includes("exited"), "exit status rendered");
 
-console.log("agent view smoke test passed");
+// Backwards paging: the view asks for the page before its first entry.
+const pagedCalls = [];
+const paged = window.WebtermAgent.create(
+  { id: "2-1", title: "paged" },
+  {
+    onHistory: (before, limit) => {
+      pagedCalls.push([before, limit]);
+      return Promise.resolve({
+        entries: [
+          { id: "e0", role: "user", content: [{ type: "text", text: "older message" }] },
+        ],
+        has_more: false,
+        first_entry_id: "e0",
+      });
+    },
+  }
+);
+paged.handle({
+  type: "agent_resync",
+  entries: [{ id: "e1", role: "assistant", content: [{ type: "text", text: "newest" }] }],
+  state: { streaming: false, settled: true },
+  capabilities: { prompt: true, abort: true, history_paging: true },
+  has_more: true,
+  first_entry_id: "e1",
+  cursor: { seq: 3 },
+});
+assert.ok(
+  findByClass(paged.element, "pi-history-more"),
+  "load-earlier button rendered when the snapshot has older entries"
+);
+findByClass(paged.element, "pi-history-more").dispatch("click");
+assert.deepStrictEqual(pagedCalls, [["e1", 40]], "page requested before the oldest entry");
+
+(async () => {
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(textOf(paged.element).includes("older message"), "earlier page prepended");
+  assert.strictEqual(
+    findByClass(paged.element, "pi-history-more"),
+    null,
+    "load-earlier button gone once the history is exhausted"
+  );
+  console.log("agent view smoke test passed");
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

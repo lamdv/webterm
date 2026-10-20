@@ -1000,6 +1000,43 @@ class PiShadowServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(canonical["dialog_id"], "ui-1")
         self.assertEqual(canonical["reason"], "answered")
 
+    async def test_fire_and_forget_ui_is_shadowed_as_events(self) -> None:
+        session = await self._create_pi()
+        await self._subscribe(session["id"], agent_api=True)
+        await self.client.send_json(
+            {
+                "type": "pi",
+                "id": "prompt-notify",
+                "session_id": session["id"],
+                "command": {"type": "prompt", "message": "notify me"},
+            }
+        )
+        messages = await self._collect_until(
+            lambda message: message.get("type") == "agent_event"
+            and message["event"].get("event") == "session.info"
+            and message["event"].get("title") == "fake title"
+        )
+        # The legacy UI requests are still delivered unchanged.
+        self.assertTrue(any(message.get("type") == "pi_ui_request" for message in messages))
+        events = [
+            message["event"]
+            for message in messages
+            if message.get("type") == "agent_event"
+        ]
+        notices = [event for event in events if event["event"] == "notice"]
+        self.assertEqual(notices[0]["level"], "warning")
+        self.assertEqual(notices[0]["text"], "fake notification")
+        titles = [
+            event
+            for event in events
+            if event["event"] == "session.info" and event.get("title")
+        ]
+        self.assertEqual(titles[0]["title"], "fake title")
+        # setStatus and setWidget have no canonical equivalent yet.
+        raw = [event for event in events if event["event"] == "raw"]
+        self.assertEqual(len(raw), 2)
+        self.assertTrue(all(event["protocol"] == "pi" for event in raw))
+
     async def test_agent_api_enabled_after_subscribe_sends_resync(self) -> None:
         session = await self._create_pi()
         await self._subscribe(session["id"], agent_api=False)
