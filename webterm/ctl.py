@@ -366,19 +366,25 @@ def _cmd_pi(client: ControlClient, args: argparse.Namespace) -> int:
         command = {"type": "abort"}
     elif action == "state":
         command = {"type": "get_state"}
-    elif action == "last-text":
-        command = {"type": "get_last_assistant_text"}
     else:
-        command = {"type": "get_session_stats"}
+        # pi-specific introspection without a canonical equivalent.
+        native = "get_last_assistant_text" if action == "last-text" else "get_session_stats"
+        command = {"type": "raw", "command": {"type": native}}
 
-    result = client.pi(args.session_id, command, timeout=args.timeout)
+    # The canonical envelope keeps the CLI free of pi's RPC dialect: steer and
+    # follow-up are canonical commands even though pi expresses them as a
+    # prompt with a streaming behavior.
+    result = client.agent(args.session_id, command, timeout=args.timeout)
     output: dict[str, Any] = {"response": result}
     if action == "prompt" and not args.no_wait:
         waited = client.wait(
             args.session_id, until="settled", timeout=args.timeout
         )
         output["settled"] = waited.get("settled")
-        text = client.pi(args.session_id, {"type": "get_last_assistant_text"})
+        text = client.agent(
+            args.session_id,
+            {"type": "raw", "command": {"type": "get_last_assistant_text"}},
+        )
         data = text.get("data") or {}
         output["text"] = data.get("text")
 

@@ -1081,9 +1081,10 @@ class ClientConnection:
         if name not in PI_COMMANDS:
             raise RequestError("bad_request", f"unsupported agent command {name!r}")
         command_id = self._agent_command_id(message)
+        timeout = _optional_float(message.get("timeout"))
         try:
             response = await self._run_agent_command(
-                session, name, command, command_id
+                session, name, command, command_id, timeout=timeout
             )
         except CanonicalCommandError as exc:
             raise RequestError("bad_request", str(exc)) from exc
@@ -1096,7 +1097,13 @@ class ClientConnection:
         return {"agent_response": response}
 
     async def _run_agent_command(
-        self, session: PiSession, name: str, command: dict, command_id: str
+        self,
+        session: PiSession,
+        name: str,
+        command: dict,
+        command_id: str,
+        *,
+        timeout: float | None = None,
     ) -> dict:
         """Execute one validated canonical command against a pi session."""
         if name == "get_snapshot":
@@ -1140,7 +1147,8 @@ class ClientConnection:
             session.close()
             return _agent_response(name, command_id)
         rpc = await session.rpc(
-            pi_command_from_canonical(command), timeout=AGENT_COMMAND_TIMEOUT
+            pi_command_from_canonical(command),
+            timeout=timeout if timeout is not None else AGENT_COMMAND_TIMEOUT,
         )
         return canonical_response(
             name, command_id, rpc, tokens=session.tokens, cost=session.cost

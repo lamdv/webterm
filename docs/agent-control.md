@@ -395,7 +395,13 @@ webtermctl rename <id> T
 from `$WEBTERM_SESSION_ID`, so `pi` (or any agent that can run a shell command)
 gets sub-agents with no extra integration. `--rpc` starts a structured pi child
 and sends `--task` as its first prompt; `--wait` then waits for `agent_settled`
-rather than process exit. The bundled pi extension wraps these verbs as model
+rather than process exit.
+
+`webtermctl pi` drives a structured session through the canonical `agent`
+envelope, so the CLI carries no pi RPC vocabulary: `steer` and `follow-up` are
+canonical mid-run commands (the server turns them into pi's `streamingBehavior`),
+and `last-text`/`stats` use `raw` for pi-only introspection. `--json` prints the
+canonical `response` record. The bundled pi extension wraps these verbs as model
 tools (`spawn_agent`, `agent_send`, `agent_wait`, `agent_result`, `agent_list`,
 `agent_kill`). `--json` emits raw results and is accepted before or after the
 verb. A separate console script avoids touching the existing `webterm` parser.

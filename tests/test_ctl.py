@@ -115,6 +115,27 @@ class CtlCommandTests(CtlBase):
         self.assertEqual(payload["response"]["data"]["text"], "fake reply")
         await self.run_ctl("kill", session_id)
 
+    async def test_pi_mid_run_commands_use_canonical_envelope(self) -> None:
+        code, out = await self.run_ctl(
+            "--json", "spawn", "--agent", "pi", "--rpc", "--task", "hello", "--no-wait"
+        )
+        self.assertEqual(code, 0)
+        session_id = json.loads(out)["session_id"]
+        for action in ("steer", "follow-up"):
+            with self.subTest(action=action):
+                code, out = await self.run_ctl(
+                    "--json", "pi", session_id, action, "hurry", "--no-wait"
+                )
+                self.assertEqual(code, 0)
+                response = json.loads(out)["response"]
+                self.assertTrue(response["success"], response.get("error"))
+                self.assertEqual(response["command"], action.replace("-", "_"))
+                self.assertEqual(response["data"], {"disposition": "queued"})
+        code, out = await self.run_ctl("--json", "pi", session_id, "state")
+        self.assertEqual(code, 0)
+        self.assertIn("thinking_level", json.loads(out)["response"]["data"])
+        await self.run_ctl("kill", session_id)
+
     async def test_spawn_without_agent_or_command_fails(self) -> None:
         code, _ = await self.run_ctl("spawn")
         self.assertEqual(code, 2)

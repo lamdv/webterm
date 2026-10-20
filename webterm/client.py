@@ -129,10 +129,20 @@ class ControlClient:
         return self.request("spawn", **params)
 
     def pi(self, session_id: str, command: dict, *, timeout: float | None = None) -> dict:
+        """Send a raw pi RPC command and return pi's response record."""
         result = self.request(
             "pi", session_id=session_id, command=command, timeout=timeout
         )
         return result.get("pi_response") or {}
+
+    def agent(
+        self, session_id: str, command: dict, *, timeout: float | None = None
+    ) -> dict:
+        """Run one canonical agent command and return its ``response`` record."""
+        result = self.request(
+            "agent", session_id=session_id, command=command, timeout=timeout
+        )
+        return result.get("agent_response") or {}
 
     def send(self, session_id: str, data: str, *, submit: bool = False) -> dict:
         return self.request("send", session_id=session_id, data=data, submit=submit)
