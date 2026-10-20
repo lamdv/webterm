@@ -26,8 +26,9 @@ import time
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
+from .agent import AgentSession, fork_agent
 from .ansi import remove_ansi
-from .integration.pi import PiSession, fork_pi
+from .integration.pi import PiModelCache, PiSession, fork_pi
 from .integration.pi import storage as pi_storage
 
 DEFAULT_SCROLLBACK = 100_000
@@ -516,6 +517,7 @@ class SessionManager:
         pi_command: list[str] | None = None,
         pi_session_dir: str | None = None,
         pi_available: bool | None = None,
+        pi_default_model: str | None = None,
     ) -> None:
         self.shell = shell
         self.cwd = cwd
@@ -539,6 +541,11 @@ class SessionManager:
         )
         #: Optional webterm extension injected into every pi process.
         self.pi_extension: str | None = None
+        #: Model for browser-created pi sessions that do not choose one.  It is
+        #: passed to pi verbatim, so ``provider/id`` and ``:thinking`` work.
+        self.pi_default_model = pi_default_model or None
+        #: Cached model probe for the new-session picker.
+        self.pi_model_cache = PiModelCache()
         #: Webterm-managed root for pi session files; ``None`` disables
         #: persistence and the resume picker (tests, embedded use).
         self.pi_session_dir = (
@@ -549,10 +556,10 @@ class SessionManager:
         # Filled in once the server/socket is listening (see set_control_env).
         self.control_socket: str | None = None
         self.public_url: str | None = None
-        self.sessions: dict[str, Session | PiSession] = {}
+        self.sessions: dict[str, Session | PiSession | AgentSession] = {}
         self._counter = 0
         self._listeners: list[Callable[[], None]] = []
-        self._by_pid: dict[int, Session | PiSession] = {}
+        self._by_pid: dict[int, Session | PiSession | AgentSession] = {}
         self._reaper_installed = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reap_task: asyncio.Task | None = None
@@ -609,7 +616,9 @@ class SessionManager:
             (
                 s
                 for s in self.sessions.values()
-                if s.dead and s.retain_on_exit and getattr(s, "kind", "shell") != "pi"
+                if s.dead
+                and s.retain_on_exit
+                and getattr(s, "kind", "shell") not in ("pi", "agent")
             ),
             key=lambda s: s.created_at,
         )
@@ -624,7 +633,7 @@ class SessionManager:
         for session in doomed:
             self._drop(session)
 
-    def _drop(self, session: Session | PiSession) -> None:
+    def _drop(self, session: Session | PiSession | AgentSession) -> None:
         if self.sessions.pop(session.id, None) is not None:
             log.info("dropping finished session %s (%s)", session.id, session.title)
             self.notify()
@@ -695,7 +704,7 @@ class SessionManager:
             if include_private or session.visibility != "private"
         ]
 
-    def get(self, session_id: str) -> Session | PiSession | None:
+    def get(self, session_id: str) -> Session | PiSession | AgentSession | None:
         return self.sessions.get(session_id)
 
     def resolve_pi_path(self, raw: object) -> str | None:
@@ -712,13 +721,13 @@ class SessionManager:
         """List persisted pi sessions under the managed root, newest first."""
         return pi_storage.list_sessions(self.pi_session_dir, limit)
 
-    def children_of(self, session_id: str) -> list[Session | PiSession]:
+    def children_of(self, session_id: str) -> list[Session | PiSession | AgentSession]:
         """Sessions whose ``parent_id`` is *session_id* (one level)."""
         return [s for s in self.sessions.values() if s.parent_id == session_id]
 
-    def descendants_of(self, session_id: str) -> list[Session | PiSession]:
+    def descendants_of(self, session_id: str) -> list[Session | PiSession | AgentSession]:
         """Every session below *session_id*, any depth, excluding it."""
-        found: list[Session | PiSession] = []
+        found: list[Session | PiSession | AgentSession] = []
         stack = [session_id]
         while stack:
             for child in self.children_of(stack.pop()):
@@ -926,16 +935,19 @@ class SessionManager:
         task: str | None = None,
         visibility: str = "public",
         trusted: bool | None = None,
+        ephemeral: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> PiSession:
         """Start a pi RPC session from a fully resolved argv.
 
         The caller supplies ``--mode rpc`` and trust/session flags; the manager
-        owns lineage, limits, environment preparation, and reaping.
+        owns lineage, limits, environment preparation, and reaping.  An
+        *ephemeral* session backs an internal probe: it is reaped like any other
+        child but is never published, counted against limits, or retained.
         """
         loop = loop or asyncio.get_running_loop()
         self._install_reaper(loop)
-        depth = self._guard(parent_id)
+        depth = 0 if ephemeral else self._guard(parent_id)
         self._counter += 1
         counter = self._counter
         session_cwd = os.path.abspath(os.path.expanduser(cwd or self.cwd))
@@ -959,9 +971,9 @@ class SessionManager:
             title or task or _command_title(argv) or f"pi {counter}",
             cwd=session_cwd,
             loop=loop,
-            on_exit=self._on_session_exit,
+            on_exit=None if ephemeral else self._on_session_exit,
             on_change=self.notify,
-            retain_on_exit=True,
+            retain_on_exit=not ephemeral,
             origin=origin,
             parent_id=parent_id,
             depth=depth,
@@ -971,10 +983,99 @@ class SessionManager:
             visibility=visibility,
             trusted=trusted,
         )
-        self.sessions[session_id] = session
+        if not ephemeral:
+            self.sessions[session_id] = session
         self._by_pid[pid] = session
-        self.notify()
+        if not ephemeral:
+            self.notify()
         return session
+
+    async def create_agent(
+        self,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        title: str | None = None,
+        parent_id: str | None = None,
+        origin: str = "user",
+        role: str = "agent",
+        agent: str | None = None,
+        task: str | None = None,
+        visibility: str = "public",
+        trusted: bool | None = None,
+        ephemeral: bool = False,
+        adapter: str = "generic",
+        handshake_timeout: float = 10.0,
+        loop: asyncio.AbstractEventLoop | None = None,
+    ) -> AgentSession:
+        """Start a canonical structured-agent session and wait for hello.
+
+        The caller supplies the full argv.  The manager owns lineage, limits,
+        environment preparation, reaping, and publishing, exactly as it does
+        for PTY and pi sessions.  An *ephemeral* session backs an internal
+        probe or a short-lived helper: it is reaped but never published.
+        """
+        if not argv:
+            raise ValueError("agent command must not be empty")
+        loop = loop or asyncio.get_running_loop()
+        self._install_reaper(loop)
+        depth = 0 if ephemeral else self._guard(parent_id)
+        self._counter += 1
+        counter = self._counter
+        session_cwd = os.path.abspath(os.path.expanduser(cwd or self.cwd))
+        pid, stdin_fd, stdout_fd, stderr_fd = fork_agent(
+            self,
+            argv,
+            cwd=session_cwd,
+            env=env,
+            counter=counter,
+            parent_id=parent_id,
+            depth=depth,
+            agent=agent,
+        )
+        session_id = f"{counter}-{pid}"
+        session = AgentSession(
+            session_id,
+            pid,
+            stdin_fd,
+            stdout_fd,
+            stderr_fd,
+            title or task or _command_title(argv) or f"agent {counter}",
+            cwd=session_cwd,
+            loop=loop,
+            on_exit=None if ephemeral else self._on_session_exit,
+            on_change=self.notify,
+            retain_on_exit=not ephemeral,
+            origin=origin,
+            parent_id=parent_id,
+            depth=depth,
+            role=role,
+            agent=agent,
+            task=task,
+            visibility=visibility,
+            trusted=trusted,
+            adapter=adapter,
+        )
+        self._by_pid[pid] = session
+        try:
+            await session.start(timeout=handshake_timeout)
+        except Exception:
+            session.force_close()
+            raise
+        if not ephemeral:
+            self.sessions[session_id] = session
+            self.notify()
+        return session
+
+    async def pi_models(self, cwd: str | None = None, *, refresh: bool = False) -> dict:
+        """Return the models pi offers for *cwd*, probing on demand.
+
+        The result is cached per working directory; *refresh* forces a probe.
+        Errors only propagate when there is no previous result to fall back on.
+        """
+        target = os.path.abspath(os.path.expanduser(cwd or self.cwd))
+        return await self.pi_model_cache.get(self, target, refresh=refresh)
 
     def spawn(
         self,
@@ -1098,7 +1199,7 @@ class SessionManager:
 
     # ---------------------------------------------------------------- teardown
 
-    def _on_session_exit(self, session: Session | PiSession) -> None:
+    def _on_session_exit(self, session: Session | PiSession | AgentSession) -> None:
         if session.retain_on_exit:
             # A one-shot run or pi conversation: keep the record and output
             # around so a caller can read it until the session is closed.
@@ -1119,7 +1220,7 @@ class SessionManager:
         )
         self.notify()
 
-    def _close_one(self, session: Session | PiSession) -> bool:
+    def _close_one(self, session: Session | PiSession | AgentSession) -> bool:
         """Close or drop a single session, reporting whether it changed."""
         if session.dead:
             if self.sessions.pop(session.id, None) is None:
@@ -1144,7 +1245,7 @@ class SessionManager:
         session = self.sessions.get(session_id)
         if session is None:
             return []
-        targets: list[Session | PiSession] = []
+        targets: list[Session | PiSession | AgentSession] = []
         if tree:
             targets = sorted(
                 self.descendants_of(session_id), key=lambda s: s.depth, reverse=True

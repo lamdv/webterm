@@ -147,6 +147,11 @@ scheme, so no extra configuration is needed.
   shell. Long-press (touch) or right-click `+ new` to open a popover where you
   can name the shell and give it a **precommand** — a command typed into the
   new shell once it starts, so it runs with a normal prompt waiting afterwards.
+  The popover's **pi chat** tab also picks the **model** for that session, listed
+  from pi itself (one group per provider) with a `Default` entry. The choice is
+  remembered for later pi launches; `--default-pi-model` sets what `Default`
+  means, so a plain "Start pi chat" uses your configured model. `↻` reloads the
+  list after a `/login` or a `models.json` change.
 - **Launchers** — the sidebar shows a button per `--launcher`, in a horizontally
   scrollable row. The leading **`+`** pill prompts for a command and an optional
   name, runs it in a new shell session, and keeps it as a pill (saved in
@@ -215,6 +220,7 @@ scheme, so no extra configuration is needed.
 | `--cwd` | `$HOME` | Working directory for new sessions |
 | `--scrollback` | `100000` | Bytes of scrollback kept per session for reattach |
 | `--pi-session-dir` | `$WEBTERM_PI_SESSION_DIR` or `$XDG_STATE_HOME/webterm/pi-sessions` | Webterm-managed root for persisted pi GUI sessions |
+| `--default-pi-model` | `$WEBTERM_PI_MODEL`, else pi's own default | Model for pi sessions created without choosing one (`id`, `provider/id`, or `provider/id:thinking`) |
 | `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API |
 | `--no-control` | off | Disable the local control socket entirely |
 | `--no-discovery` | off | Disable the unauthenticated `/.well-known/webterm.json` document |

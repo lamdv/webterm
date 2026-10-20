@@ -70,6 +70,42 @@ Additional `info()` fields:
   `agent_settled`. The browser remembers the value it has shown and compares, so
   an answer that arrives while the tab is closed stays marked as unread.
 
+## Model selection
+
+A pi session can be created with a model, so the picker in the new-session
+popover does not have to rely on pi's default (`/model` inside a running
+session already switches later).
+
+- `create` accepts `provider` and `model`, passed through as `--provider` and
+  `--model`. `model` is resolved by pi, so an id, `provider/id` and a
+  `:thinking` suffix all work. `provider` without `model` is a request error,
+  because pi itself refuses that combination.
+- `--default-pi-model` (or `$WEBTERM_PI_MODEL`) is applied when a create
+  request names no model, so a plain "Start pi chat" uses the configured
+  model. It never applies to a resumed session, which restores the model
+  recorded in its session file.
+- The browser learns the choices from `pi_models`, which is answered by a
+  probe: a throwaway `pi --mode rpc --no-session --no-approve` child asked for
+  `get_available_models` and `get_state`, then closed. pi is the only correct
+  source for that list, because it applies credentials, `models.json`
+  providers and overrides, catalog updates, and extension-provided models; a
+  server-side parser of those files would be a second source of truth.
+- The probe result is cached per working directory and refreshed on demand
+  (`refresh: true`, or the picker's reload button). A failed refresh keeps the
+  previous result and reports `error`, so a transient failure does not empty
+  the picker. The cache is a convenience, never authoritative.
+- The probe is *ephemeral*: registered with the reaper like any other child,
+  but never published in `sessions`, never counted against `--max-sessions`,
+  and never retained.
+- Only a whitelist of model fields (`id`, `provider`, `name`, `contextWindow`,
+  `maxTokens`, `reasoning`, `input`) is forwarded to the browser. pi's model
+  object also carries endpoints, API descriptions and cost data; credentials
+  and endpoints must never reach a client.
+- The probe runs untrusted and without the extension, in the directory the
+  session would start in. A trusted project can therefore add models that do
+  not appear in the picker until a session is created there; the picker is a
+  convenience, not a gate.
+
 ## Process model
 
 Pi is spawned with `fork`/`execvpe` and raw pipes, not
@@ -172,7 +208,8 @@ alone are not enough.
 
 Keep the existing text-JSON control plane and binary terminal frames. Add:
 
-- `create` accepts `mode: "pi"` plus `cwd`, `title`, and `trust`.
+- `create` accepts `mode: "pi"` plus `cwd`, `title`, `trust`, `provider`,
+  `model`, and `resume`.
 - Client to server: `{"type":"pi","session_id":...,"command":{...}}`, a raw
   RPC command envelope. Webterm does not model every RPC command.
 - Server to client: the RPC response is returned as `pi_response` in the
@@ -183,6 +220,9 @@ Keep the existing text-JSON control plane and binary terminal frames. Add:
 - Client to server: `pi_history`, `{session_id, before, limit}`, answers
   `{entries, hasMore, firstEntryId}` with the entries immediately before
   `before` for backwards transcript paging.
+- Client to server: `pi_models`, `{cwd?, refresh?}`; answers
+  `{models, default, fetchedAt, cwd, cached}` from the cached probe. It needs no
+  session, which is what makes the model picker usable before one exists.
 - Extension UI: `pi_ui_request`, `pi_ui_resolved`, `pi_ui_response`, plus a
   small replayed `ui_state` for status/widget/title.
 - `kind`, `closing`, and `trusted` on session metadata.

@@ -126,6 +126,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--default-pi-model",
+        default=os.environ.get("WEBTERM_PI_MODEL"),
+        metavar="MODEL",
+        help=(
+            "model for pi sessions created without a choice, as pi resolves it: "
+            "an id, provider/id, or provider/id:thinking "
+            "(default: $WEBTERM_PI_MODEL, else pi's own default)"
+        ),
+    )
+    parser.add_argument(
         "--control-socket",
         default=None,
         metavar="PATH",
@@ -277,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         retained_ttl=None if args.retained_ttl < 0 else args.retained_ttl,
         pi_command=[pi_bin or "pi"],
         pi_available=pi_bin is not None,
+        pi_default_model=args.default_pi_model,
     )
 
     config: dict[str, object] = {}
@@ -326,7 +337,10 @@ def main(argv: list[str] | None = None) -> int:
     if launchers:
         config["launchers"] = launchers
     config["pi"] = pi_config.frontend_config(
-        pi_session_dir, cwd, is_available=manager.pi_available
+        pi_session_dir,
+        cwd,
+        is_available=manager.pi_available,
+        default_model=manager.pi_default_model,
     )
 
     profiles = parse_agents(

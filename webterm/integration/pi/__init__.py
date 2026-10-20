@@ -7,6 +7,7 @@ imports it directly.  It is deliberately not a plugin interface.
 
 from __future__ import annotations
 
+from .models import PiModelCache, normalize_models
 from .session import (
     HISTORY_ENTRY_LIMIT,
     MAX_HISTORY_ENTRY_LIMIT,
@@ -23,8 +24,10 @@ __all__ = [
     "MAX_HISTORY_ENTRY_LIMIT",
     "SNAPSHOT_ENTRY_LIMIT",
     "PiError",
+    "PiModelCache",
     "PiSession",
     "PiSessionClosed",
     "PiSubscriber",
     "fork_pi",
+    "normalize_models",
 ]

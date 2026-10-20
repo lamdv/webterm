@@ -132,6 +132,30 @@ ENTRIES = [
 ]
 
 
+def selected_model() -> dict:
+    """Return the model pi would resolve from ``--provider`` / ``--model``.
+
+    ``--model`` accepts ``id``, ``provider/id`` and a ``:thinking`` suffix, the
+    same forms the real CLI accepts; without it pi reports its own default.
+    """
+    provider: str | None = None
+    spec: str | None = None
+    args = sys.argv[1:]
+    for index, arg in enumerate(args[:-1]):
+        if arg == "--provider":
+            provider = args[index + 1]
+        elif arg == "--model":
+            spec = args[index + 1]
+    if not spec:
+        return {"provider": "fake", "id": "fake-model", "name": "Fake Model"}
+    spec = spec.split(":", 1)[0]
+    explicit_provider, separator, identifier = spec.partition("/")
+    if separator:
+        provider = explicit_provider
+        spec = identifier
+    return {"provider": provider or "fake", "id": spec, "name": spec}
+
+
 def main() -> int:
     argv_file = os.environ.get("FAKE_PI_ARGV_FILE")
     if argv_file:
@@ -170,7 +194,7 @@ def main() -> int:
                 request_id,
                 "get_state",
                 {
-                    "model": {"provider": "fake", "id": "fake-model"},
+                    "model": selected_model(),
                     "thinkingLevel": thinking["level"],
                     "isStreaming": False,
                     "isCompacting": False,

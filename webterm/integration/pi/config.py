@@ -53,13 +53,18 @@ def configure(manager: SessionManager, session_dir: str | None) -> str:
 
 
 def frontend_config(
-    session_dir: str | None, cwd: str, *, is_available: bool | None = None
+    session_dir: str | None,
+    cwd: str,
+    *,
+    is_available: bool | None = None,
+    default_model: str | None = None,
 ) -> dict[str, object]:
     """Return the pi block exposed through ``/config.js``."""
     return {
         "available": available() if is_available is None else is_available,
         "cwd": os.path.abspath(os.path.expanduser(cwd)),
         "sessionDir": session_dir,
+        "defaultModel": default_model,
     }
 
 

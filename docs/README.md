@@ -6,6 +6,9 @@
   management, command reference.
 - [Frontend](frontend.md) — static assets, `app.js` structure, reconnect,
   terminal fitting, launchers, `localStorage`.
+- [Agent protocol](agent-protocol.md) — the agent-agnostic JSONL protocol and
+  `AgentSession`: capabilities, events, snapshots, dialogs, lifecycle, and the
+  adapter path for pi and MVA.
 - [pi GUI mode](pi.md) — design decisions for pi as a structured session kind:
   RPC process model, entry-based resync, explicit project trust, managed
   session storage, extension dialogs, and the P0 slice.

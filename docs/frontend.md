@@ -365,8 +365,27 @@ takes an optional name and an optional **precommand**; submitting calls
 `createSession(precommand, name)`, so the server starts an interactive shell and
 types the precommand into it — shell syntax (`&&`, pipes, globs) works and the
 user lands at a prompt when it exits. Choosing `pi chat` hides the shell fields,
-relabels the submit button, and runs `createPiSession()` (the trust dialog) on
-submit.
+relabels the submit button, and swaps in a **model** picker (see below).
+
+### Model picker
+
+The `pi chat` branch asks the server for `pi_models` (optionally scoped to
+`CONFIG.pi.cwd`, optionally `refresh`d) and renders one `optgroup` per provider
+plus a leading `Default (...)` entry. The default entry names
+`CONFIG.pi.defaultModel` when the server was started with
+`--default-pi-model`, otherwise the model pi would start with (`payload.default`).
+`↻` forces a fresh probe, which is how a `/login` or a `models.json` edit shows
+up without restarting webterm.
+
+The choice is a UI preference: it is stored under
+`localStorage["webterm.piModel"]` as `{provider, id}`, restored on load, and
+applied to every pi launch path (the popover, the empty-state button, and the
+sidebar `pi` pill) — not just the popover. Picking `Default (...)` clears the
+preference, and a preference for a model pi no longer lists is dropped the next
+time a real list arrives. `createPiSession()` resolves the model *before*
+opening the trust dialog and sends `provider`/`model` on create; sending neither
+lets the server apply `--default-pi-model`. A resumed session never carries a
+model, because the session file restores it.
 
 When no sessions are open, `#empty-state` renders one button per session type
 (`renderEmptyChoices`) instead of assuming a shell: `Start a shell`,
@@ -409,6 +428,7 @@ when the page is served over HTTPS (the server was started with
 | `webterm.sidebarWidth` | Sidebar width in px. |
 | `webterm.sidebarCollapsed` | `"1"` when collapsed. |
 | `webterm.launchers` | User launcher definitions (JSON). |
+| `webterm.piModel` | Model chosen in the new-session picker (`{provider, id}`). |
 
 All storage access is wrapped in `try/catch`, since storage may be unavailable
 (private mode, etc.).

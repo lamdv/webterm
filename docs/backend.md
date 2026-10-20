@@ -13,7 +13,11 @@ for the client see [frontend.md](frontend.md).
 | `webterm/__main__.py` | CLI entry point: argument parsing, config assembly, `asyncio.run`. |
 | `webterm/server.py` | HTTP static serving, WebSocket upgrade, `ClientConnection` command loop and fan-out, shutdown. |
 | `webterm/session.py` | `Session` (PTY + scrollback + subscribers + lineage) and `SessionManager` (spawn, reap, list, kill, limits, GC). |
+| `webterm/agent/session.py` | `AgentSession`: a canonical JSONL agent child over three pipes, command correlation, event replay, dialogs, and two-phase close. Stage 1; the server/browser surface is not wired yet. |
+| `webterm/agent/protocol.py` | Canonical agent protocol: capabilities, hello validation, event names, and payload validation. |
+| `webterm/agent/process.py` | Fork/exec into stdin/stdout/stderr pipes with the shared `WEBTERM_*` child environment. |
 | `webterm/integration/pi/session.py` | `PiSession`: a `pi --mode rpc` child over three pipes, JSONL event fan-out, snapshot/resync, server-owned extension dialogs/UI state, and two-phase close. |
+| `webterm/integration/pi/models.py` | Model probe for the new-session picker: throwaway RPC child, field whitelist, per-cwd cache. |
 | `webterm/integration/pi/storage.py` | pi session-file root, header parsing, path containment, and picker listing. |
 | `webterm/integration/pi/config.py` | pi CLI defaults, availability/detection, frontend config, agent profile, and launcher. |
 | `webterm/websocket.py` | Minimal RFC 6455 server: handshake, framing, fragmentation, ping/pong/close. |
@@ -171,7 +175,8 @@ fan-out to the async socket:
 |---|---|---|
 | `subscribe` | `session_id`, `since?` | Attach and send retained output from the absolute byte `since` (default 0) plus `attached`. Unknown id triggers a fresh `sessions` list. |
 | `unsubscribe` | `session_id` | Detach. |
-| `create` | `cols`, `rows`, `title?`, `command?` | Spawn a session. `command` may be a non-empty string (a shell command line) or a non-empty list of strings (argv). |
+| `create` | `cols`, `rows`, `title?`, `command?`, `mode?`, `cwd?`, `trust?`, `provider?`, `model?`, `resume?`, `env?` | Spawn a session. `command` may be a non-empty string (a shell command line) or a non-empty list of strings (argv). With `mode: "pi"` the rest of the pi fields apply: `provider`/`model` select the model (`--model` alone is enough; `provider` without `model` is rejected), and a missing `model` falls back to `--default-pi-model` unless `resume` names a session file. |
+| `pi_models` | `cwd?`, `refresh?` | Models pi offers for `cwd` (default: the manager's cwd), from the cached probe. Answers `{models, default, fetchedAt, cwd, cached}`; `default` is the model a session would start with. Needs no session, so the picker works before one exists. |
 | `kill` | `session_id` | Terminate the session. |
 | `rename` | `session_id`, `title` | Set the title (capped at 200 chars) and broadcast. |
 | `input` | `session_id`, `data` | Write UTF-8 bytes to the PTY. |

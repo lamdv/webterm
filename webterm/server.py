@@ -588,6 +588,8 @@ class ClientConnection:
             return self._list_dirs(message)
         if kind == "list_pi_sessions":
             return self._list_pi_sessions(message)
+        if kind == "pi_models":
+            return await self._pi_models(message)
         if kind == "pi_export":
             return await self._pi_export(message)
         if kind == "list":
@@ -727,10 +729,21 @@ class ClientConnection:
             argv.extend(["-e", self.manager.pi_extension])
         provider = message.get("provider")
         model = message.get("model")
+        for name, value in (("provider", provider), ("model", model)):
+            if value is not None and not isinstance(value, str):
+                raise RequestError("bad_request", f"{name} must be a string")
+        provider = provider.strip() if isinstance(provider, str) else None
+        model = model.strip() if isinstance(model, str) else None
+        if provider and not model:
+            raise RequestError("bad_request", "provider requires a model id")
+        if not model and resume_path is None:
+            # A resumed session restores its own model, so the default only
+            # applies to new conversations and never overrides a resume.
+            model = self.manager.pi_default_model
         if provider:
-            argv.extend(["--provider", str(provider)])
+            argv.extend(["--provider", provider])
         if model:
-            argv.extend(["--model", str(model)])
+            argv.extend(["--model", model])
         pi_env = dict(message.get("env") or {})
         if root:
             # Nested pi processes started by this one stay in the managed root.
@@ -791,6 +804,29 @@ class ClientConnection:
             "dirs": entries,
             "truncated": truncated,
         }
+
+    async def _pi_models(self, message: dict) -> dict:
+        """Return pi's model list for the new-session picker.
+
+        The probe runs in the directory the session would be created in, so
+        project-level configuration and trust are reflected.
+        """
+        if not self.manager.pi_available:
+            raise RequestError(
+                "unavailable", "pi is not installed on the server; install pi first"
+            )
+        raw = message.get("cwd")
+        cwd = self.manager.cwd
+        if isinstance(raw, str) and raw.strip():
+            cwd = os.path.abspath(os.path.expanduser(raw))
+            if not os.path.isdir(cwd):
+                raise RequestError("bad_request", f"not a directory: {cwd}")
+        try:
+            return await self.manager.pi_models(cwd, refresh=bool(message.get("refresh")))
+        except (PiError, PiSessionClosed, TimeoutError) as exc:
+            raise RequestError("unavailable", f"cannot list pi models: {exc}") from exc
+        except OSError as exc:
+            raise RequestError("internal", f"cannot start pi: {exc}") from exc
 
     def _list_pi_sessions(self, message: dict) -> dict:
         sessions = self.manager.list_pi_sessions()

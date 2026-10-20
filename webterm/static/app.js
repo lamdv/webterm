@@ -1463,9 +1463,132 @@
   const newSessionCommandInput = document.getElementById("new-session-command");
   const newSessionKinds = document.getElementById("new-session-kinds");
   const newSessionShellFields = document.getElementById("new-session-shell-fields");
+  const newSessionPiFields = document.getElementById("new-session-pi-fields");
+  const newSessionModelSelect = document.getElementById("new-session-model");
+  const newSessionModelRefresh = document.getElementById("new-session-model-refresh");
   const newSessionCreateButton = document.getElementById("new-session-create");
   let newSessionKind = "shell";
   let addLauncherButton = null;
+
+  // The pi model chosen for the next session.  It is a UI preference, so it
+  // lives in localStorage; the server still owns what models exist.
+  const PI_MODEL_KEY = "webterm.piModel";
+  let piModelChoices = [];
+  let piModelPayload = null;
+  let piModelRequest = null;
+  let piModelPref = loadPiModelPref();
+
+  function loadPiModelPref() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(PI_MODEL_KEY) || "null");
+      if (stored && typeof stored.provider === "string" && typeof stored.id === "string") {
+        return { provider: stored.provider, id: stored.id };
+      }
+    } catch (error) {
+      console.warn("webterm: ignoring unreadable pi model preference", error);
+    }
+    return null;
+  }
+
+  function savePiModelPref(choice) {
+    piModelPref = choice || null;
+    try {
+      if (piModelPref) localStorage.setItem(PI_MODEL_KEY, JSON.stringify(piModelPref));
+      else localStorage.removeItem(PI_MODEL_KEY);
+    } catch (error) {
+      console.warn("webterm: cannot store the pi model preference", error);
+    }
+  }
+
+  function samePiModel(a, b) {
+    return Boolean(a && b && a.provider === b.provider && a.id === b.id);
+  }
+
+  function modelLabel(model) {
+    if (!model) return "";
+    const name = model.name && model.name !== model.id ? model.name : model.id;
+    return model.provider ? model.provider + "/" + name : name;
+  }
+
+  // Fetch the model list once per open, reusing an in-flight request.
+  function requestPiModels(refresh) {
+    if (!CONFIG.pi || !CONFIG.pi.available) return Promise.resolve(null);
+    if (piModelRequest) return piModelRequest;
+    piModelRequest = request({ type: "pi_models", refresh: Boolean(refresh) }, 60000)
+      .then((result) => {
+        piModelPayload = result && Array.isArray(result.models) ? result : null;
+        return piModelPayload;
+      })
+      .catch((error) => {
+        console.warn("webterm: pi model list unavailable", error);
+        piModelPayload = null;
+        return null;
+      })
+      .then((result) => {
+        piModelRequest = null;
+        renderPiModels();
+        return result;
+      });
+    return piModelRequest;
+  }
+
+  // Rebuild the picker: one optgroup per provider, plus the default entry.
+  function renderPiModels() {
+    if (!newSessionModelSelect) return;
+    const payload = piModelPayload;
+    const models = (payload && payload.models) || [];
+    piModelChoices = models;
+    newSessionModelSelect.innerHTML = "";
+
+    const fallback = document.createElement("option");
+    fallback.value = "";
+    const configured = CONFIG.pi && CONFIG.pi.defaultModel;
+    const implicit = payload && payload.default;
+    let defaultLabel = "pi default";
+    if (configured) {
+      // The configured default may be id, provider/id or provider/id:thinking.
+      const match = models.find(
+        (model) =>
+          configured === model.id ||
+          configured.indexOf(model.provider + "/" + model.id) === 0
+      );
+      defaultLabel = match ? modelLabel(match) : configured;
+    } else if (implicit) {
+      defaultLabel = modelLabel(implicit);
+    }
+    fallback.textContent = "Default (" + defaultLabel + ")";
+    newSessionModelSelect.appendChild(fallback);
+
+    const groups = new Map();
+    models.forEach((model, index) => {
+      let group = groups.get(model.provider);
+      if (!group) {
+        group = document.createElement("optgroup");
+        group.label = model.provider;
+        groups.set(model.provider, group);
+        newSessionModelSelect.appendChild(group);
+      }
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = model.name && model.name !== model.id ? model.name : model.id;
+      group.appendChild(option);
+    });
+
+    // Drop a remembered model that pi no longer offers, but only when the list
+    // actually arrived: a failed probe must not reset the preference.
+    if (piModelPref && models.length && !models.some((m) => samePiModel(m, piModelPref))) {
+      savePiModelPref(null);
+    }
+    const selected = models.findIndex((model) => samePiModel(model, piModelPref));
+    newSessionModelSelect.value = selected >= 0 ? String(selected) : "";
+    newSessionModelSelect.disabled = models.length === 0;
+  }
+
+  function selectedPiModel() {
+    if (!newSessionModelSelect || newSessionModelSelect.value === "") return piModelPref;
+    const index = Number(newSessionModelSelect.value);
+    return Number.isInteger(index) ? piModelChoices[index] || null : null;
+  }
 
   // Show a popover beneath its anchor, flipping to stay inside the viewport.
   function positionPopover(popover, anchor) {
@@ -1513,6 +1636,8 @@
       newSessionKinds.hidden = !piAvailable;
     }
     if (newSessionShellFields) newSessionShellFields.hidden = newSessionKind === "pi";
+    if (newSessionPiFields) newSessionPiFields.hidden = newSessionKind !== "pi";
+    if (newSessionKind === "pi") requestPiModels(false);
     if (newSessionCreateButton) {
       newSessionCreateButton.textContent = newSessionKind === "pi" ? "Start pi chat" : "Create";
     }
@@ -1526,6 +1651,24 @@
       setNewSessionKind(button.dataset.kind);
       if (newSessionKind === "pi" && newSessionCreateButton) newSessionCreateButton.focus();
       else newSessionNameInput.focus();
+    });
+  }
+
+  if (newSessionModelSelect) {
+    newSessionModelSelect.addEventListener("change", () => {
+      const index = Number(newSessionModelSelect.value);
+      savePiModelPref(
+        newSessionModelSelect.value === "" || !Number.isInteger(index)
+          ? null
+          : piModelChoices[index] || null
+      );
+    });
+  }
+
+  if (newSessionModelRefresh) {
+    newSessionModelRefresh.addEventListener("click", () => {
+      piModelRequest = null;
+      requestPiModels(true);
     });
   }
 
@@ -2015,17 +2158,26 @@
       window.alert("pi is not installed on the server.");
       return;
     }
+    // Resolve the model before the trust dialog: by the time its callback runs
+    // the browser may have changed the popover.
+    const model = selectedPiModel();
     const cwd = pi.cwd || "";
     showPiTrustDialog(cwd, (trust, chosenCwd) => {
       if (!trust) return;
       activateNext = true;
-      send({
+      const message = {
         type: "create",
         mode: "pi",
         cwd: chosenCwd || pi.cwd,
         title: "pi",
         trust,
-      });
+      };
+      // No model means the server applies --default-pi-model, if configured.
+      if (model) {
+        message.provider = model.provider;
+        message.model = model.id;
+      }
+      send(message);
     });
   }
 

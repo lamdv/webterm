@@ -352,6 +352,47 @@ body {
   border-color: var(--accent);
 }
 
+.popover .popover-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+  margin-bottom: 10px;
+}
+
+.popover select {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 5px 8px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.popover select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.popover-row button {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.popover-row button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
 .popover-actions {
   display: flex;
   justify-content: flex-end;
@@ -752,7 +793,8 @@ button,
   }
 
   /* iOS zooms the page when a sub-16px input is focused. */
-  .popover input {
+  .popover input,
+  .popover select {
     font-size: 16px;
     padding: 7px 9px;
   }

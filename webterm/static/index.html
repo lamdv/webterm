@@ -113,6 +113,22 @@
             placeholder="e.g. cd ~/src && ls"
           />
         </div>
+        <div id="new-session-pi-fields" hidden>
+          <label for="new-session-model">Model</label>
+          <div class="popover-row">
+            <select id="new-session-model">
+              <option value="">Default</option>
+            </select>
+            <button
+              type="button"
+              id="new-session-model-refresh"
+              title="Reload the model list from pi"
+              aria-label="Reload the model list"
+            >
+              ↻
+            </button>
+          </div>
+        </div>
         <div class="popover-actions">
           <button type="button" id="new-session-cancel">Cancel</button>
           <button type="submit" id="new-session-create">Create</button>
