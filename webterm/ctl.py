@@ -59,7 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--rpc",
         action="store_true",
-        help="start a structured RPC agent (requires an rpc agent profile)",
+        help="start a structured agent session (requires an rpc agent profile)",
+    )
+    p.add_argument(
+        "--adapter",
+        default=None,
+        help="structured-agent adapter: pi (default) or generic for a native agent",
     )
     p.set_defaults(interactive=None)
     p.add_argument("--cwd")
@@ -261,6 +266,8 @@ def _cmd_spawn(client: ControlClient, args: argparse.Namespace) -> int:
     }
     if args.rpc:
         params["rpc"] = True
+        if args.adapter:
+            params["adapter"] = args.adapter
     if args.interactive is not None:
         params["interactive"] = args.interactive
     # Print-mode agents are awaited by default; an interactive TUI is not, so

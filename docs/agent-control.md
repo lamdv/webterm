@@ -380,7 +380,7 @@ Two thin, stdlib-only pieces:
 
 ```
 webtermctl list [--tree] [--json]
-webtermctl spawn --agent pi --task "run the tests" [--print|--interactive|--rpc] [--wait] [--json]
+webtermctl spawn --agent pi --task "run the tests" [--print|--interactive|--rpc [--adapter A]] [--wait] [--json]
 webtermctl run   [--wait] [--json] [--text] CMD...
 webtermctl new   [--title T] [--cwd D] [--command CMD] [--private]
 webtermctl pi    <id> prompt|steer|follow-up|abort|state|last-text|stats [MESSAGE] [--no-wait] [--timeout S] [--json]
@@ -393,9 +393,11 @@ webtermctl rename <id> T
 
 `webtermctl spawn` is the one-liner a parent agent calls: it fills `parent_id`
 from `$WEBTERM_SESSION_ID`, so `pi` (or any agent that can run a shell command)
-gets sub-agents with no extra integration. `--rpc` starts a structured pi child
-and sends `--task` as its first prompt; `--wait` then waits for `agent_settled`
-rather than process exit.
+gets sub-agents with no extra integration. `--rpc` starts a structured agent
+child and sends `--task` as its first prompt; `--wait` then waits for
+`run.settled` rather than process exit. `--adapter` picks the dialect:
+`pi` (default) or `generic` for an agent that speaks the canonical protocol
+itself, which makes the child a native agent session instead of a pi one.
 
 `webtermctl pi` drives a structured session through the canonical `agent`
 envelope, so the CLI carries no pi RPC vocabulary: `steer` and `follow-up` are

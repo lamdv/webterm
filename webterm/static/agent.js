@@ -577,6 +577,15 @@
       if (message.type === "agent_resync") {
         resetFromSnapshot(message);
       } else if (message.type === "agent_event") {
+        // A replay after (re)subscribing resends retained events; anything at
+        // or below the snapshot cursor is already folded into it.
+        if (
+          typeof message.seq === "number" &&
+          state.cursor >= 0 &&
+          message.seq <= state.cursor
+        ) {
+          return;
+        }
         applyEvent(message.event);
       } else if (message.type === "agent_dialog_request") {
         const request = message.request;

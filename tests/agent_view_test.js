@@ -215,8 +215,23 @@ view.handle({
 });
 assert.ok(textOf(view.element).includes("partial answer"), "finished message rendered");
 
+// A replayed event at or below the snapshot cursor is already in the snapshot.
 view.handle({
   type: "agent_event",
+  seq: 2,
+  event: {
+    event: "message.finished",
+    message: {
+      id: "stale",
+      role: "assistant",
+      content: [{ type: "text", text: "stale replay" }],
+    },
+  },
+});
+assert.ok(!textOf(view.element).includes("stale replay"), "stale replay dropped");
+view.handle({
+  type: "agent_event",
+  seq: 99,
   event: {
     event: "tool.started",
     call_id: "t1",

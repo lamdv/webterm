@@ -618,7 +618,7 @@ class SessionManager:
                 for s in self.sessions.values()
                 if s.dead
                 and s.retain_on_exit
-                and getattr(s, "kind", "shell") not in ("pi", "agent")
+                and getattr(s, "kind", "shell") not in ("agent",)
             ),
             key=lambda s: s.created_at,
         )

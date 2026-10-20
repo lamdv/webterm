@@ -13,11 +13,13 @@ for the client see [frontend.md](frontend.md).
 | `webterm/__main__.py` | CLI entry point: argument parsing, config assembly, `asyncio.run`. |
 | `webterm/server.py` | HTTP static serving, WebSocket upgrade, `ClientConnection` command loop and fan-out, shutdown. |
 | `webterm/session.py` | `Session` (PTY + scrollback + subscribers + lineage) and `SessionManager` (spawn, reap, list, kill, limits, GC). |
-| `webterm/agent/session.py` | `AgentSession`: a canonical JSONL agent child over three pipes, command correlation, event replay, dialogs, and two-phase close. Stage 1; the server/browser surface is not wired yet. |
-| `webterm/agent/protocol.py` | Canonical agent protocol: capabilities, hello validation, event names, and payload validation. |
+| `webterm/agent/session.py` | `AgentSession`: a canonical JSONL agent child over three pipes, command correlation, event replay, dialogs, and two-phase close. |
+| `webterm/agent/codec.py` | The adapter seam: `AgentCodec` plus `NativeCodec`, which serves an `AgentSession` whose child already speaks canonical JSONL. |
+| `webterm/agent/protocol.py` | Canonical agent protocol: capabilities, command names, hello validation, event names, response records, and payload validation. |
 | `webterm/agent/process.py` | Fork/exec into stdin/stdout/stderr pipes with the shared `WEBTERM_*` child environment. |
 | `webterm/integration/pi/session.py` | `PiSession`: a `pi --mode rpc` child over three pipes, JSONL event fan-out, snapshot/resync, server-owned extension dialogs/UI state, and two-phase close. |
-| `webterm/integration/pi/canonical.py` | Translation from pi RPC events, snapshots, history, models, and extension UI into the canonical agent protocol. The server exposes it as an opt-in `agent_api` shadow stream. |
+| `webterm/integration/pi/canonical.py` | Translation from pi RPC events, snapshots, history, models, and extension UI into the canonical agent protocol. |
+| `webterm/integration/pi/codec.py` | `PiCodec`: the canonical surface over a `PiSession`, so the server never branches on pi. |
 | `webterm/integration/pi/models.py` | Model probe for the new-session picker: throwaway RPC child, field whitelist, per-cwd cache. |
 | `webterm/integration/pi/storage.py` | pi session-file root, header parsing, path containment, and picker listing. |
 | `webterm/integration/pi/config.py` | pi CLI defaults, availability/detection, frontend config, agent profile, and launcher. |
@@ -307,6 +309,12 @@ and the tables above for the exact message shapes. The stable invariants are:
   `{"type":"agent","session_id":...,"command":{...}}` and answer with a
   canonical `response` record in `agent_response`. See
   [agent-protocol.md](agent-protocol.md#browser-envelope).
+- `create` accepts `mode: "agent"` with `command` (argv or shell string),
+  `adapter`, and an optional first `prompt`; `spawn` accepts `rpc: true` plus
+  `adapter` (default `"pi"`) so a native agent can be a sub-agent too.
+- Structured sessions report `kind: "agent"` and an `adapter`; only pi also
+  carries the legacy `pi_*` messages, gated on that adapter rather than the
+  kind.
 
 ## Testing
 

@@ -19,26 +19,27 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode
 
 from . import __version__
+from .agent import (
+    AgentClosed,
+    AgentError,
+    AgentSession,
+    AgentTimeout,
+)
+from .agent.codec import NATIVE_CODEC, AgentCodec, CodecError, UnknownDialog
+from .agent.protocol import CanonicalCommandError, response_record
 from .control import ControlServer, default_control_socket, looks_like_tcp
 from .integration.pi import (
     HISTORY_ENTRY_LIMIT,
     MAX_HISTORY_ENTRY_LIMIT,
-    PI_COMMANDS,
-    CanonicalCommandError,
     PiCanonicalTranslator,
     PiError,
     PiSession,
     PiSessionClosed,
-    canonical_response,
-    pi_command_from_canonical,
-    pi_dialog_response_to_pi,
     pi_dialog_to_canonical,
-    pi_history_to_canonical,
-    pi_models_to_canonical,
-    pi_snapshot_to_canonical,
     pi_ui_request_to_events,
     pi_ui_resolved_to_canonical,
 )
+from .integration.pi.codec import PI_CODEC
 from .session import (
     DepthExceededError,
     Session,
@@ -65,6 +66,30 @@ DISCOVERY_PROTOCOL = 1
 MAX_HTTP_HEADER = 64 * 1024
 #: Timeout for one canonical agent command round trip.
 AGENT_COMMAND_TIMEOUT = 30.0
+
+#: Codecs by ``session.adapter``.  An adapter nobody registered falls through
+#: to the canonical codec, which is what a plain canonical agent speaks.
+AGENT_CODECS: dict[str, AgentCodec] = {"pi": PI_CODEC}
+
+
+def _agent_codec(session: object) -> AgentCodec | None:
+    """Return the codec for a structured agent session, else ``None``."""
+    if getattr(session, "kind", "") != "agent":
+        return None
+    adapter = getattr(session, "adapter", None)
+    return AGENT_CODECS.get(adapter, NATIVE_CODEC)
+
+
+def _is_pi(session: object) -> bool:
+    """True for a pi-backed agent session (it keeps the legacy ``pi_*`` wire)."""
+    return getattr(session, "adapter", None) == "pi"
+
+
+def _legacy_pi_error() -> RequestError:
+    """The error for pi's legacy messages aimed at another adapter."""
+    return RequestError(
+        "bad_request", "session is not a pi session (use the agent envelope)"
+    )
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -484,6 +509,31 @@ class ClientConnection:
                     }
                 )
 
+    def offer_agent_event(self, session, seq: int, event: dict) -> None:
+        """Receive one canonical event from a native agent session."""
+        self._offer_agent_event(session, event, seq=seq)
+
+    def offer_agent_dialog(self, session, request: dict) -> None:
+        self._offer_json(
+            {
+                "type": "agent_dialog_request",
+                "session_id": session.id,
+                "request": request,
+            }
+        )
+
+    def offer_agent_dialog_resolved(
+        self, session, dialog_id: str, reason: str
+    ) -> None:
+        self._offer_json(
+            {
+                "type": "agent_dialog_resolved",
+                "session_id": session.id,
+                "dialog_id": dialog_id,
+                "reason": reason,
+            }
+        )
+
     def _offer_json(self, message: dict) -> None:
         self._offer(("json", message))
 
@@ -633,7 +683,7 @@ class ClientConnection:
             self._unsubscribe(str(message.get("session_id", "")))
             return {"ok": True}
         if kind == "create":
-            return {"session": self._create(message).info()}
+            return {"session": (await self._create(message)).info()}
         if kind == "kill":
             killed = self.manager.kill(
                 str(message.get("session_id", "")), tree=bool(message.get("tree", True))
@@ -704,7 +754,7 @@ class ClientConnection:
             self._pi_translators.clear()
             return
         for session in list(self.subscriptions):
-            if getattr(session, "kind", "") == "pi":
+            if _is_pi(session):
                 self._pi_translators.setdefault(session.id, PiCanonicalTranslator())
                 await self._send_agent_snapshot(session)
 
@@ -713,17 +763,23 @@ class ClientConnection:
         if session is None:
             await self.send_sessions()
             return None
-        if self.agent_api and getattr(session, "kind", "") == "pi":
+        codec = _agent_codec(session)
+        if self.agent_api and _is_pi(session):
             self._pi_translators.setdefault(session.id, PiCanonicalTranslator())
         if session not in self.subscriptions:
             self.subscriptions.add(session)
             session.attach(self)
-            if session.kind == "pi":
+            if codec is not None:
                 # Queue the attach and snapshot through the send loop so live
                 # events cannot overtake them.  Events produced during the
                 # snapshot carry a higher seq and are applied by the client.
                 self._offer_json({"type": "attached", "session": session.info()})
-                await self._send_pi_snapshot(session)
+                if _is_pi(session):
+                    await self._send_pi_snapshot(session)
+                else:
+                    await self._send_agent_snapshot(session)
+                    for event_seq, event in session.events_since(since):
+                        self._offer_agent_event(session, event, seq=event_seq)
                 return session.info()
             # Attach and enqueue the replay without awaiting in between so no
             # live output can slip ahead of the replayed scrollback.  When the
@@ -757,28 +813,35 @@ class ClientConnection:
             }
         )
         if self.agent_api:
-            await self._send_agent_snapshot(session, snapshot=snapshot)
+            await self._send_agent_snapshot(session)
 
     async def _send_agent_snapshot(
-        self, session: PiSession, *, snapshot: dict | None = None, strict: bool = False
+        self,
+        session: Session | PiSession | AgentSession,
+        *,
+        snapshot: dict | None = None,
+        strict: bool = False,
     ) -> dict | None:
-        """Send the canonical shadow snapshot for one attached pi session.
+        """Push the canonical snapshot for one attached agent session.
 
         Returns the canonical payload so a command can answer with the same
         data it pushed, or ``None`` when the snapshot failed and *strict* is
-        false.
+        false.  Never sends canonical traffic for an agent whose client did
+        not opt in (pi keeps its legacy ``pi_resync`` path for those).
         """
+        codec = _agent_codec(session)
+        if codec is None:
+            return None
         try:
             if snapshot is None:
-                snapshot = await session.snapshot()
-        except (PiError, PiSessionClosed, TimeoutError) as exc:
-            log.warning("pi session %s: canonical snapshot failed: %s", session.id, exc)
+                snapshot = await codec.snapshot(session)
+        except (PiError, PiSessionClosed, TimeoutError, AgentError) as exc:
+            log.warning("agent session %s: snapshot failed: %s", session.id, exc)
             if strict:
-                raise RequestError("pi_error", str(exc)) from exc
+                raise RequestError("agent_error", str(exc)) from exc
             return None
-        canonical = pi_snapshot_to_canonical(
-            snapshot, tokens=session.tokens, cost=session.cost
-        )
+        canonical = dict(snapshot)
+        canonical.setdefault("capabilities", codec.capabilities(session))
         self._offer_json(
             {
                 "type": "agent_resync",
@@ -798,9 +861,12 @@ class ClientConnection:
             session.detach(self)
             self.subscriptions.discard(session)
 
-    def _create(self, message: dict) -> Session | PiSession:
-        if message.get("mode") == "pi" or message.get("kind") == "pi":
+    async def _create(self, message: dict) -> Session | PiSession | AgentSession:
+        mode = message.get("mode") or message.get("kind")
+        if mode == "pi":
             return self._create_pi(message)
+        if mode == "agent":
+            return await self._create_agent(message)
         command = _valid_command(message.get("command"))
         try:
             return self.manager.create(
@@ -819,6 +885,40 @@ class ClientConnection:
             )
         except SessionError as exc:
             raise _request_error(exc) from exc
+
+    async def _create_agent(self, message: dict) -> AgentSession:
+        """Start a native canonical agent session (its child speaks JSONL)."""
+        command = _valid_command(message.get("command"))
+        argv = shlex.split(command) if isinstance(command, str) else list(command or [])
+        if not argv:
+            raise RequestError("bad_request", "a structured agent needs a command")
+        try:
+            session = await self.manager.create_agent(
+                argv,
+                cwd=message.get("cwd"),
+                env=message.get("env"),
+                title=message.get("title"),
+                parent_id=message.get("parent_id") or None,
+                origin=str(message.get("origin", "user")),
+                role=str(message.get("role", "agent")),
+                agent=message.get("agent"),
+                task=message.get("task"),
+                visibility=str(message.get("visibility", "public")),
+                trusted=None,
+                adapter=str(message.get("adapter") or "generic"),
+            )
+        except SessionError as exc:
+            raise _request_error(exc) from exc
+        except (OSError, ValueError, AgentError) as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        prompt = message.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            try:
+                await session.prompt(prompt)
+            except (AgentError, TimeoutError) as exc:
+                self.manager.kill(session.id, tree=False)
+                raise RequestError("agent_error", str(exc)) from exc
+        return session
 
     def _create_pi(self, message: dict) -> PiSession:
         if not self.manager.pi_available:
@@ -962,8 +1062,8 @@ class ClientConnection:
 
     async def _pi_export(self, message: dict) -> dict:
         session = self._require(message)
-        if session.kind != "pi":
-            raise RequestError("bad_request", "session is not a pi session")
+        if not _is_pi(session):
+            raise _legacy_pi_error()
         fmt = str(message.get("format", "html")).lower()
         if fmt not in ("html", "jsonl"):
             raise RequestError("bad_request", "format must be 'html' or 'jsonl'")
@@ -1004,16 +1104,16 @@ class ClientConnection:
 
     async def _pi_snapshot(self, message: dict) -> dict:
         session = self._require(message)
-        if session.kind != "pi":
-            raise RequestError("bad_request", "session is not a pi session")
+        if not _is_pi(session):
+            raise _legacy_pi_error()
         await self._send_pi_snapshot(session, strict=True)
         return {"ok": True}
 
     async def _pi_history(self, message: dict) -> dict:
         """Return one backwards page of transcript entries for the pi view."""
         session = self._require(message)
-        if session.kind != "pi":
-            raise RequestError("bad_request", "session is not a pi session")
+        if not _is_pi(session):
+            raise _legacy_pi_error()
         before = message.get("before")
         if not isinstance(before, str) or not before:
             raise RequestError("bad_request", "before is required")
@@ -1032,8 +1132,8 @@ class ClientConnection:
 
     def _pi_ui_response(self, message: dict) -> dict:
         session = self._require(message)
-        if session.kind != "pi":
-            raise RequestError("bad_request", "session is not a pi session")
+        if not _is_pi(session):
+            raise _legacy_pi_error()
         request_id = message.get("request_id")
         response = message.get("response")
         if not isinstance(request_id, str) or not request_id:
@@ -1063,12 +1163,13 @@ class ClientConnection:
 
         The client sends a flat canonical record inside the envelope, e.g.
         ``{"type":"agent","session_id":...,"command":{"type":"prompt"}}``.
-        The answer is a canonical ``response`` record, so the canonical view
-        never speaks pi's RPC dialect.  The pi adapter underneath is an
-        implementation detail of this stage.
+        The answer is a canonical ``response`` record, so no client needs to
+        know which adapter (pi today, anything else tomorrow) is behind the
+        session.
         """
         session = self._require(message)
-        if session.kind != "pi":
+        codec = _agent_codec(session)
+        if codec is None:
             raise RequestError(
                 "bad_request", "session is not a structured agent session"
             )
@@ -1078,59 +1179,66 @@ class ClientConnection:
         name = command.get("type")
         if not isinstance(name, str) or not name:
             raise RequestError("bad_request", "command.type is required")
-        if name not in PI_COMMANDS:
-            raise RequestError("bad_request", f"unsupported agent command {name!r}")
+        if name not in codec.commands:
+            raise RequestError(
+                "bad_request",
+                f"adapter {session.adapter!r} does not support agent command {name!r}",
+            )
         command_id = self._agent_command_id(message)
         timeout = _optional_float(message.get("timeout"))
         try:
             response = await self._run_agent_command(
-                session, name, command, command_id, timeout=timeout
+                session, codec, name, command, command_id, timeout=timeout
             )
         except CanonicalCommandError as exc:
             raise RequestError("bad_request", str(exc)) from exc
-        except TimeoutError as exc:
-            raise RequestError("timeout", f"agent command {name} timed out") from exc
-        except PiSessionClosed as exc:
+        except UnknownDialog as exc:
             raise RequestError("not_found", str(exc)) from exc
-        except PiError as exc:
+        except CodecError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        except (TimeoutError, AgentTimeout) as exc:
+            raise RequestError("timeout", f"agent command {name} timed out") from exc
+        except (PiSessionClosed, AgentClosed) as exc:
+            raise RequestError("not_found", str(exc)) from exc
+        except (PiError, AgentError) as exc:
             raise RequestError("bad_request", str(exc)) from exc
         return {"agent_response": response}
 
     async def _run_agent_command(
         self,
-        session: PiSession,
+        session: Session | PiSession | AgentSession,
+        codec: AgentCodec,
         name: str,
         command: dict,
         command_id: str,
         *,
         timeout: float | None = None,
     ) -> dict:
-        """Execute one validated canonical command against a pi session."""
+        """Execute one validated canonical command against an agent session."""
         if name == "get_snapshot":
             limit = _nonneg_int(command.get("limit")) or None
-            snapshot = await session.snapshot(entry_limit=limit)
-            if self.agent_api:
+            data = await codec.snapshot(session, limit=limit)
+            if self.agent_api or not _is_pi(session):
+                # Opted-in pi clients get the snapshot on the push channel so
+                # live message ids are reset; native agents have no legacy
+                # channel to stay compatible with.
                 data = await self._send_agent_snapshot(
-                    session, snapshot=snapshot, strict=True
-                )
-            else:
-                data = pi_snapshot_to_canonical(
-                    snapshot, tokens=session.tokens, cost=session.cost
-                )
-            return _agent_response(name, command_id, data=data)
+                    session, snapshot=data, strict=True
+                ) or data
+            return response_record(name, command_id, data=data)
         if name == "get_history":
             before = command.get("before")
             if not isinstance(before, str) or not before:
                 raise CanonicalCommandError("get_history needs a 'before' entry id")
             limit = _nonneg_int(command.get("limit")) or HISTORY_ENTRY_LIMIT
             limit = min(limit, MAX_HISTORY_ENTRY_LIMIT)
-            page = await session.history(before, limit)
-            return _agent_response(name, command_id, data=pi_history_to_canonical(page))
+            page = await codec.history(session, before, limit)
+            return response_record(name, command_id, data=page)
         if name == "list_models":
-            payload = await self.manager.pi_models(
-                session.cwd, refresh=bool(command.get("refresh"))
+            models = await codec.models(
+                session, self.manager, refresh=bool(command.get("refresh"))
             )
-            return _agent_response(name, command_id, data=pi_models_to_canonical(payload))
+            return response_record(name, command_id, data=models)
         if name == "dialog_response":
             dialog_id = command.get("dialog_id")
             response = command.get("response")
@@ -1138,35 +1246,16 @@ class ClientConnection:
                 raise CanonicalCommandError("dialog_response needs a dialog_id")
             if not isinstance(response, dict):
                 raise CanonicalCommandError("dialog_response needs a response object")
-            kind = self._dialog_kind(session, dialog_id)
-            if kind is None:
-                raise RequestError("not_found", f"unknown dialog {dialog_id!r}")
-            session.resolve_ui(dialog_id, pi_dialog_response_to_pi(kind, response))
-            return _agent_response(name, command_id)
-        if name == "shutdown":
-            session.close()
-            return _agent_response(name, command_id)
-        rpc = await session.rpc(
-            pi_command_from_canonical(command),
-            timeout=timeout if timeout is not None else AGENT_COMMAND_TIMEOUT,
+            codec.resolve_dialog(session, dialog_id, response)
+            return response_record(name, command_id)
+        return await codec.command(
+            session, name, command, command_id, timeout=timeout
         )
-        return canonical_response(
-            name, command_id, rpc, tokens=session.tokens, cost=session.cost
-        )
-
-    @staticmethod
-    def _dialog_kind(session: PiSession, dialog_id: str) -> str | None:
-        """Return the pi extension UI method for a pending dialog."""
-        for request in session.ui_snapshot()["requests"]:
-            if request.get("id") == dialog_id:
-                method = request.get("method")
-                return method if isinstance(method, str) else None
-        return None
 
     async def _pi_command(self, message: dict) -> dict:
         session = self._require(message)
-        if session.kind != "pi":
-            raise RequestError("bad_request", "session is not a pi session")
+        if not _is_pi(session):
+            raise _legacy_pi_error()
         command = message.get("command")
         if not isinstance(command, dict):
             raise RequestError("bad_request", "command must be an object")
@@ -1187,19 +1276,29 @@ class ClientConnection:
         session = self._require(message)
         title = str(message.get("title", session.title))[:200]
         session.title = title
-        if session.kind == "pi" and title:
+        codec = _agent_codec(session)
+        if codec is not None and title and "set_session_name" in codec.commands:
             try:
-                response = await session.rpc(
-                    {"type": "set_session_name", "name": title}, timeout=5.0
+                await codec.command(
+                    session,
+                    "set_session_name",
+                    {"type": "set_session_name", "name": title},
+                    "rename",
+                    timeout=5.0,
                 )
-                if not response.get("success"):
-                    log.debug(
-                        "pi session %s: set_session_name failed: %s",
-                        session.id,
-                        response.get("error"),
-                    )
-            except (PiError, PiSessionClosed, TimeoutError) as exc:
-                log.debug("pi session %s: set_session_name failed: %s", session.id, exc)
+            except (
+                CanonicalCommandError,
+                CodecError,
+                PiError,
+                PiSessionClosed,
+                AgentError,
+                AgentClosed,
+                AgentTimeout,
+                TimeoutError,
+            ) as exc:
+                # A rename is cosmetic; an adapter that cannot store a name
+                # must not fail the request.
+                log.debug("agent session %s: rename failed: %s", session.id, exc)
         self.manager.notify()
         return {"session": session.info()}
 
@@ -1208,7 +1307,7 @@ class ClientConnection:
         if session is None:
             return
         if session.kind != "shell":
-            raise RequestError("bad_request", "pi sessions take RPC commands, not input")
+            raise RequestError("bad_request", "agent sessions take commands, not keystrokes")
         data = message.get("data", "")
         if isinstance(data, str) and data:
             session.write(data.encode("utf-8"))
@@ -1217,7 +1316,7 @@ class ClientConnection:
         session = self.manager.get(str(message.get("session_id", "")))
         if session is not None:
             if session.kind != "shell":
-                raise RequestError("bad_request", "pi sessions do not have a terminal size")
+                raise RequestError("bad_request", "agent sessions do not have a terminal size")
             session.resize(
                 int(message.get("cols", session.cols)),
                 int(message.get("rows", session.rows)),
@@ -1282,7 +1381,35 @@ class ClientConnection:
             visibility=str(message.get("visibility", "public")),
         )
         try:
-            if spawn and rpc:
+            if spawn and rpc and str(message.get("adapter") or "pi") != "pi":
+                argv = self._resolve_agent(
+                    agent, None, message.get("command"), False, rpc=True
+                )
+                if isinstance(argv, str):
+                    argv = shlex.split(argv)
+                if not argv:
+                    raise RequestError("bad_request", "structured agent command is empty")
+                adapter = str(message.get("adapter"))
+                session = await self.manager.create_agent(
+                    argv,
+                    cwd=message.get("cwd"),
+                    env=message.get("env"),
+                    title=message.get("title") or task,
+                    parent_id=message.get("parent_id") or None,
+                    origin="agent",
+                    role="agent",
+                    agent=agent,
+                    task=task,
+                    visibility=str(message.get("visibility", "public")),
+                    adapter=adapter,
+                )
+                if task:
+                    try:
+                        await session.prompt(task)
+                    except (AgentError, TimeoutError) as exc:
+                        self.manager.kill(session.id, tree=False)
+                        raise RequestError("agent_error", str(exc)) from exc
+            elif spawn and rpc:
                 argv = self._resolve_agent(agent, None, message.get("command"), False, rpc=True)
                 if isinstance(argv, str):
                     argv = shlex.split(argv)
@@ -1345,41 +1472,17 @@ class ClientConnection:
         wait = bool(message.get("wait", not interactive))
         if not wait:
             return {"session_id": session.id, "session": session.info()}
-        if session.kind == "pi":
+        codec = _agent_codec(session)
+        if codec is not None:
             timeout = _optional_float(message.get("timeout"))
             settled = await session.wait_for_settled(timeout)
-            result = await self._pi_result(session, settled=settled)
+            result = await codec.result(session, settled=settled)
             result["timed_out"] = not settled
             return result
         code = await session.wait(timeout=_optional_float(message.get("timeout")))
         result = self._output_result(session, message)
         result["exit_code"] = code
         result["timed_out"] = code is None
-        return result
-
-    async def _pi_result(self, session: PiSession, *, settled: bool) -> dict:
-        """Collect the structured result of a pi sub-agent."""
-        result: dict[str, object] = {
-            "session_id": session.id,
-            "settled": settled,
-            "exit_code": session.exit_code,
-        }
-        if session.dead:
-            return result
-        try:
-            text = await session.rpc(
-                {"type": "get_last_assistant_text"}, timeout=5.0
-            )
-            if text.get("success"):
-                result["text"] = (text.get("data") or {}).get("text")
-            state = await session.rpc({"type": "get_state"}, timeout=5.0)
-            if state.get("success"):
-                result["state"] = state.get("data") or {}
-            stats = await session.rpc({"type": "get_session_stats"}, timeout=5.0)
-            if stats.get("success"):
-                result["stats"] = stats.get("data") or {}
-        except (PiError, PiSessionClosed, TimeoutError) as exc:
-            result["error"] = str(exc)
         return result
 
     def _output_result(self, session: Session, message: dict) -> dict:
@@ -1402,7 +1505,7 @@ class ClientConnection:
     def _send(self, message: dict) -> dict:
         session = self._require(message)
         if session.kind != "shell":
-            raise RequestError("bad_request", "pi sessions take RPC commands, not input")
+            raise RequestError("bad_request", "agent sessions take commands, not keystrokes")
         data = message.get("data", "")
         if not isinstance(data, str):
             raise RequestError("bad_request", "data must be a string")
@@ -1415,7 +1518,7 @@ class ClientConnection:
     def _capture(self, message: dict) -> dict:
         session = self._require(message)
         if session.kind != "shell":
-            raise RequestError("bad_request", "pi sessions have no byte stream to capture")
+            raise RequestError("bad_request", "agent sessions have no byte stream to capture")
         fmt = str(message.get("format", "base64"))
         start, end, data = session.capture(
             _nonneg_int(message.get("since")), strip_ansi=bool(message.get("strip_ansi", False))
@@ -1432,8 +1535,10 @@ class ClientConnection:
         until = str(message.get("until", "exit"))
         timeout = _optional_float(message.get("timeout"))
         if until == "settled":
-            if session.kind != "pi":
-                raise RequestError("bad_request", "until=settled is only for pi sessions")
+            if _agent_codec(session) is None:
+                raise RequestError(
+                    "bad_request", "until=settled is only for agent sessions"
+                )
             matched = await session.wait_for_settled(timeout)
             return {
                 "matched": matched,
@@ -1442,7 +1547,8 @@ class ClientConnection:
             }
         if until != "exit" and session.kind != "shell":
             raise RequestError(
-                "bad_request", "only until=exit or until=settled is available for pi sessions"
+                "bad_request",
+                "only until=exit or until=settled is available for agent sessions",
             )
         if until == "text":
             pattern = message.get("pattern")
@@ -1495,22 +1601,6 @@ def _valid_command(command) -> list[str] | str | None:
         return command
     log.debug("ignoring invalid command %r", command)
     return None
-
-
-def _agent_response(name: str, command_id: str, *, data: dict | None = None) -> dict:
-    """Build one successful canonical ``response`` record.
-
-    A command the *agent* refuses is not a transport error: pi's own
-    ``success:false`` becomes a failed canonical response through
-    :func:`webterm.integration.pi.canonical_response`.
-    """
-    return {
-        "type": "response",
-        "id": command_id,
-        "command": name,
-        "success": True,
-        "data": data or {},
-    }
 
 
 def _optional_float(value) -> float | None:

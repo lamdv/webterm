@@ -77,6 +77,50 @@ BLOCK_TYPES = frozenset({"text", "thinking", "tool_call", "image", "file"})
 #: Dialog kinds a core adapter may need to validate.
 DIALOG_KINDS = frozenset({"confirm", "select", "input", "editor", "notify"})
 
+#: Commands every canonical agent answers.
+CORE_COMMANDS = frozenset(
+    {
+        "prompt",
+        "abort",
+        "get_state",
+        "get_snapshot",
+        "get_history",
+        "list_models",
+        "set_model",
+        "shutdown",
+    }
+)
+
+#: Capability-gated commands: an adapter may refuse them with ``success:false``.
+OPTIONAL_COMMANDS = frozenset(
+    {
+        "steer",
+        "follow_up",
+        "clear_queue",
+        "set_thinking",
+        "set_session_name",
+        "compact",
+        "fork",
+        "clone",
+        "switch_session",
+        "export",
+        "dialog_response",
+        "raw",
+    }
+)
+
+#: Every command a canonical agent may receive.
+CANONICAL_COMMANDS = CORE_COMMANDS | OPTIONAL_COMMANDS
+
+
+class CanonicalCommandError(ValueError):
+    """A canonical command an adapter cannot express.
+
+    This is a validation error, not an agent refusal: the wire answer is a
+    transport error asking the caller to fix the command, whereas an agent
+    that chooses not to run a valid command answers ``success:false``.
+    """
+
 
 # ---------------------------------------------------------------------------
 # Capabilities
@@ -277,6 +321,27 @@ def command_name(command: dict[str, Any]) -> str:
     if not isinstance(name, str) or not name:
         raise ProtocolError("command.type must be a non-empty string")
     return name
+
+
+def response_record(
+    name: str, command_id: str, *, data: dict | None = None, error: str | None = None
+) -> dict[str, Any]:
+    """Build one canonical ``response`` record.
+
+    A success carries ``data`` (possibly empty); a failure carries ``error`` and
+    no data, so clients cannot mistake a refusal for a result.
+    """
+    record: dict[str, Any] = {
+        "type": "response",
+        "id": command_id,
+        "command": name,
+        "success": error is None,
+    }
+    if error is None:
+        record["data"] = data or {}
+    else:
+        record["error"] = error
+    return record
 
 
 def validate_event(event: object) -> dict[str, Any]:

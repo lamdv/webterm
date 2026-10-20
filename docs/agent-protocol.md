@@ -1,11 +1,12 @@
 # Agent protocol and `AgentSession`
 
-Status: **canonical core, pi shadow path, and canonical command surface
-implemented** — the JSONL protocol, generic `AgentSession`, manager spawn path,
-fake-agent conformance suite, pi translation layer, opt-in `agent_api` server
-stream, the canonical `agent` command envelope, and the experimental
-`?agentui=1` browser view that drives it. pi still runs through its existing
-`PiSession`; `webtermctl` is not wired to the generic layer yet.
+Status: **implemented end to end** — the JSONL protocol, generic `AgentSession`,
+manager spawn path, fake-agent conformance suite, pi translation layer, the
+canonical `agent` command envelope, history paging, shadowed extension UI, and
+native agent sessions over the browser and control sockets. `kind` is `"agent"`
+for every structured session and `adapter` selects the codec: pi is `"pi"`,
+anything else speaks the canonical protocol itself. pi's *process* machinery is
+still its own; only the client-facing surface is unified.
 
 This document defines the agent-agnostic layer. The goal is to separate three
 concerns that pi currently handles together:
@@ -174,7 +175,7 @@ The current pi adapter answers:
 |---|---|
 | `prompt`, `steer`, `follow_up` | one pi prompt; the mid-run forms set `streamingBehavior` |
 | `abort`, `get_state`, `set_model`, `set_thinking`, `set_session_name`, `compact`, `clear_queue` | one pi RPC call, with the response data normalized |
-| `get_snapshot` | newest transcript page plus `cursor.seq`; also emits `agent_resync` when the connection opted into the shadow stream |
+| `get_snapshot` | newest transcript page plus `cursor.seq`; also emits `agent_resync` (always for native agents, for pi only when the connection opted in) |
 | `get_history` | one backwards page before `before` |
 | `list_models` | the cached model probe for the session's cwd |
 | `dialog_response` | the server-owned dialog queue; `approved` becomes pi's `confirmed` |
@@ -359,16 +360,19 @@ result:
   clone, compaction, export, and images.
 
 `tests/test_pi_canonical.py` checks the mapping against both synthetic
-realistic pi records and the `fake_pi.py` process. pi's existing session and
-browser paths are untouched.
+realistic pi records and the `fake_pi.py` process.
+`webterm/integration/pi/codec.py` wraps that translation as `PiCodec`, the
+adapter the server sees.
 
-### Shadow server surface
+### Server surface
 
-The canonical projection is now available as an opt-in shadow stream, without
-changing the legacy pi messages:
+Every structured session is `kind: "agent"`, and its `adapter` selects a codec.
+Native agents are canonical end to end; pi also keeps the legacy stream for its
+own view:
 
-- Send `{"type":"agent_api","enabled":true}` to enable it for a connection, or
-  pass `"agent_api":true` with `subscribe`.
+- Send `{"type":"agent_api","enabled":true}` to enable pi's canonical shadow
+  stream for a connection, or pass `"agent_api":true` with `subscribe`. Native
+  agents need no flag: their events are the only stream they have.
 - `agent_resync` mirrors `pi_resync`: `{type, session_id, entries, has_more,
   first_entry_id, state, dialogs, ui, commands, capabilities, cursor}`.
 - `agent_event` mirrors each translated `pi_event`: `{type, session_id, seq,
@@ -394,22 +398,44 @@ The browser can opt in with `?agentui=1`. `agent.js` renders the canonical
 transcript, dialogs, and backwards history paging (`agent.get_history` through
 the envelope), and `app.js` drives it with `prompt`/`steer`/`follow_up`,
 `abort`, `dialog_response`, and `get_history`. The legacy pi view remains the
-default and keeps using `pi` / `pi_ui_response` / `pi_history`.
+default for pi sessions and keeps using `pi` / `pi_ui_response` / `pi_history`.
+
+A native agent (`adapter` other than `"pi"`) has no legacy channel: it is
+subscribed with `agent_resync` and live `agent_event`s immediately, and the
+canonical view is its only renderer. `agent_api` therefore only gates pi's
+shadow stream.
+
+### Codecs
+
+`session.kind` is `"shell"` or `"agent"`; `session.adapter` names the dialect
+behind a structured session. The server reaches every adapter through one seam,
+`webterm/agent/codec.py`:
+
+| Adapter | Codec | Talks to | Capabilities |
+|---|---|---|---|
+| `"generic"` (any unregistered name) | `NativeCodec` | `AgentSession`, whose child already speaks canonical JSONL | `AgentSession.capabilities` |
+| `"pi"` | `PiCodec` | `PiSession`, whose child speaks pi RPC | `PI_CAPABILITIES` |
+
+A codec answers `capabilities`, `snapshot`, `history`, `models`,
+`resolve_dialog`, `command`, and `result` (the structured result of a spawn),
+and owns the set of commands its adapter accepts. `server.py` looks the codec up
+from `session.adapter` once and never branches on pi again; adding an adapter
+means adding a codec, plus a translator module when its child speaks another
+dialect.
 
 ## Next steps
 
 1. **MVA reference implementation**: `mva-core` speaks this protocol directly
    over `mva --mode rpc`; the worker-thread run loop, per-session cancellation,
-   dialog round trip, and JSONL session store are the prerequisites.
-2. **Move pi behind `AgentSession`**: introduce the codec seam, migrate
-   `PiSession`'s generic process/replay/dialog machinery, and change `kind`
-   from `"pi"` to `"agent"` with `adapter: "pi"`. The `agent` envelope then
-   answers from `AgentSession` instead of the pi-specific branch.
+   dialog round trip, and JSONL session store are the prerequisites. The
+   adapter name is `"mva"` (falling back to `NativeCodec`) once it announces a
+   canonical `hello`.
+2. **Share pi's process machinery**: `PiSession` keeps its own fork/replay/dialog
+   code while `AgentSession` has the canonical equivalent. Folding pi's process
+   handling behind `AgentSession` with a codec on the child side is mechanical
+   cleanup now that both speak the same client surface.
 3. **Capability-driven UI**: hide queue/steer, model picker, thinking, cost,
    fork/tree, and export when the adapter does not advertise them.
-4. **Generic sessions everywhere**: teach `webtermctl` / the control socket to
-   spawn a structured agent session so sub-agents can be canonical sessions
-   rather than pi-shaped ones.
 
 ## Non-goals
 

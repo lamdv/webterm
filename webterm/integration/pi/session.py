@@ -120,9 +120,16 @@ class PiSubscriber(Protocol):
 
 
 class PiSession:
-    """A ``pi --mode rpc`` child, its JSONL stream, and its subscribers."""
+    """A ``pi --mode rpc`` child, its JSONL stream, and its subscribers.
 
-    kind = "pi"
+    pi is one adapter behind the canonical agent surface: clients see
+    ``kind: "agent"`` with ``adapter: "pi"``, and the legacy ``pi_*``
+    messages stay available for pi's own view.  The dialect translation lives
+    in :mod:`webterm.integration.pi.canonical`; :class:`PiCodec` is the seam.
+    """
+
+    kind = "agent"
+    adapter = "pi"
     PI_STDIN_GRACE = PI_STDIN_GRACE
     PI_TERM_GRACE = PI_TERM_GRACE
     PI_FORCE_GRACE = PI_FORCE_GRACE
@@ -233,6 +240,7 @@ class PiSession:
             "id": self.id,
             "title": self.title,
             "kind": self.kind,
+            "adapter": self.adapter,
             "cols": self.cols,
             "rows": self.rows,
             "pid": self.pid,

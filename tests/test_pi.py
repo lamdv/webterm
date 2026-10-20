@@ -511,7 +511,8 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["text"], "fake reply")
         self.assertEqual(data["state"]["model"]["id"], "fake-model")
         session = self.manager.get(data["session_id"])
-        self.assertEqual(session.kind, "pi")
+        self.assertEqual(session.kind, "agent")
+        self.assertEqual(session.adapter, "pi")
         self.assertEqual(session.role, "agent")
         self.assertEqual(session.task, "do the thing")
 
@@ -700,7 +701,9 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
             lambda message: message.get("type") == "result" and message.get("id") == "c1"
         )
         session = result["result"]["session"]
-        self.assertEqual(session["kind"], "pi")
+        # pi is one adapter behind the canonical agent surface.
+        self.assertEqual(session["kind"], "agent")
+        self.assertEqual(session["adapter"], "pi")
         self.assertTrue(session["trusted"])
         session_id = session["id"]
 
@@ -709,7 +712,8 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
             lambda message: message.get("type") == "attached"
             and message["session"]["id"] == session_id
         )
-        self.assertEqual(attached["session"]["kind"], "pi")
+        self.assertEqual(attached["session"]["kind"], "agent")
+        self.assertEqual(attached["session"]["adapter"], "pi")
         resync = await self.client.recv_json_until(
             lambda message: message.get("type") == "pi_resync"
             and message.get("session_id") == session_id

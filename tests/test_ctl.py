@@ -18,6 +18,7 @@ from webterm.server import ServerHandle, start_server
 from webterm.session import SessionManager
 
 FAKE_PI = Path(__file__).with_name("fake_pi.py")
+FAKE_AGENT = Path(__file__).with_name("fake_agent.py")
 
 
 class CtlBase(unittest.IsolatedAsyncioTestCase):
@@ -35,6 +36,7 @@ class CtlBase(unittest.IsolatedAsyncioTestCase):
                 "interactive": [sys.executable, str(FAKE_PI)],
                 "rpc": [sys.executable, str(FAKE_PI)],
             },
+            "native": {"rpc": [sys.executable, str(FAKE_AGENT)]},
         }
         self.handle: ServerHandle = await start_server(
             "127.0.0.1", 0, self.manager, control_socket=self.socket_path, profiles=self.profiles
@@ -135,6 +137,31 @@ class CtlCommandTests(CtlBase):
         self.assertEqual(code, 0)
         self.assertIn("thinking_level", json.loads(out)["response"]["data"])
         await self.run_ctl("kill", session_id)
+
+    async def test_spawn_with_a_native_adapter(self) -> None:
+        code, out = await self.run_ctl(
+            "--json",
+            "spawn",
+            "--agent",
+            "native",
+            "--rpc",
+            "--adapter",
+            "generic",
+            "--task",
+            "do it",
+        )
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertTrue(payload["settled"])
+        self.assertFalse(payload["timed_out"])
+        code, out = await self.run_ctl("--json", "list")
+        self.assertEqual(code, 0)
+        sessions = {item["id"]: item for item in json.loads(out)["sessions"]}
+        spawned = sessions[payload["session_id"]]
+        self.assertEqual(spawned["kind"], "agent")
+        self.assertEqual(spawned["adapter"], "generic")
+        self.assertEqual(spawned["task"], "do it")
+        await self.run_ctl("kill", payload["session_id"])
 
     async def test_spawn_without_agent_or_command_fails(self) -> None:
         code, _ = await self.run_ctl("spawn")

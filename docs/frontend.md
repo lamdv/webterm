@@ -168,7 +168,8 @@ Unknown ids are ignored.
   at, seeded on first sight (so a reconnect does not light up the sidebar) and
   reset whenever the tab becomes active. The
   right-most control is always the close button: tagged sessions
-  (`session.agent`, else `pi` for `kind:"pi"`, else `agent`) render it as a
+  (`session.agent`, else `pi` for the pi adapter, else the adapter name) render
+  it as a
   `.tab-tag-close` pill that shows the tag and swaps it for a `×` on hover,
   while untagged shells keep the plain `.tab-close` `×`. A click sends
   `{"type":"kill"}` (which cascades to the session's descendants server-side).
@@ -181,11 +182,21 @@ Unknown ids are ignored.
   updates tab highlighting, and fits/focuses the terminal on the next animation
   frame plus a 50 ms follow-up (needed when a terminal is first made visible).
 
+### Structured views
+
+Every structured session reports `kind: "agent"`; `session.adapter` selects the
+renderer. `reconcileSessions` gives a native canonical agent (`adapter` other
+than `"pi"`) the canonical view (`ensureAgentView`) and subscribes without
+`agent_api`, because it has no `pi_*` stream at all. pi keeps the pi view below
+unless `?agentui=1` requests the canonical one. Both kinds are routed away from
+xterm by their `kind`.
+
 ### Pi view
 
-`ensurePiView` creates `window.WebtermPi.create(session, hooks)` for
-`kind:"pi"` sessions. The view is hydrated by server `pi_resync` snapshots and
-then consumes `pi_event` records; it owns no persistence. Hooks map to the
+`ensurePiView` creates `window.WebtermPi.create(session, hooks)` for pi-backed
+sessions (`session.adapter === "pi"`), which keep this view unless `?agentui=1`
+asks for the canonical one. The view is hydrated by server `pi_resync` snapshots
+and then consumes `pi_event` records; it owns no persistence. Hooks map to the
 generic RPC envelope (`onCommand`), an explicit snapshot refresh (`onRefresh`),
 backwards transcript paging (`onHistory`), and `pi_export` (`onExport`). A
 snapshot carries only the newest entries plus `hasMore`/`firstEntryId`; the

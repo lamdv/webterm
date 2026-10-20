@@ -396,6 +396,13 @@
     }
   }
 
+  // ``kind: "agent"`` is any structured agent; ``adapter`` says which dialect
+  // its server-side codec speaks.  pi keeps its own view unless the canonical
+  // view was explicitly requested.
+  function isPiSession(session) {
+    return Boolean(session) && session.kind === "agent" && session.adapter === "pi";
+  }
+
   function reconcileSessions(sessions) {
     sessionsMeta = sessions;
     trackAnswers(sessions);
@@ -408,13 +415,16 @@
 
     for (const session of sessions) {
       seen.add(session.id);
-      if (session.kind === "pi") {
-        if (USE_AGENT_UI) ensureAgentView(session);
+      if (session.kind === "agent") {
+        // A native canonical agent has no pi view to fall back to; pi's view
+        // stays the default for pi sessions until the canonical one replaces it.
+        const canonical = !isPiSession(session) || USE_AGENT_UI;
+        if (canonical) ensureAgentView(session);
         else ensurePiView(session);
         if (!subscribed.has(session.id)) {
           subscribed.add(session.id);
           const subscribe = { type: "subscribe", session_id: session.id };
-          if (USE_AGENT_UI) subscribe.agent_api = true;
+          if (canonical) subscribe.agent_api = true;
           send(subscribe);
         }
         continue;
@@ -1089,7 +1099,8 @@
 
   function tabTag(session) {
     if (session.agent) return String(session.agent);
-    if (session.kind === "pi") return "pi";
+    if (isPiSession(session)) return "pi";
+    if (session.kind === "agent") return String(session.adapter || "agent");
     if (session.role === "agent") return "agent";
     return "";
   }

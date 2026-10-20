@@ -17,8 +17,8 @@ features.
 
 ## Goals
 
-- A `kind: "pi"` session whose view is a chat/console UI, in the same sidebar
-  and tree as shell sessions.
+- A structured agent session (`kind: "agent"`, `adapter: "pi"`) whose view is a
+  chat/console UI, in the same sidebar and tree as shell sessions.
 - Server-owned sessions that survive browser refresh, sleep, and network
   changes, using the same auth and remote-access story as shells.
 - Structured rendering: streamed text, thinking blocks, tool cards, queue
@@ -32,7 +32,10 @@ renderers (`ctx.ui.custom()`), and a web extension API.
 ## Session model
 
 `SessionManager` becomes a registry for two session kinds. `kind` is part of
-`Session.info()` and every `sessions` / `attached` payload.
+`Session.info()` and every `sessions` / `attached` payload. Structured sessions
+are `kind: "agent"`; `adapter` names the dialect behind them (`"pi"` here), and
+the server reaches every adapter through a codec (see
+[agent-protocol.md](agent-protocol.md#codecs)).
 
 | Concern | shell | pi |
 |---|---|---|
@@ -57,7 +60,8 @@ can replace the union.
 
 Additional `info()` fields:
 
-- `kind`: `"shell"` or `"pi"`.
+- `kind`: `"shell"` or `"agent"`.
+- `adapter`: `"pi"` for pi sessions, another name for a native canonical agent.
 - `closing`: true while a two-phase shutdown is in progress.
 - `trusted`: `true`, `false`, or `null` for pi sessions, for the project-trust
   chip.
@@ -235,7 +239,7 @@ Keep the existing text-JSON control plane and binary terminal frames. Add:
   session, which is what makes the model picker usable before one exists.
 - Extension UI: `pi_ui_request`, `pi_ui_resolved`, `pi_ui_response`, plus a
   small replayed `ui_state` for status/widget/title.
-- `kind`, `closing`, and `trusted` on session metadata.
+- `kind`, `adapter`, `closing`, and `trusted` on session metadata.
 
 `input` and binary offset frames remain terminal-only. Sending `input` or
 `resize` to a pi session is a request error, not a silent no-op.

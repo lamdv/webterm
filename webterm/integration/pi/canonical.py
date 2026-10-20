@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...agent.protocol import Capabilities
+from ...agent.protocol import CanonicalCommandError, Capabilities, response_record
 
 #: Capabilities of the pi adapter.  pi exposes more than the canonical core
 #: requires; the extra features stay available to pi-specific UI.
@@ -996,10 +996,6 @@ PI_RAW_DENYLIST = frozenset({"extension_ui_response"})
 _STREAMING_BEHAVIOR = {"steer": "steer", "follow_up": "followUp"}
 
 
-class CanonicalCommandError(ValueError):
-    """A canonical command that the pi adapter cannot express."""
-
-
 def _require_message(command: dict) -> str:
     message = command.get("message")
     if not isinstance(message, str) or not message.strip():
@@ -1105,18 +1101,15 @@ def canonical_response(
 ) -> dict:
     """Build a canonical ``response`` record from a pi RPC response."""
     payload = response if isinstance(response, dict) else {}
-    record: dict[str, Any] = {
-        "type": "response",
-        "id": command_id,
-        "command": name,
-        "success": payload.get("success") is not False,
-    }
-    if not record["success"]:
-        record["error"] = str(payload.get("error") or f"{name} failed")
-        return record
+    if payload.get("success") is False:
+        return response_record(
+            name, command_id, error=str(payload.get("error") or f"{name} failed")
+        )
     data = payload.get("data")
     if name == "get_state":
-        record["data"] = pi_state_to_canonical(data, tokens=tokens, cost=cost)
-    else:
-        record["data"] = canonical_command_data(name, data)
-    return record
+        return response_record(
+            name,
+            command_id,
+            data=pi_state_to_canonical(data, tokens=tokens, cost=cost),
+        )
+    return response_record(name, command_id, data=canonical_command_data(name, data))
