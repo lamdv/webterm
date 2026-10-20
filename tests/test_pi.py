@@ -27,10 +27,13 @@ class Collector:
         self.events: list[tuple[int, dict]] = []
         self.ui_requests: list[dict] = []
         self.ui_resolved: list[tuple[str, str]] = []
+        #: The session's reported activity after each event was applied.
+        self.activity: list[str | None] = []
         self.exited = False
 
     def offer_pi_event(self, session, seq: int, record: dict) -> None:
         self.events.append((seq, record))
+        self.activity.append(session.info()["activity"])
 
     def offer_pi_ui_request(self, session, request: dict) -> None:
         self.ui_requests.append(request)
@@ -85,12 +88,33 @@ class PiSessionTests(unittest.IsolatedAsyncioTestCase):
         kinds = [record.get("type") for _, record in collector.events]
         self.assertIn("message_update", kinds)
         self.assertIn("agent_settled", kinds)
+
+        # The tab dot follows the activity phase: faint while pi thinks or runs
+        # a tool, bright while it streams an answer, nothing once settled.
+        transitions = [
+            (kind, phase)
+            for index, (kind, phase) in enumerate(zip(kinds, collector.activity, strict=True))
+            if phase != (collector.activity[index - 1] if index else None)
+        ]
+        self.assertEqual(
+            transitions,
+            [
+                ("agent_start", "thinking"),
+                ("tool_execution_start", "tool"),
+                ("tool_execution_end", "thinking"),
+                ("message_update", "answering"),
+                ("agent_settled", None),
+            ],
+        )
+
         seqs = [seq for seq, _ in collector.events]
         self.assertEqual(seqs, sorted(seqs))
         self.assertEqual(len(seqs), len(set(seqs)))
 
         info = session.info()
         self.assertFalse(info["streaming"])
+        self.assertIsNone(info["activity"])
+        self.assertEqual(info["answers"], 1)
         self.assertEqual(info["model"], "fake-model")
         self.assertEqual(info["tokens"], 8)
         self.assertAlmostEqual(info["cost"], 0.001)

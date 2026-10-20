@@ -40,6 +40,10 @@
   const subscribed = new Set();
   let activeId = localStorage.getItem("webterm.active") || null;
   let sessionsMeta = [];
+  // Per session, the number of completed answers the user has seen.  The
+  // server counts answers, so a tab keeps pulsing after one arrives until the
+  // tab is opened.  This is view state, so it lives in the browser.
+  const answeredSeen = new Map();
   let socket = null;
   let reconnectDelay = 500;
   let closedByPage = false;
@@ -353,6 +357,7 @@
 
   function reconcileSessions(sessions) {
     sessionsMeta = sessions;
+    trackAnswers(sessions);
     const knownBefore = new Set([...terminals.keys(), ...piViews.keys()]);
     const seen = new Set();
 
@@ -803,6 +808,45 @@
     return ordered;
   }
 
+  // The dot tells apart three states: faint internal work (thinking or a
+  // running tool), a bright pulse while an answer is being written, and a
+  // bright pulse for an answer the user has not opened yet.
+  function trackAnswers(sessions) {
+    for (const session of sessions) {
+      const answers = Number(session.answers) || 0;
+      // A session seen for the first time counts as read; otherwise every
+      // reconnect would light up the whole sidebar.
+      if (!answeredSeen.has(session.id)) answeredSeen.set(session.id, answers);
+      if (session.id === activeId) answeredSeen.set(session.id, answers);
+    }
+    const live = new Set(sessions.map((session) => session.id));
+    for (const id of Array.from(answeredSeen.keys())) {
+      if (!live.has(id)) answeredSeen.delete(id);
+    }
+  }
+
+  function hasUnreadAnswer(session) {
+    if (session.streaming || session.needs_input) return false;
+    const seen = answeredSeen.get(session.id);
+    return typeof seen === "number" && (Number(session.answers) || 0) > seen;
+  }
+
+  function activityDot(session) {
+    if (session.streaming) {
+      const quiet = session.activity === "thinking" || session.activity === "tool";
+      return { quiet, title: activityTitle(session.activity) };
+    }
+    if (hasUnreadAnswer(session)) return { quiet: false, title: "Unread answer" };
+    return null;
+  }
+
+  function activityTitle(activity) {
+    if (activity === "thinking") return "Agent is thinking";
+    if (activity === "tool") return "Agent is running a tool";
+    if (activity === "answering") return "Agent is answering";
+    return "Agent is working";
+  }
+
   function renderTabs() {
     // Don't rebuild the list under an in-progress inline rename.
     if (editingTabId !== null) return;
@@ -856,11 +900,12 @@
         tab.appendChild(children);
       }
 
-      if (session.streaming) {
-        const streaming = document.createElement("span");
-        streaming.className = "tab-streaming";
-        streaming.title = "Agent is working";
-        tab.appendChild(streaming);
+      const activity = activityDot(session);
+      if (activity) {
+        const dot = document.createElement("span");
+        dot.className = activity.quiet ? "tab-streaming quiet" : "tab-streaming";
+        dot.title = activity.title;
+        tab.appendChild(dot);
       }
 
       if (session.needs_input) {

@@ -52,6 +52,28 @@ EVENT_RING_BYTES = 1_000_000
 EVENT_RING_MIN = 64
 #: Extension UI methods that block pi until a matching response arrives.
 DIALOG_METHODS = frozenset({"select", "confirm", "input", "editor"})
+#: Phases of a run, reported as ``info()["activity"]``: what pi is doing right
+#: now.  It is ``None`` outside a run, i.e. before ``agent_start`` and after
+#: ``agent_settled``.
+ACTIVITY_THINKING = "thinking"
+ACTIVITY_TOOL = "tool"
+ACTIVITY_ANSWERING = "answering"
+#: Streamed message parts, from ``message_update`` records.
+STREAM_ACTIVITY = {
+    "text_start": ACTIVITY_ANSWERING,
+    "text_delta": ACTIVITY_ANSWERING,
+    "text_end": ACTIVITY_ANSWERING,
+    "thinking_start": ACTIVITY_THINKING,
+    "thinking_delta": ACTIVITY_THINKING,
+    "thinking_end": ACTIVITY_THINKING,
+    "toolcall_start": ACTIVITY_TOOL,
+    "toolcall_delta": ACTIVITY_TOOL,
+    "toolcall_end": ACTIVITY_TOOL,
+}
+#: Top-level tool lifecycle records.
+TOOL_RECORDS = frozenset(
+    {"tool_execution_start", "tool_execution_update", "tool_execution_end"}
+)
 
 
 class PiError(Exception):
@@ -153,6 +175,14 @@ class PiSession:
 
         self.seq = 0
         self.streaming = False
+        #: What the current run is doing (see the ``ACTIVITY_*`` constants), or
+        #: ``None`` when pi is idle.  The sidebar dot uses it to choose between
+        #: a faint and a bright pulse.
+        self.activity: str | None = None
+        #: Runs that produced at least one assistant message.  A client compares
+        #: this against what it has shown to detect unread answers.
+        self.answers = 0
+        self._run_answered = False
         self.model: str | None = None
         self.tokens = 0
         self.cost = 0.0
@@ -221,6 +251,8 @@ class PiSession:
             "trusted": self.trusted,
             "needs_input": bool(self._ui_requests),
             "streaming": self.streaming,
+            "activity": self.activity,
+            "answers": self.answers,
             "model": self.model,
             "tokens": self.tokens,
             "cost": round(self.cost, 6),
@@ -570,24 +602,67 @@ class PiSession:
         if record.get("type") == "extension_ui_request":
             self._handle_ui_request(record)
             return
+        changed = False
         if record.get("type") == "agent_start":
             self._settled_event.clear()
             if not self.streaming:
                 self.streaming = True
-                if self._on_change is not None:
-                    self._on_change()
+                changed = True
         elif record.get("type") == "agent_settled":
             self._settled_event.set()
             if self.streaming:
                 self.streaming = False
-                if self._on_change is not None:
-                    self._on_change()
+                changed = True
+            if self._run_answered:
+                self.answers += 1
+                self._run_answered = False
+                changed = True
         elif record.get("type") == "message_end":
-            self._track_usage(record.get("message"))
+            message = record.get("message")
+            self._track_usage(message)
+            if isinstance(message, dict) and message.get("role") == "assistant":
+                self._run_answered = True
+        if self._note_activity(record):
+            changed = True
+        if changed and self._on_change is not None:
+            self._on_change()
         self.seq += 1
         self._remember(self.seq, record, len(line))
         for subscriber in list(self._subscribers):
             subscriber.offer_pi_event(self, self.seq, record)
+
+    def _note_activity(self, record: dict) -> bool:
+        """Track what pi is doing now; True when ``activity`` changed.
+
+        Only records inside a run (``agent_start`` .. ``agent_settled``) carry a
+        phase, so compaction or a retry outside a run cannot leave the
+        sidebar dot pulsing forever.
+        """
+        kind = record.get("type")
+        phase: str | None
+        if kind == "agent_start":
+            phase = ACTIVITY_THINKING
+        elif kind == "agent_settled":
+            phase = None
+        elif not self.streaming:
+            return False
+        elif kind == "message_update":
+            # ``message_start`` deliberately carries no phase: the first content
+            # part (text, thinking, or a tool call) decides what pi is doing.
+            event = record.get("assistantMessageEvent")
+            phase = STREAM_ACTIVITY.get(event.get("type")) if isinstance(event, dict) else None
+            if phase is None:
+                return False
+        elif kind in TOOL_RECORDS:
+            # A finished tool hands the turn back to the model, which is
+            # thinking again until it streams something.
+            phase = ACTIVITY_THINKING if kind == "tool_execution_end" else ACTIVITY_TOOL
+        else:
+            return False
+        if phase == self.activity:
+            return False
+        self.activity = phase
+        return True
 
     def _track_usage(self, message: object) -> None:
         """Accumulate model, token, and cost totals from completed messages."""
@@ -751,6 +826,7 @@ class PiSession:
         self.dead = True
         self.closing = False
         self.streaming = False
+        self.activity = None
         self._cancel_timers()
         for timer in self._ui_timers.values():
             timer.cancel()

@@ -157,7 +157,14 @@ Unknown ids are ignored.
   `--depth` custom property, and a child whose parent is gone falls back to the
   root so nothing disappears. Trailing chips read left-to-right by how transient
   they are: cost (`$0.012`, agent sessions only), child count, a pulsing
-  streaming dot, a `!` for `needs_input`, and an `exit N` chip once dead. The
+  activity dot, a `!` for `needs_input`, and an `exit N` chip once dead. The
+  activity dot has two strengths. It breathes faintly (opacity `0` → `0.5`)
+  while the agent is thinking or running a tool (`session.activity`), and keeps
+  the bright expanding ring while text is being written — and while an answer
+  arrived that this tab has not been opened for. That last state is client-side:
+  `answeredSeen` maps a session id to the `answers` count the user has looked
+  at, seeded on first sight (so a reconnect does not light up the sidebar) and
+  reset whenever the tab becomes active. The
   right-most control is always the close button: tagged sessions
   (`session.agent`, else `pi` for `kind:"pi"`, else `agent`) render it as a
   `.tab-tag-close` pill that shows the tag and swaps it for a `×` on hover,

@@ -49,6 +49,36 @@ def respond(
 def emit_prompt_events(text: str) -> None:
     send({"type": "agent_start"})
     send({"type": "message_start", "message": {"role": "assistant", "content": []}})
+    send({"type": "message_update", "assistantMessageEvent": {"type": "thinking_start"}})
+    send(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "pondering"},
+        }
+    )
+    send(
+        {
+            "type": "message_update",
+            "assistantMessageEvent": {"type": "thinking_end", "content": "pondering"},
+        }
+    )
+    send(
+        {
+            "type": "tool_execution_start",
+            "toolCallId": "tool-1",
+            "toolName": "bash",
+            "args": {"command": "echo hi"},
+        }
+    )
+    send(
+        {
+            "type": "tool_execution_end",
+            "toolCallId": "tool-1",
+            "toolName": "bash",
+            "result": "hi",
+            "isError": False,
+        }
+    )
     for chunk in (text[:3], text[3:6], text[6:]):
         if not chunk:
             continue

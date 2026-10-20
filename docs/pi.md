@@ -61,6 +61,14 @@ Additional `info()` fields:
 - `closing`: true while a two-phase shutdown is in progress.
 - `trusted`: `true`, `false`, or `null` for pi sessions, for the project-trust
   chip.
+- `activity`: what the current run is doing — `"thinking"`, `"tool"`,
+  `"answering"` — or `null` when pi is idle. It is derived from the record
+  stream (`message_update` part types, `tool_execution_*`) and only changes when
+  the phase does, so a turn costs a handful of `sessions` updates, not one per
+  delta.
+- `answers`: runs that produced at least one assistant message, counted at
+  `agent_settled`. The browser remembers the value it has shown and compares, so
+  an answer that arrives while the tab is closed stays marked as unread.
 
 ## Process model
 
@@ -340,8 +348,9 @@ cascade and depth/session limits.
 - Delegation is agent-initiated: the bundled extension tools call `webtermctl`
   from inside the parent agent, so the agent decides when to spawn a child.
   There is no browser "delegate" action. Session rows show a pulsing dot while
-  a child agent is working, the model in the agent badge tooltip, and a cost
-  chip once usage is reported.
+  a child agent is working — faint while it thinks or runs a tool, bright while
+  it answers or has an unread answer — the model in the agent badge tooltip, and
+  a cost chip once usage is reported.
 - Subagent sessions start untrusted (`--no-approve`) and ephemeral
   (`--no-session`). Agent-origin extension dialogs are auto-cancelled when no
   viewer is attached.

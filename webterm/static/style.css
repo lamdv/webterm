@@ -1820,12 +1820,29 @@ textarea.pi-ui-input {
   animation: tab-streaming-pulse 1.4s ease-out infinite;
 }
 
+/* Internal work (thinking, a running tool) only breathes faintly; writing an
+   answer and an unread answer keep the bright ring. */
+.tab-streaming.quiet {
+  box-shadow: none;
+  animation: tab-streaming-breathe 1.8s ease-in-out infinite;
+}
+
 @keyframes tab-streaming-pulse {
   70% {
     box-shadow: 0 0 0 5px rgba(79, 156, 249, 0);
   }
   100% {
     box-shadow: 0 0 0 0 rgba(79, 156, 249, 0);
+  }
+}
+
+@keyframes tab-streaming-breathe {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 0.5;
   }
 }
 
