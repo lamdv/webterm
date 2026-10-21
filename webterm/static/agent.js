@@ -417,81 +417,222 @@
       metaEl.textContent = model ? String(model) : "";
     }
 
-    function blockContent(block, messageRole) {
-      const wrap = el("div", "agent-block");
-      if (!block || typeof block !== "object") {
-        renderPlain(wrap, String(block || ""));
-        return wrap;
-      }
-      if (block.type === "text") {
-        if (messageRole === "assistant") renderAnswer(wrap, block.text || "");
-        else renderText(wrap, block.text || "");
-        return wrap;
-      }
-      if (block.type === "thinking") {
-        const details = el("details", "agent-thinking");
-        const summary = el("summary", "", "Thinking");
-        renderPre(details, block.text || "");
-        details.prepend(summary);
-        wrap.appendChild(details);
-        return wrap;
-      }
-      if (block.type === "tool_call") {
-        const card = el("div", "agent-tool");
-        const head = el("div", "agent-tool-head");
-        head.append(el("span", "agent-tool-name", block.name || "tool"));
-        const status = state.toolState.get(block.call_id);
-        if (status) {
-          const chip = el(
-            "span",
-            "agent-tool-status" + (status.isError ? " error" : status.done ? " ok" : ""),
-            status.done ? (status.isError ? "error" : "done") : "running…"
-          );
-          head.append(chip);
-        }
-        card.append(head);
-        if (block.args && Object.keys(block.args).length) {
-          renderPre(card, JSON.stringify(block.args, null, 2), "agent-tool-args");
-        } else if (block.arguments_text) {
-          renderPre(card, block.arguments_text, "agent-tool-args");
-        }
-        if (status && status.output) {
-          renderPre(card, status.output, "agent-tool-output");
-        }
-        wrap.appendChild(card);
-        return wrap;
-      }
-      if (block.type === "image") {
-        wrap.appendChild(el("div", "agent-image", "[image " + (block.mime_type || "") + "]"));
-        return wrap;
-      }
-      if (block.type === "file") {
-        wrap.appendChild(el("div", "agent-file", "[file]"));
-        return wrap;
-      }
-      renderPre(wrap, JSON.stringify(block, null, 2), "agent-pre");
-      return wrap;
+    /** Rendered entries kept between renders, keyed by entry id. */
+    const renderedEntries = new Map();
+
+    /** Per-block UI state (a thinking block's open flag), keyed by entry id and
+     * block index so it outlives a rebuild of the transcript. */
+    const blockOpen = new Map();
+
+    function blockKind(block) {
+      if (!block || typeof block !== "object") return "plain";
+      if (block.type === "tool_call") return "tool_call:" + String(block.call_id || "");
+      return String(block.type || "unknown");
     }
 
-    function renderMessage(entry, isLive) {
+    function blockSignature(block) {
+      if (!block || typeof block !== "object") return JSON.stringify(String(block || ""));
+      if (block.type === "tool_call") {
+        const status = state.toolState.get(block.call_id) || null;
+        return JSON.stringify([
+          block.name || "",
+          block.args && Object.keys(block.args).length ? block.args : null,
+          block.arguments_text || "",
+          status ? [status.done, status.isError, status.output] : null,
+        ]);
+      }
+      return JSON.stringify(block);
+    }
+
+    function entryKey(entry, index) {
+      return entry && entry.id ? String(entry.id) : "index:" + index;
+    }
+
+    /** What an entry's DOM depends on structurally; streamed text is excluded so
+     * deltas patch the existing nodes instead of rebuilding them. */
+    function structureSignature(entry, blocks) {
+      const extra = entry.role === "tool" || !blocks.length ? textOfEntry(entry) : "";
+      return [
+        entry.role || "",
+        entry.is_error ? "error" : "",
+        entry.optimistic ? "optimistic" : "",
+        blocks.map(blockKind).join("|"),
+        extra,
+      ].join("\u0001");
+    }
+
+    function renderToolCard(wrap, block) {
+      const card = el("div", "agent-tool");
+      const head = el("div", "agent-tool-head");
+      head.append(el("span", "agent-tool-name", block.name || "tool"));
+      const status = state.toolState.get(block.call_id);
+      if (status) {
+        const chip = el(
+          "span",
+          "agent-tool-status" + (status.isError ? " error" : status.done ? " ok" : ""),
+          status.done ? (status.isError ? "error" : "done") : "running…"
+        );
+        head.append(chip);
+      }
+      card.append(head);
+      if (block.args && Object.keys(block.args).length) {
+        renderPre(card, JSON.stringify(block.args, null, 2), "agent-tool-args");
+      } else if (block.arguments_text) {
+        renderPre(card, block.arguments_text, "agent-tool-args");
+      }
+      if (status && status.output) {
+        renderPre(card, status.output, "agent-tool-output");
+      }
+      wrap.appendChild(card);
+    }
+
+    /** Bring one block's DOM up to date in place where the block type allows. */
+    function fillBlock(record, block, messageRole) {
+      const wrap = record.node;
+      if (!block || typeof block !== "object") {
+        const text = String(block || "");
+        if (record.text === text) return;
+        record.text = text;
+        wrap.innerHTML = "";
+        renderPlain(wrap, text);
+        return;
+      }
+      if (block.type === "text") {
+        const text = String(block.text || "");
+        if (record.text === text) return;
+        record.text = text;
+        wrap.innerHTML = "";
+        if (messageRole === "assistant") renderAnswer(wrap, text);
+        else renderText(wrap, text);
+        return;
+      }
+      if (block.type === "thinking") {
+        const text = String(block.text || "");
+        if (!record.pre) {
+          const details = el("details", "agent-thinking");
+          const pre = el("pre", "agent-pre", text);
+          details.append(el("summary", "", "Thinking"), pre);
+          details.open = blockOpen.get(record.key) === true;
+          details.addEventListener("toggle", () => {
+            blockOpen.set(record.key, Boolean(details.open));
+          });
+          wrap.appendChild(details);
+          record.pre = pre;
+          record.text = text;
+          return;
+        }
+        if (record.text !== text) {
+          record.text = text;
+          record.pre.textContent = text;
+        }
+        return;
+      }
+      if (block.type === "tool_call") {
+        const signature = blockSignature(block);
+        if (record.sig === signature) return;
+        record.sig = signature;
+        wrap.innerHTML = "";
+        renderToolCard(wrap, block);
+        return;
+      }
+      const signature = blockSignature(block);
+      if (record.sig === signature) return;
+      record.sig = signature;
+      wrap.innerHTML = "";
+      if (block.type === "image") {
+        wrap.appendChild(el("div", "agent-image", "[image " + (block.mime_type || "") + "]"));
+      } else if (block.type === "file") {
+        wrap.appendChild(el("div", "agent-file", "[file]"));
+      } else {
+        renderPre(wrap, JSON.stringify(block, null, 2), "agent-pre");
+      }
+    }
+
+    function blockRecord(block, messageRole, key) {
+      // `text` starts at a sentinel so the first fill always renders.
+      const record = {
+        node: el("div", "agent-block"),
+        text: "\u0000",
+        sig: "",
+        pre: null,
+        key,
+      };
+      fillBlock(record, block, messageRole);
+      return record;
+    }
+
+    function buildEntry(entry, blocks, key, signature, isLive) {
       const article = el("article", "pi-msg agent-msg");
       if (entry.role) article.classList.add("role-" + entry.role);
       if (entry.role === "tool") {
         article.classList.add(entry.is_error ? "error" : "ok");
       }
       if (entry.optimistic) article.classList.add("optimistic");
-      if (isLive) article.classList.add("live");
-      const role = el("div", "pi-role", roleLabel(entry));
-      article.append(role);
-      const blocks = Array.isArray(entry.content) ? entry.content : [];
+      article.append(el("div", "pi-role", roleLabel(entry)));
+      const records = [];
       if (entry.role === "tool") {
         renderPre(article, textOfEntry(entry), "agent-tool-output");
       } else if (!blocks.length) {
         renderPlain(article, isLive ? "…" : "");
       } else {
-        for (const block of blocks) article.append(blockContent(block, entry.role));
+        blocks.forEach((block, index) => {
+          const record = blockRecord(block, entry.role, key + "#" + index);
+          records.push(record);
+          article.append(record.node);
+        });
       }
-      return article;
+      return { node: article, blocks: records, signature };
+    }
+
+    /** Reuse an entry's nodes when only block contents changed; rebuild when the
+     * structure (role, block kinds, optimistic/tool state) actually differs. */
+    function renderEntry(entry, isLive, index) {
+      const blocks = Array.isArray(entry.content) ? entry.content : [];
+      const key = entryKey(entry, index);
+      const signature = structureSignature(entry, blocks);
+      let record = renderedEntries.get(key);
+      if (!record || record.signature !== signature) {
+        record = buildEntry(entry, blocks, key, signature, isLive);
+        renderedEntries.set(key, record);
+      } else {
+        for (let i = 0; i < blocks.length; i += 1) {
+          fillBlock(record.blocks[i], blocks[i], entry.role);
+        }
+      }
+      record.node.classList.toggle("live", Boolean(isLive));
+      return record.node;
+    }
+
+    /** Keep surviving nodes in place (they carry selection and open state),
+     * remove the rest, and only move nodes when the order actually changed. */
+    function reconcileChildren(parent, nodes) {
+      const wanted = new Set(nodes);
+      for (const child of Array.from(parent.children)) {
+        if (!wanted.has(child)) child.remove();
+      }
+      const children = Array.from(parent.children);
+      let first = -1;
+      for (let i = 0; i < nodes.length; i += 1) {
+        if (children[i] !== nodes[i]) {
+          first = i;
+          break;
+        }
+      }
+      if (first < 0) return;
+      // Re-append the tail in order: appending an attached node moves it, and
+      // detaching first keeps the swap-in-place behaviour of the DOM shims.
+      for (let i = first; i < nodes.length; i += 1) {
+        if (nodes[i].parent === parent) nodes[i].remove();
+        parent.appendChild(nodes[i]);
+      }
+    }
+
+    function forgetEntry(key) {
+      renderedEntries.delete(key);
+      const prefix = key + "#";
+      for (const uiKey of Array.from(blockOpen.keys())) {
+        if (uiKey.startsWith(prefix)) blockOpen.delete(uiKey);
+      }
     }
 
     function renderDialogs() {
@@ -550,6 +691,26 @@
         panel.append(actionsEl);
         dialogHost.append(panel);
       }
+    }
+
+    let historyNode = null;
+    let historySignature = "";
+    const emptyNode = el("div", "pi-empty", "No messages yet.");
+
+    /** The history row is rebuilt only when its own state changes, so a delta
+     * render keeps every transcript node (and its UI state) untouched. */
+    function historyNodeFor() {
+      const signature = [
+        state.history.hasMore ? "more" : "",
+        state.history.loading ? "loading" : "",
+        state.history.error || "",
+        state.exited ? "exited" : "",
+      ].join("\u0001");
+      if (!historyNode || signature !== historySignature) {
+        historySignature = signature;
+        historyNode = historyRow();
+      }
+      return historyNode;
     }
 
     function historyRow() {
@@ -612,16 +773,28 @@
       const anchor = scrollAnchor;
       const previousTop = messagesEl.scrollTop;
       scrollAnchor = null;
-      messagesEl.innerHTML = "";
+      const nodes = [];
       if (state.history.hasMore || state.history.loading || state.history.error) {
-        messagesEl.append(historyRow());
+        nodes.push(historyNodeFor());
       }
+      const kept = new Set();
       if (!state.entries.length && !state.live) {
-        messagesEl.append(el("div", "pi-empty", "No messages yet."));
+        nodes.push(emptyNode);
       } else {
-        for (const entry of state.entries) messagesEl.append(renderMessage(entry, false));
-        if (state.live) messagesEl.append(renderMessage(state.live, true));
+        state.entries.forEach((entry, index) => {
+          nodes.push(renderEntry(entry, false, index));
+          kept.add(entryKey(entry, index));
+        });
+        if (state.live) {
+          const index = state.entries.length;
+          nodes.push(renderEntry(state.live, true, index));
+          kept.add(entryKey(state.live, index));
+        }
       }
+      for (const key of Array.from(renderedEntries.keys())) {
+        if (!kept.has(key)) forgetEntry(key);
+      }
+      reconcileChildren(messagesEl, nodes);
       renderDialogs();
       syncControls();
       updateStatus();

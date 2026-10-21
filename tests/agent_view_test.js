@@ -22,6 +22,7 @@ class FakeNode {
     this.scrollTop = 0;
     this.scrollHeight = 0;
     this.clientHeight = 0;
+    this.open = false;
   }
 
   get className() {
@@ -89,6 +90,14 @@ class FakeNode {
   dispatch(type, event) {
     const handler = this._listeners[type];
     if (handler) handler(event || { preventDefault() {} });
+    // Browsers toggle a <details> when its <summary> is clicked and then fire
+    // `toggle`; model that so the open/closed state is observable here.
+    if (type === "click" && this.tagName === "SUMMARY" && this.parent) {
+      if (this.parent.tagName === "DETAILS") {
+        this.parent.open = !this.parent.open;
+        this.parent.dispatch("toggle");
+      }
+    }
   }
 
   querySelectorAll(selector) {
@@ -131,6 +140,19 @@ function findByClass(root, className) {
   let found = null;
   walk(root, (node) => {
     if (!found && node && node._classes && node._classes.has(className)) found = node;
+  });
+  return found;
+}
+
+// The thinking *picker* shares the agent-thinking class, so the transcript's
+// <details> block is found from the message list.
+function findThinking(root) {
+  const messages = findByClass(root, "agent-messages") || root;
+  let found = null;
+  walk(messages, (node) => {
+    if (!found && node && node._classes && node._classes.has("agent-thinking")) {
+      if (node.tagName === "DETAILS") found = node;
+    }
   });
   return found;
 }
@@ -461,6 +483,134 @@ assert.strictEqual(
   assert.ok(
     textOf(controlled.element).includes("thinking high"),
     "status bar reports the selected thinking level"
+  );
+
+  // Streaming deltas must patch the live message in place: a thinking block
+  // the reader opened during a run has to stay open (and keep its streamed
+  // text) across the deltas, the end of the run, and an older history page.
+  const streaming = window.WebtermAgent.create(
+    { id: "4-1", title: "streaming" },
+    {
+      onHistory: () =>
+        Promise.resolve({
+          entries: [
+            { id: "old-1", role: "user", content: [{ type: "text", text: "earlier question" }] },
+          ],
+          has_more: false,
+          first_entry_id: "old-1",
+        }),
+    }
+  );
+  streaming.handle({
+    type: "agent_resync",
+    entries: [],
+    state: { streaming: false, settled: true },
+    capabilities: { prompt: true, abort: true, history_paging: true },
+    has_more: true,
+    first_entry_id: "think-1",
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  streaming.handle({
+    type: "agent_event",
+    event: {
+      event: "message.started",
+      message: { id: "think-1", role: "assistant", content: [] },
+    },
+  });
+  streaming.handle({
+    type: "agent_event",
+    event: {
+      event: "message.delta",
+      message_id: "think-1",
+      block_index: 0,
+      block_type: "thinking",
+      delta: "weighing",
+    },
+  });
+
+  const thinking = findThinking(streaming.element);
+  assert.ok(thinking, "thinking block rendered");
+  thinking.querySelectorAll("summary")[0].dispatch("click");
+  assert.strictEqual(thinking.open, true, "clicking Thinking opens the block");
+
+  streaming.handle({
+    type: "agent_event",
+    event: {
+      event: "message.delta",
+      message_id: "think-1",
+      block_index: 0,
+      block_type: "thinking",
+      delta: " more",
+    },
+  });
+  const streamed = findThinking(streaming.element);
+  assert.strictEqual(streamed.open, true, "thinking stays open while tokens stream");
+  assert.ok(
+    textOf(streamed).includes("weighing more"),
+    "streamed thinking text is complete"
+  );
+  assert.ok(
+    streamed === thinking,
+    "live thinking block keeps its DOM node across deltas"
+  );
+
+  // A new block changes the entry structure; the rebuild must carry the
+  // open state over instead of dropping it.
+  streaming.handle({
+    type: "agent_event",
+    event: {
+      event: "message.delta",
+      message_id: "think-1",
+      block_index: 1,
+      block_type: "text",
+      delta: "answer so far",
+    },
+  });
+  const afterBlock = findThinking(streaming.element);
+  assert.ok(afterBlock, "thinking block still rendered after a new block");
+  assert.strictEqual(afterBlock.open, true, "thinking stays open when a block is added");
+  assert.ok(
+    textOf(afterBlock).includes("weighing more"),
+    "thinking text survives a structural rebuild"
+  );
+
+  streaming.handle({
+    type: "agent_event",
+    event: {
+      event: "message.finished",
+      message: {
+        id: "think-1",
+        role: "assistant",
+        content: [
+          { type: "thinking", text: "weighing more carefully" },
+          { type: "text", text: "answer so far" },
+        ],
+      },
+    },
+  });
+  const finished = findThinking(streaming.element);
+  assert.strictEqual(finished.open, true, "thinking stays open after the run finishes");
+  assert.ok(
+    textOf(finished).includes("weighing more carefully"),
+    "finished message text is complete"
+  );
+
+  findByClass(streaming.element, "pi-history-more").dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(
+    textOf(streaming.element).includes("earlier question"),
+    "older history prepended after streaming"
+  );
+  assert.strictEqual(
+    findThinking(streaming.element).open,
+    true,
+    "thinking stays open after older history is prepended"
+  );
+  assert.ok(
+    textOf(streaming.element).indexOf("earlier question") <
+      textOf(streaming.element).indexOf("answer so far"),
+    "older history is ordered before the newer entry"
   );
 
   console.log("agent view smoke test passed");
