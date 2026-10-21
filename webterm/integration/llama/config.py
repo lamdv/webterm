@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 #: Thinking levels accepted by ``--thinking`` and the canonical ``set_thinking``
 #: command.  ``default`` leaves the server's own setting untouched; the rest map
@@ -43,6 +44,23 @@ def default_system_prompt() -> str | None:
 def default_thinking() -> str | None:
     """Return the configured default thinking level, if any."""
     return _env("WEBTERM_LLAMA_THINKING")
+
+
+def default_prompt_dir(override: str | None = None) -> Path:
+    """Return the system-prompt library directory.
+
+    An explicit *override* wins, then ``$WEBTERM_PROMPT_DIR``, then
+    ``$XDG_CONFIG_HOME/webterm/prompts``, then ``~/.config/webterm/prompts``.
+    This is a pure lookup: it reads the environment when called and never
+    creates the directory.
+    """
+    for value in (override, _env("WEBTERM_PROMPT_DIR")):
+        if value and value.strip():
+            return Path(value.strip()).expanduser()
+    xdg = _env("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg).expanduser() / "webterm" / "prompts"
+    return Path.home() / ".config" / "webterm" / "prompts"
 
 
 def agent_profile(

@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from unittest import mock
 
 from webterm.agent.codec import NATIVE_CODEC
 from webterm.agent.session import AgentCommandError
@@ -139,6 +144,26 @@ class LlamaProfileTests(unittest.TestCase):
         self.assertNotIn("--system-prompt", argv)
         self.assertNotIn("--thinking", argv)
 
+    def test_prompt_dir_precedence(self) -> None:
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/tmp/xdg"}, clear=True):
+            self.assertEqual(
+                llama_config.default_prompt_dir(), Path("/tmp/xdg/webterm/prompts")
+            )
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                llama_config.default_prompt_dir(),
+                Path.home() / ".config" / "webterm" / "prompts",
+            )
+        with mock.patch.dict(
+            os.environ,
+            {"WEBTERM_PROMPT_DIR": "/tmp/env", "XDG_CONFIG_HOME": "/tmp/xdg"},
+            clear=True,
+        ):
+            self.assertEqual(llama_config.default_prompt_dir(), Path("/tmp/env"))
+            self.assertEqual(
+                llama_config.default_prompt_dir("/tmp/flag"), Path("/tmp/flag")
+            )
+
 
 class LlamaAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -149,16 +174,30 @@ class LlamaAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         self.manager = SessionManager(shell="/bin/sh", cwd="/tmp")
         FakeLlamaHandler.requests.clear()
+        self.prompt_root = tempfile.mkdtemp(prefix="webterm-prompts-")
+        self.addCleanup(shutil.rmtree, self.prompt_root, True)
+        # The library directory itself must not exist yet, so "first use" can
+        # create it and seed the starters.
+        self.prompt_dir = str(Path(self.prompt_root) / "prompts")
+        # Never let a prompt-library test reach the real XDG config directory.
+        env = mock.patch.dict(os.environ, {"WEBTERM_PROMPT_DIR": self.prompt_dir})
+        env.start()
+        self.addCleanup(env.stop)
 
     async def asyncTearDown(self) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=5)
 
-    async def start(self, url: str | None = None, **kwargs: str) -> object:
-        profile = llama_config.agent_profile(url or self.url, kwargs.get("model"))
+    async def start(
+        self, url: str | None = None, prompt_dir: str | None = None
+    ) -> object:
+        profile = llama_config.agent_profile(url or self.url)
+        argv = list(profile["rpc"])  # type: ignore[arg-type]
+        if prompt_dir is not None:
+            argv.extend(["--prompt-dir", prompt_dir])
         session = await self.manager.create_agent(
-            profile["rpc"],  # type: ignore[arg-type]
+            argv,
             adapter="llama",
             task="chat",
         )
@@ -314,5 +353,184 @@ class LlamaAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("SSL", message)
             self.assertIn("use http://", message)
             self.assertTrue(await session.wait_for_settled(5))
+        finally:
+            session.force_close()
+
+    # ------------------------------------------------------- prompt library
+
+    async def test_prompt_library_seeds_and_lists_starters(self) -> None:
+        session = await self.start()
+        try:
+            self.assertTrue(session.capabilities.to_dict()["prompt_library"])
+            data = await session.command("list_prompts")
+            prompts = data["prompts"]
+            self.assertEqual(
+                [prompt["name"] for prompt in prompts],
+                ["code-review", "concise", "explain", "socratic"],
+            )
+            for prompt in prompts:
+                self.assertTrue(prompt["text"])
+                self.assertEqual(prompt["text"], prompt["text"].strip())
+            self.assertTrue((Path(self.prompt_dir) / "concise.md").is_file())
+        finally:
+            session.force_close()
+
+    async def test_existing_empty_prompt_directory_is_not_seeded(self) -> None:
+        Path(self.prompt_dir).mkdir()
+        session = await self.start()
+        try:
+            data = await session.command("list_prompts")
+            self.assertEqual(data, {"prompts": []})
+            self.assertEqual(list(Path(self.prompt_dir).iterdir()), [])
+        finally:
+            session.force_close()
+
+    async def test_save_prompt_then_list_skips_bad_files(self) -> None:
+        root = Path(self.prompt_dir)
+        root.mkdir()
+        (root / "not a prompt.md").write_text("x", encoding="utf-8")
+        (root / ".hidden.md").write_text("x", encoding="utf-8")
+        (root / "notes.txt").write_text("x", encoding="utf-8")
+        (root / "blank.md").write_text("   \n\n", encoding="utf-8")
+        session = await self.start()
+        try:
+            saved = await session.command(
+                "save_prompt", name="respectful", text="  Be kind.\n\n"
+            )
+            self.assertEqual(
+                saved, {"prompt": {"name": "respectful", "text": "Be kind."}}
+            )
+            self.assertEqual(
+                (root / "respectful.md").read_text(encoding="utf-8"), "Be kind.\n"
+            )
+            data = await session.command("list_prompts")
+            prompts = {prompt["name"]: prompt["text"] for prompt in data["prompts"]}
+            self.assertEqual(prompts["respectful"], "Be kind.")
+            self.assertNotIn(".hidden", prompts)
+            self.assertNotIn("not a prompt", prompts)
+            self.assertNotIn("notes", prompts)
+            self.assertNotIn("blank", prompts)
+            self.assertEqual(
+                [prompt["name"] for prompt in data["prompts"]],
+                sorted(prompts),
+            )
+        finally:
+            session.force_close()
+
+    async def test_save_prompt_validates_name_and_text(self) -> None:
+        session = await self.start()
+        try:
+            cases = (
+                ("../escape", "hi", "prompt name must be"),
+                (".hidden", "hi", "prompt name must be"),
+                ("has space", "hi", "prompt name must be"),
+                ("x" * 65, "hi", "prompt name must be"),
+                ("ok", "   \n", "prompt text is empty"),
+                ("ok", "x" * 20000, "limit is 16384"),
+            )
+            for name, text, expected in cases:
+                with self.assertRaises(AgentCommandError) as caught:
+                    await session.command("save_prompt", name=name, text=text)
+                self.assertIn(expected, str(caught.exception))
+            # Nothing was created, and the session still answers.
+            self.assertFalse(Path(self.prompt_dir).exists())
+            self.assertFalse(session.dead)
+            self.assertEqual((await session.get_state())["system_prompt"], "")
+        finally:
+            session.force_close()
+
+    async def test_delete_prompt_reports_whether_it_existed(self) -> None:
+        session = await self.start()
+        try:
+            await session.command("save_prompt", name="temp", text="Use once.")
+            deleted = await session.command("delete_prompt", name="temp")
+            self.assertEqual(deleted, {"name": "temp", "deleted": True})
+            missing = await session.command("delete_prompt", name="temp")
+            self.assertEqual(missing, {"name": "temp", "deleted": False})
+            data = await session.command("list_prompts")
+            self.assertNotIn("temp", [prompt["name"] for prompt in data["prompts"]])
+            with self.assertRaises(AgentCommandError) as caught:
+                await session.command("delete_prompt", name="../escape")
+            self.assertIn("prompt name must be", str(caught.exception))
+        finally:
+            session.force_close()
+
+    async def test_prompt_commands_work_through_the_codec(self) -> None:
+        # The browser sends every command through the codec, whose fields
+        # include a ``name`` key; this is the exact path the view uses.
+        for name in ("list_prompts", "save_prompt", "delete_prompt"):
+            self.assertIn(name, NATIVE_CODEC.commands)
+        session = await self.start()
+        try:
+            saved = await NATIVE_CODEC.command(
+                session,
+                "save_prompt",
+                {"type": "save_prompt", "name": "via-envelope", "text": "Hi."},
+                "test-1",
+            )
+            self.assertTrue(saved["success"])
+            self.assertEqual(
+                saved["data"],
+                {"prompt": {"name": "via-envelope", "text": "Hi."}},
+            )
+            listed = await NATIVE_CODEC.command(
+                session, "list_prompts", {"type": "list_prompts"}, "test-2"
+            )
+            self.assertIn(
+                "via-envelope",
+                [prompt["name"] for prompt in listed["data"]["prompts"]],
+            )
+            deleted = await NATIVE_CODEC.command(
+                session,
+                "delete_prompt",
+                {"type": "delete_prompt", "name": "via-envelope"},
+                "test-3",
+            )
+            self.assertEqual(deleted["data"], {"name": "via-envelope", "deleted": True})
+            refused = await NATIVE_CODEC.command(
+                session,
+                "delete_prompt",
+                {"type": "delete_prompt", "name": "../escape"},
+                "test-4",
+            )
+            self.assertFalse(refused["success"])
+            self.assertIn("prompt name must be", refused["error"])
+        finally:
+            session.force_close()
+
+    async def test_prompt_dir_flag_overrides_the_environment(self) -> None:
+        flag_root = tempfile.mkdtemp(prefix="webterm-prompts-flag-")
+        self.addCleanup(shutil.rmtree, flag_root, True)
+        flag_dir = str(Path(flag_root) / "prompts")
+        session = await self.start(prompt_dir=flag_dir)
+        try:
+            data = await session.command("list_prompts")
+            self.assertIn("concise", [prompt["name"] for prompt in data["prompts"]])
+            self.assertTrue((Path(flag_dir) / "concise.md").is_file())
+            self.assertFalse(Path(self.prompt_dir).exists())
+        finally:
+            session.force_close()
+
+    async def test_saved_prompt_leaves_the_active_system_prompt_alone(self) -> None:
+        session = await self.start()
+        try:
+            await session.command("save_prompt", name="terse", text="Be terse.")
+            self.assertEqual((await session.snapshot())["entries"], [])
+            self.assertEqual((await session.get_state())["system_prompt"], "")
+
+            await session.prompt("Say hi")
+            self.assertTrue(await session.wait_for_settled(5))
+            self.assertEqual(
+                FakeLlamaHandler.requests[-1]["messages"][0],
+                {"role": "user", "content": "Say hi"},
+            )
+
+            await session.command("set_system_prompt", text="Be terse.")
+            await session.prompt("Say hi again")
+            self.assertTrue(await session.wait_for_settled(5))
+            self.assertEqual(
+                FakeLlamaHandler.requests[-1]["messages"][0],
+                {"role": "system", "content": "Be terse."},
+            )
         finally:
             session.force_close()

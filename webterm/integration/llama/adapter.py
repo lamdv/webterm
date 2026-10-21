@@ -22,7 +22,8 @@ import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
-from .config import THINKING_LEVELS
+from .config import THINKING_LEVELS, default_prompt_dir
+from .prompts import PromptError, PromptLibrary, validate_name
 
 #: Canonical protocol version announced in ``hello``.
 PROTOCOL_VERSION = 1
@@ -46,6 +47,7 @@ CAPABILITIES = {
         "levels": list(THINKING_LEVELS),
     },
     "system_prompt": True,
+    "prompt_library": True,
     "snapshot": True,
     "history": {"paging": True},
     "resume": False,
@@ -106,6 +108,7 @@ class LlamaAgent:
         timeout: float = DEFAULT_TIMEOUT,
         system_prompt: str = "",
         thinking: str = "default",
+        prompt_dir: str | None = None,
     ) -> None:
         self.url = url.rstrip("/")
         self.model = model
@@ -113,6 +116,8 @@ class LlamaAgent:
         self.timeout = timeout
         self.system_prompt = system_prompt.strip()
         self.thinking = thinking
+        self.prompt_dir = default_prompt_dir(prompt_dir)
+        self._prompts: PromptLibrary | None = None
         self.entries: list[dict[str, Any]] = []
         self.streaming = False
         self._state_lock = threading.Lock()
@@ -592,6 +597,39 @@ class LlamaAgent:
             {"system_prompt": self.system_prompt},
         )
 
+    def _library(self) -> PromptLibrary:
+        """Return the prompt library, resolved once from the process settings."""
+        if self._prompts is None:
+            self._prompts = PromptLibrary(self.prompt_dir)
+        return self._prompts
+
+    def list_prompts(self, command: dict[str, Any]) -> None:
+        try:
+            prompts = self._library().list()
+        except PromptError as exc:
+            self.respond(command.get("id"), "list_prompts", success=False, error=str(exc))
+            return
+        self.respond(command.get("id"), "list_prompts", {"prompts": prompts})
+
+    def save_prompt(self, command: dict[str, Any]) -> None:
+        try:
+            prompt = self._library().save(command.get("name"), command.get("text"))
+        except PromptError as exc:
+            self.respond(command.get("id"), "save_prompt", success=False, error=str(exc))
+            return
+        self.respond(command.get("id"), "save_prompt", {"prompt": prompt})
+
+    def delete_prompt(self, command: dict[str, Any]) -> None:
+        try:
+            name = validate_name(command.get("name"))
+            deleted = self._library().delete(name)
+        except PromptError as exc:
+            self.respond(command.get("id"), "delete_prompt", success=False, error=str(exc))
+            return
+        self.respond(
+            command.get("id"), "delete_prompt", {"name": name, "deleted": deleted}
+        )
+
     def raw(self, command: dict[str, Any]) -> None:
         inner = command.get("command")
         if not isinstance(inner, dict):
@@ -646,6 +684,9 @@ class LlamaAgent:
             "set_model": self.set_model,
             "set_thinking": self.set_thinking,
             "set_system_prompt": self.set_system_prompt,
+            "list_prompts": self.list_prompts,
+            "save_prompt": self.save_prompt,
+            "delete_prompt": self.delete_prompt,
             "raw": self.raw,
             "shutdown": self.shutdown,
         }
@@ -706,6 +747,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--provider", default=DEFAULT_PROVIDER)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    parser.add_argument(
+        "--prompt-dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "system-prompt library directory; overrides $WEBTERM_PROMPT_DIR "
+            "(default: $XDG_CONFIG_HOME/webterm/prompts or ~/.config/webterm/prompts)"
+        ),
+    )
     return parser
 
 
@@ -731,6 +781,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout=args.timeout,
         system_prompt=args.system_prompt,
         thinking=args.thinking,
+        prompt_dir=args.prompt_dir,
     )
     try:
         agent.run()

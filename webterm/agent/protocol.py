@@ -110,8 +110,19 @@ OPTIONAL_COMMANDS = frozenset(
     }
 )
 
+#: Adapter-specific commands for a plain-text system-prompt library.  An
+#: adapter advertises them with the ``prompt_library`` capability; one that
+#: does not simply answers ``success:false``.
+PROMPT_LIBRARY_COMMANDS = frozenset(
+    {
+        "list_prompts",
+        "save_prompt",
+        "delete_prompt",
+    }
+)
+
 #: Every command a canonical agent may receive.
-CANONICAL_COMMANDS = CORE_COMMANDS | OPTIONAL_COMMANDS
+CANONICAL_COMMANDS = CORE_COMMANDS | OPTIONAL_COMMANDS | PROMPT_LIBRARY_COMMANDS
 
 
 class CanonicalCommandError(ValueError):
@@ -191,6 +202,9 @@ class Capabilities:
     compaction: bool = False
     attachments_images: bool = False
     raw: bool = False
+    #: The adapter serves a plain-text system-prompt library
+    #: (``list_prompts`` / ``save_prompt`` / ``delete_prompt``).
+    prompt_library: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -247,6 +261,7 @@ class Capabilities:
             compaction=_flag(source, "compaction"),
             attachments_images=_flag_from(source, "attachments_images", attachments, "images"),
             raw=_flag(source, "raw"),
+            prompt_library=_flag(source, "prompt_library"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -276,6 +291,7 @@ class Capabilities:
             "compaction": self.compaction,
             "attachments": {"images": self.attachments_images},
             "raw": self.raw,
+            "prompt_library": self.prompt_library,
         }
 
     def supports_dialog(self, kind: str) -> bool:

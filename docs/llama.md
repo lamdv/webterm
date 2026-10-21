@@ -94,6 +94,51 @@ Sending both keeps one adapter working across builds. Templates that do not
 support thinking ignore the fields, so the control is harmless for models such
 as Gemma.
 
+## Prompt library
+
+Reusable system prompts live as plain-text files, one per prompt, so a prompt
+does not have to be retyped for every session. The adapter resolves one
+directory, in this order:
+
+1. `--prompt-dir DIR` on the adapter process;
+2. `$WEBTERM_PROMPT_DIR`;
+3. `$XDG_CONFIG_HOME/webterm/prompts`;
+4. `~/.config/webterm/prompts`.
+
+The adapter is started by webterm, not by hand, so a persistent choice is
+usually `WEBTERM_PROMPT_DIR` in the server's environment (the flag exists for
+direct runs and tests). Rules:
+
+- one `<name>.md` file per prompt, UTF-8 plain text, directly in the directory
+  (no subdirectories);
+- names match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`: no leading dot, no `/`, no
+  `..`, so a name can never address a path outside the directory;
+- the text is stripped, must be non-empty, and is limited to 16384 characters;
+- the first use of a *missing* directory creates it and seeds four starters
+  (`concise`, `code-review`, `explain`, `socratic`, one to three lines each).
+  Existing files are never overwritten, and a directory that already exists is
+  not seeded, even when it is empty;
+- listing is sorted by name and skips any file that is not a valid prompt
+  (wrong extension or name, unreadable, empty, or too long) instead of failing.
+
+The library is served by three canonical commands:
+
+| Command | Fields | Response `data` |
+|---|---|---|
+| `list_prompts` | — | `{"prompts":[{"name":str,"text":str}, ...]}`, sorted by name |
+| `save_prompt` | `name`, `text` | `{"prompt":{"name":str,"text":str}}`; `text` is the normalized (stripped) text |
+| `delete_prompt` | `name` | `{"name":str,"deleted":bool}`; deleting a missing prompt answers `deleted:false`, not an error |
+
+`hello` advertises `"prompt_library": true` so a client can hide the controls
+for adapters without a library. A rejected name or text is an ordinary
+`success:false` response with a human-readable `error`, so the session keeps
+running.
+
+The library is storage only. Saving or deleting a prompt never changes the
+session's active system prompt: applying one is a separate
+`set_system_prompt` from the client. The library also knows nothing about the
+transcript; it is not part of the conversation, usage, or history.
+
 ## Behaviour
 
 The adapter process speaks webterm's canonical JSONL protocol directly on
@@ -110,6 +155,7 @@ stdin/stdout, so there is no Python codec and no special handling in
 | `set_model` | Updates the model and emits `session.info`. |
 | `set_thinking` | Updates the thinking level, emits `session.info`, and validates it against the advertised levels. |
 | `set_system_prompt` | Updates the system prompt, emits `session.info`, and sends it as the first `system` message on later requests. |
+| `list_prompts` / `save_prompt` / `delete_prompt` | The plain-text prompt library (see above); saving a prompt does not touch the active system prompt. |
 | `raw` | `get_last_assistant_text` and `get_session_stats`, used by `agent_result`. |
 | `shutdown` | Aborts any run and exits. |
 
@@ -120,10 +166,10 @@ block; normal `content` deltas become text. Errors surface as a `notice` and
 `run.finished` with reason `error`, without killing the session.
 
 Capabilities advertised in `hello` are deliberately minimal: prompt, abort,
-models list/set with thinking levels, a system prompt, snapshot, history paging,
-token usage, and the `raw` introspection above. Steering, follow-ups, queues,
-dialogs, tools, images, resume, and export are off, so the UI hides those
-controls. The native codec's spawn result also reads
+models list/set with thinking levels, a system prompt, a prompt library,
+snapshot, history paging, token usage, and the `raw` introspection above.
+Steering, follow-ups, queues, dialogs, tools, images, resume, and export are
+off, so the UI hides those controls. The native codec's spawn result also reads
 `get_last_assistant_text`, so a parent can collect the child's answer with
 `agent_result` or a waiting `webtermctl spawn`.
 
@@ -143,7 +189,9 @@ model-management playground, open `/ui/` directly in a browser.
 `tests/test_llama_agent.py` runs a small OpenAI-compatible streaming server and
 drives a real `AgentSession`: streaming text, usage, model discovery and
 selection, the system prompt and thinking fields on the request, validation,
-snapshot/history, and abort. `tests/test_control.py` covers profile adapter
-inference and native `set_model`; `tests/test_ctl.py` covers pi
-`--provider`/`--model` forwarding. `tests/agent_view_test.js` exercises the
-model, thinking, and system-prompt controls in the canonical browser view.
+snapshot/history, abort, and the prompt library (seeding, save, list, delete,
+name/size validation, and the `--prompt-dir`/environment override).
+`tests/test_control.py` covers profile adapter inference and native
+`set_model`; `tests/test_ctl.py` covers pi `--provider`/`--model` forwarding.
+`tests/agent_view_test.js` exercises the model, thinking, system-prompt, and
+prompt-library controls in the canonical browser view.

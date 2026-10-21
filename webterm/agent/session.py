@@ -349,15 +349,18 @@ class AgentSession:
     async def command(
         self,
         name: str,
+        /,
         *,
         timeout: float = DEFAULT_COMMAND_TIMEOUT,
         **fields: Any,
     ) -> dict:
         """Send one command and return its ``data`` payload.
 
-        Raises :class:`AgentCommandError` when the agent answers
-        ``success: false``; the original command name and message are kept on
-        the exception so callers can map them to request errors.
+        The command name is positional-only so a command field may be called
+        ``name`` (the prompt-library commands are).  Raises
+        :class:`AgentCommandError` when the agent answers ``success: false``;
+        the original command name and message are kept on the exception so
+        callers can map them to request errors.
         """
         if self.dead:
             raise AgentClosed(f"agent session {self.id} is not running")

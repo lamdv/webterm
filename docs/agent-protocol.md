@@ -72,6 +72,7 @@ The agent sends exactly one `hello` immediately after startup:
    "dialogs":["confirm"],
    "models":{"list":true,"set":true,"thinking":false,"levels":[]},
    "system_prompt":false,
+   "prompt_library":false,
    "snapshot":true,
    "history":{"paging":true},
    "resume":true,
@@ -98,6 +99,7 @@ Capability groups:
 | `models.list`, `models.set`, `thinking` | model/thinking selection |
 | `models.levels` | thinking levels `set_thinking` accepts; empty means the adapter has no fixed vocabulary and the client falls back to `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `system_prompt` | the adapter accepts `set_system_prompt` |
+| `prompt_library` | the adapter accepts `list_prompts`, `save_prompt`, and `delete_prompt` (a plain-text system-prompt library; see [llama.md](llama.md)) |
 | `snapshot`, `history.paging` | transcript hydration and backwards paging |
 | `resume`, `export.native` | agent-owned session files and exports |
 | `usage.tokens`, `usage.cost` | usage reporting |
@@ -123,10 +125,14 @@ Core commands every agent should implement:
 
 Capability-gated commands: `steer`, `follow_up`, `clear_queue`,
 `set_thinking`, `set_system_prompt`, `set_session_name`, `compact`, `fork`,
-`clone`, `switch_session`, `export`, and `raw` (whose `command` field is passed
-to the native protocol). `set_thinking` carries `level`; the adapter advertises
-the levels it understands in `models.levels`. `set_system_prompt` carries
-`text`, and an empty string clears the prompt.
+`clone`, `switch_session`, `export`, the prompt-library trio `list_prompts`
+(`{prompts:[{name,text}]}`), `save_prompt` (`name`, `text` →
+`{prompt:{name,text}}`), and `delete_prompt` (`name` → `{name,deleted}`), and
+`raw` (whose `command` field is passed to the native protocol). `set_thinking` carries `level`; the
+adapter advertises the levels it understands in `models.levels`.
+`set_system_prompt` carries `text`, and an empty string clears the prompt.
+Saving a library prompt never changes the active system prompt; applying one
+is an explicit `set_system_prompt`.
 
 `webterm-<pid>-<n>` is the default command id. Agents must echo it in the
 response. A success response means *accepted*, not finished; completion is
@@ -419,7 +425,7 @@ behind a structured session. The server reaches every adapter through one seam,
 | Adapter | Codec | Talks to | Capabilities |
 |---|---|---|---|
 | `"generic"` (any unregistered name) | `NativeCodec` | `AgentSession`, whose child already speaks canonical JSONL | `AgentSession.capabilities` |
-| `"llama"` | `NativeCodec` | `AgentSession` running `webterm.integration.llama` against an OpenAI-compatible llama server | its declared chat capabilities, including model/thinking selection and a system prompt |
+| `"llama"` | `NativeCodec` | `AgentSession` running `webterm.integration.llama` against an OpenAI-compatible llama server | its declared chat capabilities, including model/thinking selection, a system prompt, and a plain-text prompt library |
 | `"pi"` | `PiCodec` | `PiSession`, whose child speaks pi RPC | `PI_CAPABILITIES` |
 
 A codec answers `capabilities`, `snapshot`, `history`, `models`,
