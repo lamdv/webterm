@@ -283,6 +283,45 @@ status bar update without a resync. Adapters that do not advertise a control
 never see it, which is why the llama chat has all three and pi's canonical view
 does not.
 
+Above the textarea, the same panel carries a saved-prompt library when the
+adapter advertises `prompt_library` (`div.agent-system-library`): a
+`select.agent-prompt-pick` whose first option is the `saved prompts…`
+placeholder followed by the `list_prompts` names sorted by name, an inline
+**Save to library** action and a **Delete** action. The list is fetched lazily
+— on the first open of the panel, never at session start — and re-fetched on
+every later open and after every save or delete. Picking a name is **fill
+only**: it copies that prompt's text into the textarea and sends nothing, so
+applying it is still the panel's **Save** button (`set_system_prompt`).
+**Save to library** reveals an inline name field (prefilled with the currently
+selected name, else empty) plus Save/Cancel; the request carries the textarea's
+text and the typed name, while the reply's normalized `prompt.name` drives the
+selection and the `saved prompt: <name>` notice. A rejected name or text (bad
+name, empty or over 16384 characters) surfaces the adapter's `error` through
+`showNotice(..., "error")` and leaves the field open to be corrected.
+**Delete** is enabled only while a saved prompt is selected and is two-step:
+the first click arms it as `Delete <name>?`, a second click sends
+`delete_prompt`; arming resets on panel close, on a selection change, and after
+about four seconds. A delete refreshes the list, clears the selection, and
+notices `deleted prompt: <name>`. Without `prompt_library` the whole row is
+hidden, no prompt command is ever sent, and the panel is exactly its
+prompt-only self.
+
+#### Transcript rendering
+
+Live entries are patched in place rather than re-rendered. `render()` keeps one
+record per entry id (`renderedEntries`) holding the entry's nodes and one record
+per content block, so a streaming delta re-fills only the blocks whose text or
+signature changed; the live assistant message keeps its DOM (and any text
+selection) across deltas. A rebuild happens only when an entry's **structure**
+changes — role, error/optimistic flags, or the kinds of its blocks — and even
+then `reconcileChildren` removes and re-appends instead of rebuilding the whole
+transcript. UI state that must outlive a rebuild lives outside the DOM: a
+thinking block's open flag is keyed by entry id plus block index in
+`blockOpen`, so it survives streaming, the `message.finished` event that moves
+the live entry into the transcript, and prepended history pages. Scroll
+position is re-anchored after an older page is prepended so the reader keeps
+their place.
+
 ### Resize and fitting
 
 The `fit` routine is deliberately defensive because xterm's layout can be

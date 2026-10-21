@@ -2320,6 +2320,75 @@ h6.pi-md-heading {
   color: #fff;
 }
 
+/* Saved-prompt library, above the prompt textarea.  Capability-gated in JS, so
+   the row only exists for adapters that advertise one. */
+.agent-system-library {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.agent-system-library[hidden] {
+  display: none;
+}
+
+.agent-system-library-row,
+.agent-system-library-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-system-library-form[hidden] {
+  display: none;
+}
+
+.agent-system-library .agent-prompt-pick {
+  flex: 1 1 auto;
+  max-width: min(240px, 45vw);
+}
+
+.agent-system-library .agent-system-library-name {
+  flex: 1 1 auto;
+  max-width: min(240px, 45vw);
+}
+
+.agent-system-library-row button,
+.agent-system-library-form button {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-system-library-row button:hover:not(:disabled),
+.agent-system-library-form button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.agent-system-library-row button:disabled,
+.agent-system-library-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-system-library .agent-system-library-commit {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Armed "Delete <name>?" click: a second click within the timeout deletes. */
+.agent-system-library .agent-system-library-delete.armed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .agent-msg.optimistic {
   opacity: 0.7;
 }

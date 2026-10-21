@@ -23,6 +23,27 @@ class FakeNode {
     this.scrollHeight = 0;
     this.clientHeight = 0;
     this.open = false;
+    this.selected = false;
+    if (this.tagName === "SELECT") {
+      // A browser keeps only a value one of its options carries and marks that
+      // option `selected`; model both so the tests can read the real choice.
+      let value = "";
+      Object.defineProperty(this, "value", {
+        configurable: true,
+        enumerable: true,
+        get: () => value,
+        set: (next) => {
+          const wanted = next === undefined || next === null ? "" : String(next);
+          const known = this.children.some(
+            (child) => child && child.tagName === "OPTION" && String(child.value) === wanted
+          );
+          value = known ? wanted : "";
+          for (const child of this.children) {
+            if (child && child.tagName === "OPTION") child.selected = String(child.value) === value;
+          }
+        },
+      });
+    }
   }
 
   get className() {
@@ -165,6 +186,11 @@ function textOf(root) {
     text += "\n";
   });
   return text;
+}
+
+/** Let resolved command promises and their follow-ups settle. */
+function tick() {
+  return new Promise((resolve) => setImmediate(resolve));
 }
 
 const calls = [];
@@ -612,6 +638,250 @@ assert.strictEqual(
       textOf(streaming.element).indexOf("answer so far"),
     "older history is ordered before the newer entry"
   );
+
+  // ---------------------------------------------------------------- library
+  // The saved-prompt picker: listed lazily on first panel open, fill-only on
+  // selection, and save/delete through the canonical commands.  Every change
+  // re-reads the list, and the adapter's reply (not the typed name) wins.
+  const libraryCalls = [];
+  const libraryPrompts = [
+    { name: "code-review", text: "Review the diff." },
+    { name: "concise", text: "Be terse." },
+  ];
+  const library = window.WebtermAgent.create(
+    { id: "5-1", title: "library" },
+    {
+      onCommand: (command) => {
+        libraryCalls.push(command);
+        if (command.type === "list_prompts") {
+          return Promise.resolve({ prompts: libraryPrompts.slice() });
+        }
+        if (command.type === "save_prompt") {
+          const saved = { name: command.name.trim().toLowerCase(), text: command.text.trim() };
+          const at = libraryPrompts.findIndex((prompt) => prompt.name === saved.name);
+          if (at >= 0) libraryPrompts[at] = saved;
+          else libraryPrompts.push(saved);
+          libraryPrompts.sort((a, b) => a.name.localeCompare(b.name));
+          return Promise.resolve({ prompt: saved });
+        }
+        if (command.type === "delete_prompt") {
+          const at = libraryPrompts.findIndex((prompt) => prompt.name === command.name);
+          if (at >= 0) libraryPrompts.splice(at, 1);
+          return Promise.resolve({ name: command.name, deleted: at >= 0 });
+        }
+        return Promise.resolve({});
+      },
+    }
+  );
+  library.handle({
+    type: "agent_resync",
+    entries: [],
+    state: { streaming: false, settled: true, system_prompt: "Be terse." },
+    capabilities: { prompt: true, abort: true, system_prompt: true, prompt_library: true },
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  const libraryRow = findByClass(library.element, "agent-system-library");
+  assert.ok(libraryRow, "library row exists when the capability is advertised");
+  assert.strictEqual(libraryRow.hidden, false, "library row is shown with the capability");
+  assert.deepStrictEqual(libraryCalls, [], "no prompt command is sent before the panel opens");
+
+  findByClass(library.element, "agent-system-toggle").dispatch("click");
+  await tick();
+  assert.deepStrictEqual(
+    libraryCalls,
+    [{ type: "list_prompts" }],
+    "list_prompts is requested on the first panel open"
+  );
+  const promptPick = findByClass(library.element, "agent-prompt-pick");
+  assert.ok(promptPick, "prompt picker rendered");
+  assert.deepStrictEqual(
+    promptPick.children.map((option) => option.value),
+    ["", "code-review", "concise"],
+    "placeholder first, then the saved prompts sorted by name"
+  );
+  assert.strictEqual(
+    promptPick.children[0].textContent,
+    "saved prompts…",
+    "first option is the placeholder"
+  );
+  assert.strictEqual(promptPick.value, "", "nothing selected initially");
+
+  const libraryInput = findByClass(library.element, "agent-system-input");
+  promptPick.value = "code-review";
+  promptPick.dispatch("change");
+  assert.strictEqual(
+    libraryInput.value,
+    "Review the diff.",
+    "picking a prompt fills the textarea"
+  );
+  assert.deepStrictEqual(libraryCalls, [{ type: "list_prompts" }], "picking sends no command");
+
+  findByClass(library.element, "agent-system-library-save").dispatch("click");
+  const libraryForm = findByClass(library.element, "agent-system-library-form");
+  const libraryName = findByClass(library.element, "agent-system-library-name");
+  assert.strictEqual(libraryForm.hidden, false, "Save to library reveals the name field");
+  assert.strictEqual(
+    libraryName.value,
+    "code-review",
+    "name field is prefilled with the selected prompt"
+  );
+  libraryName.value = "Deep Review";
+  libraryInput.value = "Be thorough.";
+  findByClass(library.element, "agent-system-library-commit").dispatch("click");
+  assert.deepStrictEqual(
+    libraryCalls[libraryCalls.length - 1],
+    { type: "save_prompt", name: "Deep Review", text: "Be thorough." },
+    "saving sends save_prompt with the typed name and the textarea text"
+  );
+  assert.deepStrictEqual(
+    libraryCalls.filter((call) => call.type === "set_system_prompt"),
+    [],
+    "saving a prompt does not apply it"
+  );
+  await tick();
+  assert.strictEqual(
+    libraryCalls.filter((call) => call.type === "list_prompts").length,
+    2,
+    "the list is refreshed after saving"
+  );
+  assert.strictEqual(promptPick.value, "deep review", "the saved name is selected");
+  assert.ok(
+    textOf(library.element).includes("saved prompt: deep review"),
+    "the notice names the saved (normalized) prompt"
+  );
+  assert.strictEqual(libraryForm.hidden, true, "the name field closes after saving");
+
+  promptPick.value = "concise";
+  promptPick.dispatch("change");
+  const deleteButton = findByClass(library.element, "agent-system-library-delete");
+  const deletes = () => libraryCalls.filter((call) => call.type === "delete_prompt");
+  assert.strictEqual(deleteButton.disabled, false, "delete is enabled for a saved prompt");
+  deleteButton.dispatch("click");
+  assert.deepStrictEqual(deletes(), [], "the first click only arms the delete");
+  assert.strictEqual(deleteButton.textContent, "Delete concise?", "the armed delete names it");
+  promptPick.value = "code-review";
+  promptPick.dispatch("change");
+  assert.strictEqual(deleteButton.textContent, "Delete", "selection change disarms the delete");
+  promptPick.value = "concise";
+  promptPick.dispatch("change");
+  deleteButton.dispatch("click");
+  deleteButton.dispatch("click");
+  assert.deepStrictEqual(
+    deletes(),
+    [{ type: "delete_prompt", name: "concise" }],
+    "the second click sends delete_prompt once"
+  );
+  await tick();
+  assert.ok(
+    textOf(library.element).includes("deleted prompt: concise"),
+    "the deletion is reported"
+  );
+  assert.strictEqual(promptPick.value, "", "the selection is cleared after deleting");
+  assert.deepStrictEqual(
+    promptPick.children.map((option) => option.value),
+    ["", "code-review", "deep review"],
+    "the list is refreshed after deleting"
+  );
+  assert.strictEqual(deleteButton.disabled, true, "delete is disabled without a selection");
+
+  promptPick.value = "code-review";
+  promptPick.dispatch("change");
+  deleteButton.dispatch("click");
+  assert.strictEqual(deleteButton.textContent, "Delete code-review?", "delete re-arms");
+  findByClass(library.element, "agent-system-close").dispatch("click");
+  assert.strictEqual(deleteButton.textContent, "Delete", "closing the panel disarms the delete");
+  assert.ok(libraryForm.hidden, "closing the panel hides the name field");
+
+  // A rejected save surfaces the server's error and keeps the name field open.
+  const errorCalls = [];
+  const rejecting = window.WebtermAgent.create(
+    { id: "6-1", title: "library errors" },
+    {
+      onCommand: (command) => {
+        errorCalls.push(command);
+        if (command.type === "list_prompts") {
+          return Promise.resolve({ prompts: [{ name: "concise", text: "Be terse." }] });
+        }
+        if (command.type === "save_prompt") {
+          return Promise.reject(new Error("invalid prompt name"));
+        }
+        return Promise.resolve({});
+      },
+    }
+  );
+  rejecting.handle({
+    type: "agent_resync",
+    entries: [],
+    state: { streaming: false, settled: true, system_prompt: "Stay short." },
+    capabilities: { prompt: true, system_prompt: true, prompt_library: true },
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  findByClass(rejecting.element, "agent-system-toggle").dispatch("click");
+  await tick();
+  findByClass(rejecting.element, "agent-system-library-save").dispatch("click");
+  const rejectingName = findByClass(rejecting.element, "agent-system-library-name");
+  rejectingName.value = "bad/name";
+  findByClass(rejecting.element, "agent-system-library-commit").dispatch("click");
+  await tick();
+  assert.ok(
+    textOf(rejecting.element).includes("invalid prompt name"),
+    "a rejected save shows the server error"
+  );
+  assert.strictEqual(
+    findByClass(rejecting.element, "agent-system-library-form").hidden,
+    false,
+    "the name field stays open after an error"
+  );
+  assert.strictEqual(rejectingName.value, "bad/name", "the rejected name is kept for editing");
+  assert.deepStrictEqual(
+    errorCalls.filter((call) => call.type === "save_prompt"),
+    [{ type: "save_prompt", name: "bad/name", text: "Stay short." }],
+    "the failing save was attempted once"
+  );
+
+  // Without the capability the row is hidden and no prompt command is sent.
+  const plainCalls = [];
+  const plain = window.WebtermAgent.create(
+    { id: "7-1", title: "no library" },
+    {
+      onCommand: (command) => {
+        plainCalls.push(command);
+        return Promise.resolve({});
+      },
+    }
+  );
+  plain.handle({
+    type: "agent_resync",
+    entries: [],
+    state: { streaming: false, settled: true, system_prompt: "Keep it short." },
+    capabilities: { prompt: true, system_prompt: true },
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  assert.strictEqual(
+    findByClass(plain.element, "agent-system-library").hidden,
+    true,
+    "the library row is hidden without the capability"
+  );
+  findByClass(plain.element, "agent-system-toggle").dispatch("click");
+  await tick();
+  assert.deepStrictEqual(plainCalls, [], "no prompt command without the capability");
+  const plainPanel = findByClass(plain.element, "agent-system-panel");
+  assert.strictEqual(plainPanel.hidden, false, "the system prompt panel still opens");
+  assert.strictEqual(
+    findByClass(plain.element, "agent-system-input").value,
+    "Keep it short.",
+    "the prompt textarea is unchanged"
+  );
+  for (const name of [
+    "agent-system-save",
+    "agent-system-clear",
+    "agent-system-close",
+  ]) {
+    assert.ok(findByClass(plain.element, name), name + " still rendered");
+  }
 
   console.log("agent view smoke test passed");
 })().catch((error) => {

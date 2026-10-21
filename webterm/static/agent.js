@@ -36,6 +36,12 @@
   /** Entries requested per backwards page, matching the pi view. */
   const HISTORY_PAGE_SIZE = 40;
 
+  /** Placeholder carried by the first option of the saved-prompt picker. */
+  const PROMPT_PLACEHOLDER = "saved prompts…";
+
+  /** How long "Delete <name>?" stays armed before it resets itself. */
+  const PROMPT_DELETE_ARM_MS = 4000;
+
   /** Thinking levels used when an adapter does not advertise its own list. */
   const FALLBACK_THINKING_LEVELS = [
     "off",
@@ -123,7 +129,38 @@
     const systemClose = el("button", "agent-system-close", "Cancel");
     systemClose.type = "button";
     systemActions.append(systemSave, systemClear, systemClose);
-    systemPanel.append(systemLabel, systemActions);
+
+    // Saved-prompt library: picker plus inline save/delete actions.  The whole
+    // row is capability-gated (see syncControls) and lists lazily on open.
+    const promptRow = el("div", "agent-system-library");
+    promptRow.hidden = true;
+    const promptLine = el("div", "agent-system-library-row");
+    const promptSelect = el("select", "agent-control agent-prompt-pick");
+    promptSelect.title = "Saved system prompts";
+    promptSelect.setAttribute("aria-label", "Saved prompts");
+    const promptPlaceholder = el("option", "", PROMPT_PLACEHOLDER);
+    promptPlaceholder.value = "";
+    promptSelect.appendChild(promptPlaceholder);
+    const promptSaveButton = el("button", "agent-system-library-save", "Save to library");
+    promptSaveButton.type = "button";
+    promptSaveButton.title = "Save the text above as a named prompt";
+    const promptDeleteButton = el("button", "agent-system-library-delete", "Delete");
+    promptDeleteButton.type = "button";
+    promptDeleteButton.title = "Delete the selected saved prompt";
+    promptLine.append(promptSelect, promptSaveButton, promptDeleteButton);
+    const promptForm = el("div", "agent-system-library-form");
+    promptForm.hidden = true;
+    const promptNameInput = el("input", "agent-control agent-system-library-name");
+    promptNameInput.type = "text";
+    promptNameInput.placeholder = "prompt name";
+    promptNameInput.setAttribute("aria-label", "Prompt name");
+    const promptCommit = el("button", "agent-system-library-commit", "Save");
+    promptCommit.type = "button";
+    const promptCancel = el("button", "agent-system-library-cancel", "Cancel");
+    promptCancel.type = "button";
+    promptForm.append(promptNameInput, promptCommit, promptCancel);
+    promptRow.append(promptLine, promptForm);
+    systemPanel.append(promptRow, systemLabel, systemActions);
 
     const banner = el("div", "pi-banner agent-banner");
     banner.hidden = true;
@@ -162,6 +199,16 @@
       meta: {},
       capabilities: {},
       systemOpen: false,
+      prompts: {
+        list: [],
+        selected: "",
+        loading: false,
+        saving: false,
+        nameOpen: false,
+        armed: false,
+        armTimer: null,
+        generation: 0,
+      },
       usage: { tokens: 0, cost: 0 },
       toolState: new Map(),
       dialogs: new Map(),
@@ -282,12 +329,31 @@
 
       const showSystem = Boolean(state.capabilities.system_prompt && onCommand);
       systemButton.hidden = !showSystem;
-      if (!showSystem) state.systemOpen = false;
+      if (!showSystem) {
+        state.systemOpen = false;
+        closePromptUi();
+      }
       systemButton.classList.toggle("set", Boolean(state.meta.system_prompt));
       systemButton.textContent = state.meta.system_prompt
         ? "system prompt · set"
         : "system prompt";
       systemPanel.hidden = !state.systemOpen;
+
+      const showLibrary = promptsEnabled();
+      promptRow.hidden = !showLibrary;
+      if (!showLibrary) closePromptUi();
+      const libraryBusy = state.prompts.loading || state.prompts.saving;
+      const selectedPrompt = savedPromptName();
+      promptSelect.disabled = state.exited || libraryBusy;
+      promptSaveButton.disabled = state.exited || libraryBusy;
+      promptDeleteButton.disabled = state.exited || libraryBusy || !selectedPrompt;
+      const armed = Boolean(state.prompts.armed && selectedPrompt);
+      promptDeleteButton.textContent = armed ? "Delete " + selectedPrompt + "?" : "Delete";
+      promptDeleteButton.classList.toggle("armed", armed);
+      promptNameInput.disabled = state.exited || libraryBusy;
+      promptCommit.disabled = state.exited || libraryBusy;
+      promptCancel.disabled = state.exited || libraryBusy;
+      promptForm.hidden = !(showLibrary && state.prompts.nameOpen);
 
       controls.hidden =
         modelSelect.hidden && thinkingSelect.hidden && systemButton.hidden;
@@ -322,6 +388,141 @@
           systemSave.disabled = state.exited;
           scheduleRender();
         });
+    }
+
+    /** The prompt library is optional: without the capability, no library row
+     * is shown and no prompt command is ever sent. */
+    function promptsEnabled() {
+      return Boolean(state.capabilities.prompt_library && onCommand);
+    }
+
+    function promptByName(name) {
+      if (!name) return null;
+      for (const prompt of state.prompts.list) {
+        if (prompt && prompt.name === name) return prompt;
+      }
+      return null;
+    }
+
+    function savedPromptName() {
+      return promptByName(state.prompts.selected) ? state.prompts.selected : "";
+    }
+
+    function disarmPromptDelete() {
+      if (state.prompts.armTimer) clearTimeout(state.prompts.armTimer);
+      state.prompts.armTimer = null;
+      state.prompts.armed = false;
+    }
+
+    /** Closing the panel (or losing the capability) drops the armed delete and
+     * the inline name field. */
+    function closePromptUi() {
+      state.prompts.nameOpen = false;
+      disarmPromptDelete();
+    }
+
+    function renderPromptOptions() {
+      promptSelect.innerHTML = "";
+      const placeholder = el("option", "", PROMPT_PLACEHOLDER);
+      placeholder.value = "";
+      promptSelect.appendChild(placeholder);
+      for (const prompt of state.prompts.list) {
+        const option = el("option", "", prompt.name);
+        option.value = prompt.name;
+        promptSelect.appendChild(option);
+      }
+      // A name that vanished from the library (deleted elsewhere) drops out.
+      const name = savedPromptName();
+      if (state.prompts.armed && !name) disarmPromptDelete();
+      state.prompts.selected = name;
+      promptSelect.value = name;
+      syncControls();
+      scheduleRender();
+    }
+
+    function refreshPrompts() {
+      if (!promptsEnabled()) return Promise.resolve();
+      const generation = state.prompts.generation;
+      state.prompts.loading = true;
+      syncControls();
+      return Promise.resolve(onCommand({ type: "list_prompts" })).then(
+        (data) => {
+          if (generation !== state.prompts.generation) return;
+          state.prompts.loading = false;
+          const prompts = data && Array.isArray(data.prompts) ? data.prompts : [];
+          state.prompts.list = prompts.filter(
+            (prompt) => prompt && typeof prompt.name === "string" && prompt.name
+          );
+          renderPromptOptions();
+        },
+        (error) => {
+          if (generation !== state.prompts.generation) return;
+          state.prompts.loading = false;
+          showNotice(
+            error && error.message ? error.message : "could not list saved prompts",
+            "error"
+          );
+          syncControls();
+          scheduleRender();
+        }
+      );
+    }
+
+    function finishPromptCommand() {
+      state.prompts.saving = false;
+      syncControls();
+      scheduleRender();
+    }
+
+    /** Saving never applies the prompt: applying stays the panel's Save button. */
+    function savePromptToLibrary() {
+      if (!promptsEnabled()) return;
+      const name = promptNameInput.value.trim();
+      const text = systemInput.value;
+      state.prompts.saving = true;
+      syncControls();
+      Promise.resolve(onCommand({ type: "save_prompt", name, text })).then(
+        (data) => {
+          const reply = data && data.prompt && typeof data.prompt === "object" ? data.prompt : null;
+          // Use the normalized name the adapter stored, not what was typed.
+          const saved = reply && typeof reply.name === "string" && reply.name
+            ? reply.name
+            : name;
+          state.prompts.selected = saved;
+          state.prompts.nameOpen = false;
+          showNotice("saved prompt: " + saved);
+          return refreshPrompts();
+        },
+        (error) => {
+          // Keep the name field open so a rejected name or text can be fixed.
+          showNotice(
+            error && error.message ? error.message : "could not save the prompt",
+            "error"
+          );
+        }
+      ).then(finishPromptCommand, finishPromptCommand);
+    }
+
+    function deletePrompt(name) {
+      if (!promptsEnabled()) return;
+      state.prompts.saving = true;
+      syncControls();
+      Promise.resolve(onCommand({ type: "delete_prompt", name })).then(
+        (data) => {
+          const deleted = !(data && data.deleted === false);
+          state.prompts.selected = "";
+          showNotice(
+            deleted ? "deleted prompt: " + name : "prompt already gone: " + name
+          );
+          return refreshPrompts();
+        },
+        (error) => {
+          showNotice(
+            error && error.message ? error.message : "could not delete the prompt",
+            "error"
+          );
+        }
+      ).then(finishPromptCommand, finishPromptCommand);
     }
 
     modelSelect.addEventListener("change", () => {
@@ -379,9 +580,69 @@
       if (state.systemOpen) {
         systemInput.value =
           typeof state.meta.system_prompt === "string" ? state.meta.system_prompt : "";
+        // Lazy: the library is listed when the panel is first opened, never at
+        // session start, and refreshed on every later open.
+        refreshPrompts();
+      } else {
+        closePromptUi();
       }
       scheduleRender();
     });
+
+    promptSaveButton.addEventListener("click", () => {
+      if (!promptsEnabled()) return;
+      state.prompts.nameOpen = true;
+      promptNameInput.value = savedPromptName();
+      syncControls();
+      promptNameInput.focus();
+    });
+    promptCommit.addEventListener("click", () => savePromptToLibrary());
+    promptCancel.addEventListener("click", () => {
+      state.prompts.nameOpen = false;
+      syncControls();
+    });
+    promptNameInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        savePromptToLibrary();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        state.prompts.nameOpen = false;
+        syncControls();
+      }
+    });
+
+    promptSelect.addEventListener("change", () => {
+      disarmPromptDelete();
+      const name = promptSelect.value;
+      state.prompts.selected = name;
+      const prompt = promptByName(name);
+      // Picking a prompt only fills the textarea; Save still applies it.
+      if (prompt) systemInput.value = prompt.text;
+      syncControls();
+    });
+
+    promptDeleteButton.addEventListener("click", () => {
+      const name = savedPromptName();
+      if (!name || !promptsEnabled()) return;
+      if (!state.prompts.armed) {
+        state.prompts.armed = true;
+        if (state.prompts.armTimer) clearTimeout(state.prompts.armTimer);
+        state.prompts.armTimer = setTimeout(() => {
+          state.prompts.armed = false;
+          state.prompts.armTimer = null;
+          syncControls();
+        }, PROMPT_DELETE_ARM_MS);
+        if (typeof state.prompts.armTimer.unref === "function") {
+          state.prompts.armTimer.unref();
+        }
+        syncControls();
+        return;
+      }
+      disarmPromptDelete();
+      deletePrompt(name);
+    });
+
     systemSave.addEventListener("click", () => submitSystemPrompt(systemInput.value));
     systemClear.addEventListener("click", () => {
       systemInput.value = "";
@@ -389,6 +650,7 @@
     });
     systemClose.addEventListener("click", () => {
       state.systemOpen = false;
+      closePromptUi();
       scheduleRender();
     });
 
@@ -987,6 +1249,11 @@
       state.history.hasMore = Boolean(message.has_more);
       state.history.firstId =
         typeof message.first_entry_id === "string" ? message.first_entry_id : null;
+      // Invalidate in-flight library replies and drop transient library UI.
+      state.prompts.generation += 1;
+      state.prompts.loading = false;
+      state.prompts.saving = false;
+      closePromptUi();
       if (state.meta.name) titleEl.textContent = state.meta.name;
       loadModels();
       render();
@@ -1093,6 +1360,8 @@
       destroy: () => {
         clearTimeout(streamTimer);
         if (state.noticeTimer) clearTimeout(state.noticeTimer);
+        if (state.prompts.armTimer) clearTimeout(state.prompts.armTimer);
+        state.prompts.armTimer = null;
         root.remove();
       },
     };
