@@ -1342,6 +1342,14 @@ class ClientConnection:
         """Turn an agent profile + task into the argv to run."""
         command = _valid_command(command)
         if command is not None:
+            if task and not rpc:
+                # An explicit command has no profile template to substitute, so
+                # the task is appended exactly as it is for a template without
+                # a ``{task}`` placeholder.  Structured agents receive the task
+                # as an RPC prompt below instead.
+                if isinstance(command, list):
+                    return [*command, str(task)]
+                return f"{command} {shlex.quote(str(task))}"
             return command
         if not agent:
             raise RequestError("bad_request", "agent or command is required")
@@ -1371,6 +1379,30 @@ class ClientConnection:
         rpc = bool(message.get("rpc")) or message.get("mode") == "rpc"
         task = message.get("task")
         agent = message.get("agent")
+        provider = message.get("provider")
+        model = message.get("model")
+        for name, value in (("provider", provider), ("model", model)):
+            if value is not None and not isinstance(value, str):
+                raise RequestError("bad_request", f"{name} must be a string")
+            if isinstance(value, str) and not value.strip():
+                raise RequestError("bad_request", f"{name} must not be empty")
+        provider = provider.strip() if isinstance(provider, str) else None
+        model = model.strip() if isinstance(model, str) else None
+        if provider and not model:
+            raise RequestError("bad_request", "provider requires a model id")
+        if (provider or model) and not rpc:
+            raise RequestError("bad_request", "model selection requires rpc: true")
+        adapter = message.get("adapter")
+        profile = self.profiles.get(str(agent)) if agent else None
+        if not isinstance(adapter, str) or not adapter:
+            profile_adapter = profile.get("adapter") if isinstance(profile, dict) else None
+            if isinstance(profile_adapter, str) and profile_adapter:
+                adapter = profile_adapter
+            else:
+                # Preserve the historical default for custom profiles; a native
+                # adapter sets ``adapter`` in its profile or passes --adapter.
+                adapter = "pi"
+        adapter = str(adapter)
         common = dict(
             cwd=message.get("cwd"),
             env=message.get("env"),
@@ -1381,7 +1413,7 @@ class ClientConnection:
             visibility=str(message.get("visibility", "public")),
         )
         try:
-            if spawn and rpc and str(message.get("adapter") or "pi") != "pi":
+            if spawn and rpc and adapter != "pi":
                 argv = self._resolve_agent(
                     agent, None, message.get("command"), False, rpc=True
                 )
@@ -1389,7 +1421,6 @@ class ClientConnection:
                     argv = shlex.split(argv)
                 if not argv:
                     raise RequestError("bad_request", "structured agent command is empty")
-                adapter = str(message.get("adapter"))
                 session = await self.manager.create_agent(
                     argv,
                     cwd=message.get("cwd"),
@@ -1403,12 +1434,34 @@ class ClientConnection:
                     visibility=str(message.get("visibility", "public")),
                     adapter=adapter,
                 )
-                if task:
+                if model:
                     try:
-                        await session.prompt(task)
+                        timeout = _optional_float(message.get("timeout"))
+                        fields = {"model": model}
+                        if provider:
+                            fields["provider"] = provider
+                        await session.command(
+                            "set_model",
+                            timeout=(
+                                timeout
+                                if timeout is not None
+                                else AGENT_COMMAND_TIMEOUT
+                            ),
+                            **fields,
+                        )
                     except (AgentError, TimeoutError) as exc:
                         self.manager.kill(session.id, tree=False)
-                        raise RequestError("agent_error", str(exc)) from exc
+                        raise RequestError("agent_error", _agent_error(exc, "agent")) from exc
+                if task:
+                    try:
+                        timeout = _optional_float(message.get("timeout"))
+                        if timeout is None:
+                            await session.prompt(task)
+                        else:
+                            await session.prompt(task, timeout=timeout)
+                    except (AgentError, TimeoutError) as exc:
+                        self.manager.kill(session.id, tree=False)
+                        raise RequestError("agent_error", _agent_error(exc, "agent")) from exc
             elif spawn and rpc:
                 argv = self._resolve_agent(agent, None, message.get("command"), False, rpc=True)
                 if isinstance(argv, str):
@@ -1419,6 +1472,10 @@ class ClientConnection:
                     part in ("-e", "--extension") for part in argv
                 ):
                     argv.extend(["-e", self.manager.pi_extension])
+                if provider:
+                    argv.extend(["--provider", provider])
+                if model:
+                    argv.extend(["--model", model])
                 session = self.manager.create_pi(
                     argv,
                     cwd=message.get("cwd"),
@@ -1434,12 +1491,15 @@ class ClientConnection:
                 )
                 if task:
                     try:
-                        response = await session.rpc(
-                            {"type": "prompt", "message": task}
-                        )
+                        timeout = _optional_float(message.get("timeout"))
+                        request = {"type": "prompt", "message": task}
+                        if timeout is None:
+                            response = await session.rpc(request)
+                        else:
+                            response = await session.rpc(request, timeout=timeout)
                     except (PiError, PiSessionClosed, TimeoutError) as exc:
                         self.manager.kill(session.id, tree=False)
-                        raise RequestError("pi_error", str(exc)) from exc
+                        raise RequestError("pi_error", _agent_error(exc, "pi")) from exc
                     if not response.get("success"):
                         self.manager.kill(session.id, tree=False)
                         raise RequestError(
@@ -1601,6 +1661,24 @@ def _valid_command(command) -> list[str] | str | None:
         return command
     log.debug("ignoring invalid command %r", command)
     return None
+
+
+def _agent_error(exc: BaseException, agent: str) -> str:
+    """Describe a failed adapter request, never returning an empty message.
+
+    ``asyncio.TimeoutError`` has no text of its own; a bare empty error hid the
+    difference between a slow agent and a command that does not speak RPC at
+    all, which is the common mistake when ``spawn --rpc`` names a plain command.
+    """
+    text = str(exc).strip()
+    if text:
+        return text
+    if isinstance(exc, TimeoutError):
+        return (
+            f"{agent} did not answer before the timeout; "
+            "an --rpc command must speak the agent's RPC protocol"
+        )
+    return f"{agent} request failed ({type(exc).__name__})"
 
 
 def _optional_float(value) -> float | None:

@@ -51,6 +51,8 @@ All modules use `from __future__ import annotations` and are linted by `ruff`
 | `--cwd` | `$HOME` | Working directory for new sessions. |
 | `--scrollback` | `100000` | Bytes retained per session for replay. |
 | `--pi-session-dir` | `$WEBTERM_PI_SESSION_DIR` or `$XDG_STATE_HOME/webterm/pi-sessions` | Managed root for persisted pi sessions, exports, and the resume picker. |
+| `--llama-url` | `$WEBTERM_LLAMA_URL` or `$LLAMA_SWAP_URL` | llama-server/llama-swap base URL; adds a `llama` chat agent profile (see [llama.md](llama.md)). |
+| `--llama-model` | `$WEBTERM_LLAMA_MODEL` | Default model for the `llama` profile. |
 | `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API. |
 | `--no-control` | off | Disable the local control socket. |
 | `--agent NAME=COMMAND` | `pi` if installed | Agent profile for `spawn` (print mode); `{task}` is substituted. |
@@ -71,9 +73,11 @@ dict, and runs `serve()`.
 `parse_launchers` turns `LABEL=COMMAND` into `{"label": ..., "command": [...]}`
 using `shlex.split`. When no `--launcher` is given, it probes for `pi` with
 `shutil.which` and adds a default button only when pi is installed. Agent
-profiles carry `print`, `interactive`, and optional `rpc` templates; the default
-`pi` RPC profile and every browser-created pi session load the bundled
-`webterm/integration/pi/extension.ts` extension.
+profiles carry `print`, `interactive`, and optional `rpc` templates plus an
+optional `adapter` name. The default `pi` RPC profile and every browser-created
+pi session load the bundled `webterm/integration/pi/extension.ts` extension;
+the `llama` profile starts the canonical adapter described in
+[llama.md](llama.md).
 
 The config dict currently supports `fontFamily`, `launchers`, `agents`, and
 `pi` (`available`, `cwd`, `sessionDir`); it is served as
@@ -186,7 +190,7 @@ fan-out to the async socket:
 | `resize` | `session_id`, `cols`, `rows` | `TIOCSWINSZ` on the PTY. |
 | `list` | `parent_id?` | Re-send the session list (and return it when `id` is set). |
 | `run` | `command`, `cwd?`, `env?`, `parent_id?`, `timeout?`, `wait?`, `format?`, `strip_ansi?` | Run a command in its own PTY; return output + exit code, or a session id when `wait` is false. |
-| `spawn` | `agent?`, `task?`, `command?`, `mode?`, `parent_id?`, `wait?` | Start a sub-agent from an agent profile; otherwise like `run`. |
+| `spawn` | `agent?`, `task?`, `command?`, `mode?`, `parent_id?`, `wait?` | Start a sub-agent from an agent profile; otherwise like `run`. A `task` is appended to an explicit `command`, or sent as the first `prompt` when `rpc` is set. |
 | `send` | `session_id`, `data`, `submit?` | Write to a session (`submit` appends a newline). |
 | `capture` | `session_id`, `since?`, `format?`, `strip_ansi?` | Read scrollback from an absolute byte offset. |
 | `wait` | `session_id`, `until` (`exit`\|`text`\|`idle`), `pattern?`, `timeout?`, `quiet_ms?` | Block until exit, a regex matches, or output goes quiet. |
@@ -289,7 +293,9 @@ Owns one PTY master fd and its child process.
   exit code.
 - `_on_session_exit` removes the session and calls `notify()`.
 - `add_listener` / `notify` implement the broadcast mechanism used by
-  `server.py`.
+  `server.py`. A canonical `AgentSession` calls `_changed()` only when
+  `info()` would differ — run state, usage, or model — so streaming deltas do
+  not rebroadcast the whole session list once per token.
 - `kill` and `close_all` terminate sessions.
 
 `DEFAULT_SCROLLBACK` is 100 000 bytes; `READ_SIZE` is 65 536.

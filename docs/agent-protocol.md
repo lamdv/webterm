@@ -414,6 +414,7 @@ behind a structured session. The server reaches every adapter through one seam,
 | Adapter | Codec | Talks to | Capabilities |
 |---|---|---|---|
 | `"generic"` (any unregistered name) | `NativeCodec` | `AgentSession`, whose child already speaks canonical JSONL | `AgentSession.capabilities` |
+| `"llama"` | `NativeCodec` | `AgentSession` running `webterm.integration.llama` against an OpenAI-compatible llama server | its declared chat capabilities |
 | `"pi"` | `PiCodec` | `PiSession`, whose child speaks pi RPC | `PI_CAPABILITIES` |
 
 A codec answers `capabilities`, `snapshot`, `history`, `models`,

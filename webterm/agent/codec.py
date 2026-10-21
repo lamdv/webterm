@@ -161,6 +161,20 @@ class NativeCodec(AgentCodec):
             result["state"] = await session.get_state(timeout=5.0)
         except (AgentError, TimeoutError) as exc:
             result["error"] = str(exc)
+        try:
+            text = await session.command(
+                "raw",
+                timeout=5.0,
+                command={"type": "get_last_assistant_text"},
+            )
+        except (AgentError, TimeoutError):
+            # The raw channel is optional; adapters without it still return
+            # the state above.
+            pass
+        else:
+            value = text.get("text")
+            if isinstance(value, str):
+                result["text"] = value
         return result
 
 

@@ -70,7 +70,7 @@ def frontend_config(
 
 def default_agent_profiles(
     extension: str | None = None,
-) -> dict[str, dict[str, list[str]]]:
+) -> dict[str, dict[str, list[str] | str]]:
     """Built-in pi agent profile when pi is installed.
 
     Every mode loads the bundled extension, so a pi process webterm starts always

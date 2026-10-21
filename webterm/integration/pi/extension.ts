@@ -38,6 +38,8 @@ agent_send, agent_wait, agent_result, agent_list, and agent_kill.
   with output; do work whose result is a few lines yourself.
 - A sub-agent sees only the task text you give it, never this conversation.
 - Children are attributed to you and visible to the human; keep task labels short.
+- Pick a child's model with spawn_agent's optional model (and provider) fields
+  instead of dropping to webtermctl; a profile such as llama may be available.
 - Depth is capped, so do not recurse without a reason ($WEBTERM_DEPTH is yours).
 - Read a child's answer with agent_result instead of asking the human to relay it.`;
 
@@ -96,7 +98,7 @@ export default function (pi: ExtensionAPI) {
 		name: "spawn_agent",
 		label: "Spawn sub-agent",
 		description:
-			"Start a child pi agent for a task. The child appears under this session in webterm and can be messaged, waited on, or killed.",
+			"Start a child agent for a task. The child appears under this session in webterm and can be messaged, waited on, or killed.",
 		parameters: Type.Object({
 			task: Type.String({ description: "The task for the child agent." }),
 			name: Type.Optional(
@@ -107,29 +109,46 @@ export default function (pi: ExtensionAPI) {
 					description: "Webterm agent profile name. Defaults to pi.",
 				}),
 			),
+			model: Type.Optional(
+				Type.String({
+					description:
+						"Model for the child, as pi resolves it (id, provider/id, or provider/id:thinking).",
+				}),
+			),
+			provider: Type.Optional(
+				Type.String({
+					description: "Provider for model. Requires model.",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
 			const agent = params.agent || "pi";
 			const title = params.name || params.task.slice(0, 80);
-			const result = await ctl(
-				pi,
-				[
-					"spawn",
-					"--agent",
-					agent,
-					"--rpc",
-					"--task",
-					params.task,
-					"--title",
-					title,
-					"--no-wait",
-				],
-				30_000,
-			);
+			const args = [
+				"spawn",
+				"--agent",
+				agent,
+				"--rpc",
+				"--task",
+				params.task,
+				"--title",
+				title,
+				"--no-wait",
+			];
+			if (params.provider) args.push("--provider", params.provider);
+			if (params.model) args.push("--model", params.model);
+			const result = await ctl(pi, args, 30_000);
 			const sessionId = String(result.session_id || "");
+			const created = {
+				session_id: sessionId,
+				agent,
+				task: params.task,
+				model: params.model,
+				provider: params.provider,
+			};
 			return {
-				content: jsonContent({ session_id: sessionId, agent, task: params.task }),
-				details: { session_id: sessionId, agent, task: params.task },
+				content: jsonContent(created),
+				details: created,
 			};
 		},
 	});

@@ -479,8 +479,20 @@
     } else if (!activeId || !seen.has(activeId)) {
       activate(sessions.length ? sessions[0].id : null);
     } else {
-      activate(activeId);
+      // The server pushes a fresh session list on every state change, and a
+      // streaming agent changes state while it answers.  Re-running activation
+      // here would refocus the active view's composer each time and pull the
+      // caret back while the user reads or works elsewhere.  Only a wrapper
+      // created in this pass needs the active class; after that, `renderTabs`
+      // and the wrapper classes are enough.
+      const entry = viewEntry(activeId);
+      if (entry && !entry.wrapper.classList.contains("active")) activate(activeId);
     }
+  }
+
+  function viewEntry(id) {
+    if (!id) return null;
+    return terminals.get(id) || piViews.get(id) || agentViews.get(id) || null;
   }
 
   // xterm.js (through at least 5.5.0) silently drops wheel events that its
@@ -1406,6 +1418,9 @@
         host.appendChild(emptyChoice("Resume pi…", createPiResumeSession));
       }
     }
+    if (llamaProfile()) {
+      host.appendChild(emptyChoice("Start llama chat", createLlamaSession));
+    }
   }
 
   function emptyChoice(label, action, primary) {
@@ -1433,6 +1448,7 @@
     addLauncherButton = add;
 
     if (CONFIG.pi && CONFIG.pi.available) appendPiLauncher();
+    if (llamaProfile()) appendLlamaLauncher();
 
     for (const launcher of configuredLaunchers()) appendLauncher(launcher, false);
     for (const launcher of userLaunchers) appendLauncher(launcher, true);
@@ -2276,6 +2292,45 @@
       const end = path.value.length;
       if (typeof path.setSelectionRange === "function") path.setSelectionRange(end, end);
     }
+  }
+
+  function llamaProfile() {
+    const agents = Array.isArray(CONFIG.agents) ? CONFIG.agents : [];
+    return (
+      agents.find(
+        (agent) =>
+          agent &&
+          agent.name === "llama" &&
+          Array.isArray(agent.rpc) &&
+          agent.rpc.length > 0
+      ) || null
+    );
+  }
+
+  function createLlamaSession() {
+    const profile = llamaProfile();
+    if (!profile) {
+      window.alert("The llama agent is not configured on the server.");
+      return;
+    }
+    activateNext = true;
+    send({
+      type: "create",
+      mode: "agent",
+      command: profile.rpc,
+      adapter: profile.adapter || "llama",
+      title: "llama",
+    });
+  }
+
+  function appendLlamaLauncher() {
+    const pill = document.createElement("button");
+    pill.className = "launcher launcher-pi launcher-pi-header";
+    pill.textContent = "llama chat";
+    pill.title = "Start a llama-server chat session";
+    pill.addEventListener("click", createLlamaSession);
+    if (sidebarActionsEl) sidebarActionsEl.appendChild(pill);
+    else launchersEl.appendChild(pill);
   }
 
   function createPiSession() {

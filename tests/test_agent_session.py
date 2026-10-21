@@ -149,6 +149,26 @@ class AgentSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([seq for seq, _ in replayed], sorted(seq for seq, _ in replayed))
         self.assertEqual(replayed[-1][1]["event"], "run.settled")
 
+    async def test_streaming_deltas_do_not_rebroadcast_sessions(self) -> None:
+        session = await self.start()
+        collector = Collector()
+        session.attach(collector)
+        changes: list[None] = []
+        self.manager.add_listener(lambda: changes.append(None))
+
+        await session.prompt("slow run")
+        await wait_until(
+            lambda: collector.names().count("message.delta") >= 12
+        )
+        await session.abort()
+        self.assertTrue(await session.wait_for_settled(5.0))
+
+        deltas = collector.names().count("message.delta")
+        self.assertGreaterEqual(deltas, 12)
+        # The session list is rebroadcast on state transitions (run started,
+        # finished, settled), not once per streamed token.
+        self.assertLessEqual(len(changes), 6)
+
     async def test_snapshot_has_cursor_entries_dialogs_and_capabilities(self) -> None:
         session = await self.start()
         snapshot = await session.snapshot(limit=10)

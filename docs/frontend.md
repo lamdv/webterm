@@ -86,7 +86,8 @@ sections:
 - `sessionsMeta` — the latest `sessions` list from the server.
 - `userLaunchers` — user-defined launcher pills, persisted.
 - `CONFIG = window.WEBTERM_CONFIG || {}` — `fontFamily`, `fontSize`,
-  `launchers`, and `pi` (`available`, `cwd`, `sessionDir`).
+  `launchers`, `pi` (`available`, `cwd`, `sessionDir`), and `agents` (structured
+  profiles; the `llama` entry drives the browser's llama chat launcher).
 - Reconnect state: `socket`, `reconnectDelay`, `closedByPage`,
   `activateNext`, `restarting`. Each terminal entry also tracks `offset`, the
   number of output bytes it has rendered.
@@ -124,7 +125,9 @@ latter sets `restarting` and the status text; the flag is cleared on the next
 2. Dispose terminals and wrappers for sessions the server no longer reports.
 3. Re-render tabs.
 4. Choose the active session: if a create just happened (`activateNext`), switch
-   to the newest; otherwise keep or fix `activeId`.
+   to the newest; otherwise keep or fix `activeId`. An unchanged active session
+   is only re-activated when its wrapper was created in this pass, never for a
+   metadata-only update.
 
 It diffs against `knownBefore` so it can detect newly created sessions even
 though the server sends a full list.
@@ -181,6 +184,10 @@ Unknown ids are ignored.
 - `activate(id)` persists the choice, toggles the `active` class on wrappers,
   updates tab highlighting, and fits/focuses the terminal on the next animation
   frame plus a 50 ms follow-up (needed when a terminal is first made visible).
+  It is not a refresh: the periodic `sessions` broadcasts that a streaming
+  agent causes must not re-activate the current tab, or every state change
+  would pull the caret back into its composer while the user reads or types
+  elsewhere.
 
 ### Structured views
 

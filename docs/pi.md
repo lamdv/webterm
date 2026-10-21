@@ -393,6 +393,12 @@ cascade and depth/session limits.
   `pi` profile uses `pi --mode rpc --no-session --no-approve` plus the bundled
   extension. `webtermctl spawn --rpc --agent pi --task ...` creates a
   structured child and sends the task as its first RPC prompt.
+- `spawn_agent` accepts optional `model` and `provider` fields, forwarded as
+  pi's `--model`/`--provider`. A parent can therefore start a child on a
+  llama-swap model without leaving the tool vocabulary, for example
+  `spawn_agent(agent="pi", model="llama-swap/gemma4-26b", ...)`. The same
+  `provider`/`model` fields work for native adapters via `set_model`; see
+  [llama.md](llama.md).
 - Control API additions: `wait --settled`, and
   `pi <session> prompt|steer|follow-up|abort|state|last-text|stats`.
 - The parent receives the child's final assistant text and state via

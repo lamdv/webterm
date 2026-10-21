@@ -219,7 +219,7 @@ Agent/sub-agent extensions:
 
 | Verb | Params | Result |
 |---|---|---|
-| **`spawn`** | `agent?, task?, command?, mode?` (`print`\|`interactive`), `title?, cwd?, env?, cols?, rows?, parent_id?, visibility?, wait?` | `wait:false` → `{session_id, session}` + stream; `wait:true` → `{session_id, exit_code, output_base64, output_text?, truncated, total}` |
+| **`spawn`** | `agent?, task?, command?, mode?` (`print`\|`interactive`), `rpc?, adapter?, provider?, model?, title?, cwd?, env?, cols?, rows?, parent_id?, visibility?, wait?` | `wait:false` → `{session_id, session}` + stream; `wait:true` → `{session_id, exit_code, output_base64, output_text?, truncated, total}` |
 | `run` | `command, …` | as above, without an agent profile |
 | `send` | `session_id, data, submit?` | `{ok}` (`submit:true` appends `\n`) |
 | `capture` | `session_id, since?, format?` (`text`\|`base64`), `strip_ansi?` | `{start, end, text?/data_base64?}` |
@@ -255,11 +255,20 @@ carries named **agent profiles**:
   `--agents-file`, or auto-detected: if `pi` is on `PATH`, add a `pi` profile the
   way the existing `pi agent` launcher is added today.
 - `{task}` is substituted; if a template has no `{task}`, the task is appended.
+  An explicit `--command` is treated the same way, so `spawn --command "pi ..."
+  --task "..."` delivers the task instead of only recording it as metadata. The
+  exception is `--rpc`: the task becomes the child's first prompt, not an argv
+  argument.
 - `mode` selects `print` (one-shot, retained, result returned) or `interactive`
   (TUI, stays alive; the human can attach). If the profile has no `print`
   template and `mode` is `print`, `spawn` errors.
 - `agent` and `task` become session metadata, so the tab shows `pi · run the
   tests` and the badge is automatic.
+- A profile may name an `adapter` (for example the built-in `llama` chat
+  profile). When `rpc` is set, the server uses that adapter; profiles without
+  one keep the historical `pi` default; a native profile such as `llama` sets
+  `adapter` explicitly (or the caller passes `--adapter`). `provider`/`model`
+  select the child's model and require `rpc`.
 
 This profile list is the seam for the future default agentic interface
 (§7): richer profiles can later add tool/permission flags, a default model,
@@ -380,7 +389,7 @@ Two thin, stdlib-only pieces:
 
 ```
 webtermctl list [--tree] [--json]
-webtermctl spawn --agent pi --task "run the tests" [--print|--interactive|--rpc [--adapter A]] [--wait] [--json]
+webtermctl spawn --agent pi --task "run the tests" [--print|--interactive|--rpc [--adapter A]] [--provider P] [--model M] [--wait] [--json]
 webtermctl run   [--wait] [--json] [--text] CMD...
 webtermctl new   [--title T] [--cwd D] [--command CMD] [--private]
 webtermctl pi    <id> prompt|steer|follow-up|abort|state|last-text|stats [MESSAGE] [--no-wait] [--timeout S] [--json]
@@ -394,10 +403,15 @@ webtermctl rename <id> T
 `webtermctl spawn` is the one-liner a parent agent calls: it fills `parent_id`
 from `$WEBTERM_SESSION_ID`, so `pi` (or any agent that can run a shell command)
 gets sub-agents with no extra integration. `--rpc` starts a structured agent
-child and sends `--task` as its first prompt; `--wait` then waits for
-`run.settled` rather than process exit. `--adapter` picks the dialect:
+child and sends `--task` as its first prompt; the command must itself speak the
+agent's RPC protocol (for pi, include `--mode rpc`). If the first prompt is not
+accepted before `--timeout`, the error says so instead of returning an empty
+message. `--wait` then waits for `run.settled` rather than process exit. `--adapter` picks the dialect:
 `pi` (default) or `generic` for an agent that speaks the canonical protocol
 itself, which makes the child a native agent session instead of a pi one.
+`--model` and `--provider` choose the child's model and require `--rpc`; the
+built-in `llama` profile ([llama.md](llama.md)) uses them for llama-server and
+llama-swap models.
 
 `webtermctl pi` drives a structured session through the canonical `agent`
 envelope, so the CLI carries no pi RPC vocabulary: `steer` and `follow-up` are

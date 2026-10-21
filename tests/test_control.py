@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +15,8 @@ from tests.controlclient import ControlClient
 from webterm.control import looks_like_tcp
 from webterm.server import ClientConnection, RequestError, ServerHandle, start_server
 from webterm.session import SessionManager
+
+FAKE_AGENT = Path(__file__).with_name("fake_agent.py")
 
 
 class ControlSocketBase(unittest.IsolatedAsyncioTestCase):
@@ -120,6 +123,73 @@ class ControlSocketTests(ControlSocketBase):
         self.assertEqual(child["agent"], "echoer")
         self.assertEqual(child["task"], "AGENT_DONE")
 
+    async def test_spawn_command_delivers_the_task(self) -> None:
+        # An explicit command has no {task} template; the task must still be
+        # delivered instead of only becoming session metadata.
+        for command in (
+            "/bin/sh -c 'printf %s \"$0\"'",
+            ["/bin/sh", "-c", 'printf %s "$0"'],
+        ):
+            with self.subTest(command=command):
+                result = self.result(
+                    await self.client.request(
+                        "spawn",
+                        command=command,
+                        task="from the parent",
+                        wait=True,
+                        format="text",
+                    )
+                )
+                self.assertEqual(result["exit_code"], 0)
+                self.assertEqual(result["output_text"], "from the parent")
+
+    async def test_rpc_prompt_timeout_has_a_message(self) -> None:
+        await self.client.close()
+        await self.handle.stop()
+        profiles = {
+            "mute": {"rpc": ["/bin/sh", "-c", "sleep 5"], "adapter": "pi"}
+        }
+        self.handle = await start_server(
+            "127.0.0.1", 0, self.manager, control_socket=self.socket_path, profiles=profiles
+        )
+        self.client = await ControlClient.connect(self.socket_path)
+
+        message = await self.client.request(
+            "spawn", agent="mute", rpc=True, task="hello", timeout=0.2
+        )
+        self.assertEqual(message["type"], "error")
+        self.assertEqual(message["error"]["code"], "pi_error")
+        self.assertIn("timeout", message["error"]["message"])
+
+    async def test_spawn_profile_can_select_an_adapter_and_model(self) -> None:
+        await self.client.close()
+        await self.handle.stop()
+        profiles = {
+            "llama": {
+                "rpc": [sys.executable, str(FAKE_AGENT)],
+                "adapter": "llama",
+            }
+        }
+        self.handle = await start_server(
+            "127.0.0.1", 0, self.manager, control_socket=self.socket_path, profiles=profiles
+        )
+        self.client = await ControlClient.connect(self.socket_path)
+
+        result = self.result(
+            await self.client.request(
+                "spawn",
+                agent="llama",
+                rpc=True,
+                task="do it",
+                model="other-model",
+                wait=False,
+            )
+        )
+        session_id = result["session_id"]
+        self.assertEqual(result["session"]["adapter"], "llama")
+        self.assertEqual(result["session"]["model"], "other-model")
+        await self.client.request("kill", session_id=session_id)
+
     async def test_spawn_unknown_agent_is_bad_request(self) -> None:
         message = await self.client.request("spawn", agent="nope", task="x")
         self.assertEqual(message["type"], "error")
@@ -201,6 +271,26 @@ class ResolveAgentTests(unittest.TestCase):
     def test_task_is_appended_without_placeholder(self) -> None:
         conn = self.connection({"p": {"print": ["/bin/echo"]}})
         self.assertEqual(conn._resolve_agent("p", "hi", None, False), ["/bin/echo", "hi"])
+
+    def test_task_is_appended_to_an_explicit_argv(self) -> None:
+        conn = self.connection({})
+        self.assertEqual(
+            conn._resolve_agent(None, "hi", ["/bin/echo"], False), ["/bin/echo", "hi"]
+        )
+
+    def test_task_is_appended_to_an_explicit_shell_command(self) -> None:
+        conn = self.connection({})
+        self.assertEqual(
+            conn._resolve_agent(None, "a b", "/bin/echo", False),
+            "/bin/echo 'a b'",
+        )
+
+    def test_rpc_explicit_command_keeps_the_task_for_the_prompt(self) -> None:
+        conn = self.connection({})
+        self.assertEqual(
+            conn._resolve_agent(None, "hi", ["/bin/echo"], False, rpc=True),
+            ["/bin/echo"],
+        )
 
     def test_missing_mode_is_rejected(self) -> None:
         conn = self.connection({"p": {"print": ["/bin/echo"]}})

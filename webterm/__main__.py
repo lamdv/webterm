@@ -13,6 +13,7 @@ import ssl
 import sys
 
 from . import __version__
+from .integration.llama import config as llama_config
 from .integration.pi import config as pi_config
 from .server import serve
 from .session import (
@@ -136,6 +137,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--llama-url",
+        default=llama_config.default_url(),
+        metavar="URL",
+        help=(
+            "llama-server or llama-swap base URL; adds a 'llama' chat agent "
+            "profile (default: $WEBTERM_LLAMA_URL or $LLAMA_SWAP_URL)"
+        ),
+    )
+    parser.add_argument(
+        "--llama-model",
+        default=llama_config.default_model(),
+        metavar="MODEL",
+        help=(
+            "default model for the llama agent profile "
+            "(default: $WEBTERM_LLAMA_MODEL)"
+        ),
+    )
+    parser.add_argument(
         "--control-socket",
         default=None,
         metavar="PATH",
@@ -236,13 +255,13 @@ def parse_agents(
     interactive: list[str] | None,
     error,
     rpc: list[str] | None = None,
-) -> dict[str, dict[str, list[str]]]:
+) -> dict[str, dict[str, list[str] | str]]:
     """Turn ``--agent`` / ``--agent-interactive`` / ``--agent-rpc`` into profiles.
 
     Each profile can have a ``print`` template (one-shot), an ``interactive``
     template (a TUI), and an ``rpc`` template (a structured pi session).
     """
-    profiles: dict[str, dict[str, list[str]]] = {}
+    profiles: dict[str, dict[str, list[str] | str]] = {}
 
     def entries(values: list[str] | None):
         for item in values or []:
@@ -348,6 +367,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if not profiles:
         profiles = pi_config.default_agent_profiles(manager.pi_extension)
+    if args.llama_url:
+        profiles.setdefault(
+            "llama", llama_config.agent_profile(args.llama_url, args.llama_model)
+        )
     if profiles:
         config["agents"] = [
             {"name": name, **{key: value for key, value in profile.items() if value}}

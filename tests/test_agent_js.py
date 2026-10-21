@@ -37,5 +37,24 @@ class AgentViewJSTests(unittest.TestCase):
         )
 
 
+class AppViewJSTests(unittest.TestCase):
+    def test_metadata_updates_do_not_steal_focus(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        result = subprocess.run(
+            [node, str(HERE / "app_view_test.js")],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"app view test failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

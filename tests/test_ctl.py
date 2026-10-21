@@ -7,10 +7,12 @@ import base64
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from webterm.client import ControlClient
 from webterm.ctl import main as ctl_main
@@ -137,6 +139,36 @@ class CtlCommandTests(CtlBase):
         self.assertEqual(code, 0)
         self.assertIn("thinking_level", json.loads(out)["response"]["data"])
         await self.run_ctl("kill", session_id)
+
+    async def test_spawn_rpc_forwards_model_and_provider(self) -> None:
+        argv_file = Path(self.tmp.name) / "argv.json"
+        with mock.patch.dict(os.environ, {"FAKE_PI_ARGV_FILE": str(argv_file)}):
+            code, out = await self.run_ctl(
+                "--json",
+                "spawn",
+                "--agent",
+                "pi",
+                "--rpc",
+                "--provider",
+                "fake",
+                "--model",
+                "fake-model-2",
+                "--task",
+                "hello",
+                "--no-wait",
+            )
+        self.assertEqual(code, 0)
+        session_id = json.loads(out)["session_id"]
+        argv = json.loads(argv_file.read_text())
+        self.assertEqual(argv[argv.index("--provider") + 1], "fake")
+        self.assertEqual(argv[argv.index("--model") + 1], "fake-model-2")
+        await self.run_ctl("kill", session_id)
+
+    async def test_model_requires_rpc(self) -> None:
+        code, _ = await self.run_ctl(
+            "--json", "spawn", "--agent", "echoer", "--task", "x", "--model", "m"
+        )
+        self.assertNotEqual(code, 0)
 
     async def test_spawn_with_a_native_adapter(self) -> None:
         code, out = await self.run_ctl(

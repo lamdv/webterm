@@ -643,29 +643,50 @@ class AgentSession:
 
     def _note_event(self, event: dict) -> None:
         name = event.get("event")
+        changed = False
         if name == "run.started":
-            self.streaming = True
-            self._settled_event.clear()
+            if not self.streaming:
+                self.streaming = True
+                changed = True
+            if self._settled_event.is_set():
+                self._settled_event.clear()
+                changed = True
         elif name == "run.finished":
-            self.streaming = False
+            if self.streaming:
+                self.streaming = False
+                changed = True
         elif name == "run.settled":
-            self.streaming = False
-            self._settled_event.set()
+            if self.streaming:
+                self.streaming = False
+                changed = True
+            if not self._settled_event.is_set():
+                self._settled_event.set()
+                changed = True
         elif name == "usage":
             tokens = event.get("total_tokens")
             if isinstance(tokens, int) and not isinstance(tokens, bool):
-                self.tokens = tokens
+                if tokens != self.tokens:
+                    self.tokens = tokens
+                    changed = True
             cost = event.get("cost")
             if isinstance(cost, int | float) and not isinstance(cost, bool):
-                self.cost = float(cost)
+                if float(cost) != self.cost:
+                    self.cost = float(cost)
+                    changed = True
         elif name == "session.info":
             model = event.get("model")
-            if isinstance(model, str):
+            if isinstance(model, str) and model != self.model:
                 self.model = model
+                changed = True
             session_file = event.get("session_file")
-            if isinstance(session_file, str):
+            if isinstance(session_file, str) and session_file != self.session_file:
                 self.session_file = session_file
-        self._changed()
+                changed = True
+        # Streaming deltas arrive once per token and do not change any session
+        # info; notifying for each one would rebroadcast the whole session list
+        # to every client while an agent answers.
+        if changed:
+            self._changed()
 
     def _handle_dialog_request(self, record: dict) -> None:
         try:

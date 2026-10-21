@@ -64,8 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--adapter",
         default=None,
-        help="structured-agent adapter: pi (default) or generic for a native agent",
+        help="structured-agent adapter (default: the agent profile's adapter, else pi)",
     )
+    p.add_argument("--provider", help="model provider for a structured agent")
+    p.add_argument("--model", help="model id for a structured agent (requires --rpc)")
     p.set_defaults(interactive=None)
     p.add_argument("--cwd")
     p.add_argument("--title")
@@ -263,6 +265,8 @@ def _cmd_spawn(client: ControlClient, args: argparse.Namespace) -> int:
         "parent_id": _parent(args.parent),
         "timeout": args.timeout,
         "visibility": "private" if args.private else "public",
+        "provider": args.provider,
+        "model": args.model,
     }
     if args.rpc:
         params["rpc"] = True
