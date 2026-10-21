@@ -13,7 +13,8 @@
   process model, entry-based resync, explicit project trust, managed session
   storage, extension dialogs, and the P0 slice.
 - [llama chat agent](llama.md) — a native canonical adapter for llama-server
-  and llama-swap: streaming chat, model selection, and its limits.
+  and llama-swap: streaming chat, model/thinking selection, system prompt, and
+  its limits.
 - [Remote access](remote-access.md) — exposing webterm safely behind Tailscale
   or an OAuth2 reverse proxy (oauth2-proxy, nginx, Caddy).
 - [Sub-agents](agent-control.md) — proposal for a local Unix-socket control API,

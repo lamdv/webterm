@@ -155,6 +155,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--llama-system-prompt",
+        default=llama_config.default_system_prompt(),
+        metavar="TEXT",
+        help=(
+            "initial system prompt for llama chats "
+            "(default: $WEBTERM_LLAMA_SYSTEM_PROMPT)"
+        ),
+    )
+    parser.add_argument(
+        "--llama-thinking",
+        default=llama_config.default_thinking(),
+        choices=llama_config.THINKING_LEVELS,
+        metavar="LEVEL",
+        help=(
+            "initial thinking level for llama chats; one of %(choices)s "
+            "(default: $WEBTERM_LLAMA_THINKING or 'default')"
+        ),
+    )
+    parser.add_argument(
         "--control-socket",
         default=None,
         metavar="PATH",
@@ -285,6 +304,11 @@ def parse_agents(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.llama_thinking and args.llama_thinking not in llama_config.THINKING_LEVELS:
+        allowed = ", ".join(llama_config.THINKING_LEVELS)
+        parser.error(
+            f"invalid llama thinking level {args.llama_thinking!r}; choose one of: {allowed}"
+        )
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",
@@ -369,7 +393,13 @@ def main(argv: list[str] | None = None) -> int:
         profiles = pi_config.default_agent_profiles(manager.pi_extension)
     if args.llama_url:
         profiles.setdefault(
-            "llama", llama_config.agent_profile(args.llama_url, args.llama_model)
+            "llama",
+            llama_config.agent_profile(
+                args.llama_url,
+                args.llama_model,
+                args.llama_system_prompt,
+                args.llama_thinking,
+            ),
         )
     if profiles:
         config["agents"] = [

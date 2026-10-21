@@ -70,7 +70,8 @@ The agent sends exactly one `hello` immediately after startup:
    "follow_up":false,
    "queue":false,
    "dialogs":["confirm"],
-   "models":{"list":true,"set":true,"thinking":false},
+   "models":{"list":true,"set":true,"thinking":false,"levels":[]},
+   "system_prompt":false,
    "snapshot":true,
    "history":{"paging":true},
    "resume":true,
@@ -95,6 +96,8 @@ Capability groups:
 | `steering`, `follow_up`, `queue` | mid-run input |
 | `dialogs` | supported `dialog_request.kind` values |
 | `models.list`, `models.set`, `thinking` | model/thinking selection |
+| `models.levels` | thinking levels `set_thinking` accepts; empty means the adapter has no fixed vocabulary and the client falls back to `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `system_prompt` | the adapter accepts `set_system_prompt` |
 | `snapshot`, `history.paging` | transcript hydration and backwards paging |
 | `resume`, `export.native` | agent-owned session files and exports |
 | `usage.tokens`, `usage.cost` | usage reporting |
@@ -119,9 +122,11 @@ Core commands every agent should implement:
 | `shutdown` | — | `{}` |
 
 Capability-gated commands: `steer`, `follow_up`, `clear_queue`,
-`set_thinking`, `set_session_name`, `compact`, `fork`, `clone`,
-`switch_session`, `export`, and `raw` (whose `command` field is passed to the
-native protocol).
+`set_thinking`, `set_system_prompt`, `set_session_name`, `compact`, `fork`,
+`clone`, `switch_session`, `export`, and `raw` (whose `command` field is passed
+to the native protocol). `set_thinking` carries `level`; the adapter advertises
+the levels it understands in `models.levels`. `set_system_prompt` carries
+`text`, and an empty string clears the prompt.
 
 `webterm-<pid>-<n>` is the default command id. Agents must echo it in the
 response. A success response means *accepted*, not finished; completion is
@@ -414,7 +419,7 @@ behind a structured session. The server reaches every adapter through one seam,
 | Adapter | Codec | Talks to | Capabilities |
 |---|---|---|---|
 | `"generic"` (any unregistered name) | `NativeCodec` | `AgentSession`, whose child already speaks canonical JSONL | `AgentSession.capabilities` |
-| `"llama"` | `NativeCodec` | `AgentSession` running `webterm.integration.llama` against an OpenAI-compatible llama server | its declared chat capabilities |
+| `"llama"` | `NativeCodec` | `AgentSession` running `webterm.integration.llama` against an OpenAI-compatible llama server | its declared chat capabilities, including model/thinking selection and a system prompt |
 | `"pi"` | `PiCodec` | `PiSession`, whose child speaks pi RPC | `PI_CAPABILITIES` |
 
 A codec answers `capabilities`, `snapshot`, `history`, `models`,

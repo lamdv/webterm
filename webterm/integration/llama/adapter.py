@@ -22,6 +22,8 @@ import urllib.request
 from datetime import UTC, datetime
 from typing import Any
 
+from .config import THINKING_LEVELS
+
 #: Canonical protocol version announced in ``hello``.
 PROTOCOL_VERSION = 1
 #: Default provider label used in model records.
@@ -37,7 +39,13 @@ CAPABILITIES = {
     "follow_up": False,
     "queue": False,
     "dialogs": [],
-    "models": {"list": True, "set": True, "thinking": False},
+    "models": {
+        "list": True,
+        "set": True,
+        "thinking": True,
+        "levels": list(THINKING_LEVELS),
+    },
+    "system_prompt": True,
     "snapshot": True,
     "history": {"paging": True},
     "resume": False,
@@ -96,11 +104,15 @@ class LlamaAgent:
         model: str | None = None,
         provider: str = DEFAULT_PROVIDER,
         timeout: float = DEFAULT_TIMEOUT,
+        system_prompt: str = "",
+        thinking: str = "default",
     ) -> None:
         self.url = url.rstrip("/")
         self.model = model
         self.provider = provider
         self.timeout = timeout
+        self.system_prompt = system_prompt.strip()
+        self.thinking = thinking
         self.entries: list[dict[str, Any]] = []
         self.streaming = False
         self._state_lock = threading.Lock()
@@ -179,7 +191,10 @@ class LlamaAgent:
     def _messages(self) -> list[dict[str, str]]:
         with self._state_lock:
             entries = list(self.entries)
+            system_prompt = self.system_prompt
         messages: list[dict[str, str]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
         for entry in entries:
             text = _text_of(entry)
             if text:
@@ -189,12 +204,40 @@ class LlamaAgent:
     def _snapshot(self) -> dict[str, Any]:
         with self._state_lock:
             entries = list(self.entries)
+            system_prompt = self.system_prompt
+            thinking = self.thinking
         return {
             "entries": entries,
             "state": {
                 "model": self.model,
                 "provider": self.provider,
                 "streaming": self.streaming,
+                "thinking_level": thinking,
+                "system_prompt": system_prompt,
+            },
+        }
+
+    def _thinking_fields(self) -> dict[str, Any]:
+        """Translate the selected thinking level into llama-server parameters.
+
+        llama-server reads ``reasoning_effort`` both as a request field and from
+        ``chat_template_kwargs`` depending on the build and chat template, so a
+        request carries both.  ``default`` sends neither and leaves the
+        server's own setting in place.
+        """
+        level = self.thinking
+        if level == "default":
+            return {}
+        if level == "off":
+            return {
+                "reasoning_effort": "none",
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+        return {
+            "reasoning_effort": level,
+            "chat_template_kwargs": {
+                "enable_thinking": True,
+                "reasoning_effort": level,
             },
         }
 
@@ -316,6 +359,7 @@ class LlamaAgent:
                 "messages": self._messages(),
                 "stream": True,
                 "stream_options": {"include_usage": True},
+                **self._thinking_fields(),
             }
             response = self._open("/v1/chat/completions", payload, timeout=self.timeout)
             self._response = response
@@ -438,6 +482,8 @@ class LlamaAgent:
                 "model": self.model,
                 "provider": self.provider,
                 "streaming": self.streaming,
+                "thinking_level": self.thinking,
+                "system_prompt": self.system_prompt,
                 "session_file": None,
             },
         )
@@ -511,6 +557,41 @@ class LlamaAgent:
         self.event("session.info", model=self.model, provider=self.provider)
         self.respond(command.get("id"), "set_model", {"model": self.model})
 
+    def set_thinking(self, command: dict[str, Any]) -> None:
+        level = command.get("level")
+        if not isinstance(level, str) or level.strip().lower() not in THINKING_LEVELS:
+            allowed = ", ".join(THINKING_LEVELS)
+            self.respond(
+                command.get("id"),
+                "set_thinking",
+                success=False,
+                error=f"thinking level must be one of: {allowed}",
+            )
+            return
+        self.thinking = level.strip().lower()
+        self.event("session.info", thinking_level=self.thinking)
+        self.respond(
+            command.get("id"), "set_thinking", {"thinking_level": self.thinking}
+        )
+
+    def set_system_prompt(self, command: dict[str, Any]) -> None:
+        text = command.get("text")
+        if not isinstance(text, str):
+            self.respond(
+                command.get("id"),
+                "set_system_prompt",
+                success=False,
+                error="system prompt text is required (use an empty string to clear)",
+            )
+            return
+        self.system_prompt = text.strip()
+        self.event("session.info", system_prompt=self.system_prompt)
+        self.respond(
+            command.get("id"),
+            "set_system_prompt",
+            {"system_prompt": self.system_prompt},
+        )
+
     def raw(self, command: dict[str, Any]) -> None:
         inner = command.get("command")
         if not isinstance(inner, dict):
@@ -563,6 +644,8 @@ class LlamaAgent:
             "get_history": self.get_history,
             "list_models": self.list_models,
             "set_model": self.set_model,
+            "set_thinking": self.set_thinking,
+            "set_system_prompt": self.set_system_prompt,
             "raw": self.raw,
             "shutdown": self.shutdown,
         }
@@ -606,6 +689,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("WEBTERM_LLAMA_URL") or os.environ.get("LLAMA_SWAP_URL"),
     )
     parser.add_argument("--model", default=os.environ.get("WEBTERM_LLAMA_MODEL"))
+    parser.add_argument(
+        "--system-prompt",
+        default=os.environ.get("WEBTERM_LLAMA_SYSTEM_PROMPT", ""),
+        help="initial system prompt (default: $WEBTERM_LLAMA_SYSTEM_PROMPT)",
+    )
+    parser.add_argument(
+        "--thinking",
+        default=os.environ.get("WEBTERM_LLAMA_THINKING", "default"),
+        choices=THINKING_LEVELS,
+        metavar="LEVEL",
+        help=(
+            "initial thinking level; one of %(choices)s "
+            "(default: $WEBTERM_LLAMA_THINKING or 'default')"
+        ),
+    )
     parser.add_argument("--provider", default=DEFAULT_PROVIDER)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     return parser
@@ -631,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model,
         provider=args.provider,
         timeout=args.timeout,
+        system_prompt=args.system_prompt,
+        thinking=args.thinking,
     )
     try:
         agent.run()

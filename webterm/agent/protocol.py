@@ -98,6 +98,7 @@ OPTIONAL_COMMANDS = frozenset(
         "follow_up",
         "clear_queue",
         "set_thinking",
+        "set_system_prompt",
         "set_session_name",
         "compact",
         "fork",
@@ -173,6 +174,10 @@ class Capabilities:
     models_list: bool = False
     models_set: bool = False
     thinking: bool = False
+    #: Levels accepted by ``set_thinking``.  Empty means the adapter has no
+    #: fixed vocabulary; the client falls back to the canonical pi-style set.
+    thinking_levels: tuple[str, ...] = ()
+    system_prompt: bool = False
     snapshot: bool = True
     history_paging: bool = False
     resume: bool = False
@@ -199,6 +204,15 @@ class Capabilities:
         tools = _section(source, "tools")
         attachments = _section(source, "attachments")
 
+        levels: tuple[str, ...] = ()
+        raw_levels = models.get("levels") if isinstance(models, dict) else None
+        if not isinstance(raw_levels, list):
+            raw_levels = source.get("thinking_levels")
+        if isinstance(raw_levels, list):
+            levels = tuple(
+                value for value in raw_levels if isinstance(value, str) and value
+            )
+
         dialogs: tuple[str, ...] = ()
         raw_dialogs = source.get("dialogs")
         if isinstance(raw_dialogs, list):
@@ -218,6 +232,8 @@ class Capabilities:
             models_list=_flag_from(source, "models_list", models, "list"),
             models_set=_flag_from(source, "models_set", models, "set"),
             thinking=_flag_from(source, "thinking", models, "thinking"),
+            thinking_levels=levels,
+            system_prompt=_flag(source, "system_prompt"),
             snapshot=_flag(source, "snapshot", True),
             history_paging=_flag_from(source, "history_paging", history, "paging"),
             resume=_flag(source, "resume"),
@@ -242,7 +258,13 @@ class Capabilities:
             "follow_up": self.follow_up,
             "queue": self.queue,
             "dialogs": list(self.dialogs),
-            "models": {"list": self.models_list, "set": self.models_set, "thinking": self.thinking},
+            "models": {
+                "list": self.models_list,
+                "set": self.models_set,
+                "thinking": self.thinking,
+                "levels": list(self.thinking_levels),
+            },
+            "system_prompt": self.system_prompt,
             "snapshot": self.snapshot,
             "history": {"paging": self.history_paging},
             "resume": self.resume,

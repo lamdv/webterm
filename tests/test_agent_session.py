@@ -64,7 +64,8 @@ class AgentProtocolTests(unittest.TestCase):
             {
                 "steering": True,
                 "dialogs": ["confirm", "select", "bogus"],
-                "models": {"list": True, "thinking": True},
+                "models": {"list": True, "thinking": True, "levels": ["off", "low", 3]},
+                "system_prompt": True,
                 "history": {"paging": True},
                 "tools": {"streaming": False},
                 "attachments": {"images": True},
@@ -74,6 +75,8 @@ class AgentProtocolTests(unittest.TestCase):
         self.assertEqual(capabilities.dialogs, ("confirm", "select"))
         self.assertTrue(capabilities.models_list)
         self.assertTrue(capabilities.thinking)
+        self.assertEqual(capabilities.thinking_levels, ("off", "low"))
+        self.assertTrue(capabilities.system_prompt)
         self.assertTrue(capabilities.history_paging)
         self.assertFalse(capabilities.tool_streaming)
         self.assertTrue(capabilities.attachments_images)

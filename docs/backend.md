@@ -53,6 +53,8 @@ All modules use `from __future__ import annotations` and are linted by `ruff`
 | `--pi-session-dir` | `$WEBTERM_PI_SESSION_DIR` or `$XDG_STATE_HOME/webterm/pi-sessions` | Managed root for persisted pi sessions, exports, and the resume picker. |
 | `--llama-url` | `$WEBTERM_LLAMA_URL` or `$LLAMA_SWAP_URL` | llama-server/llama-swap base URL; adds a `llama` chat agent profile (see [llama.md](llama.md)). |
 | `--llama-model` | `$WEBTERM_LLAMA_MODEL` | Default model for the `llama` profile. |
+| `--llama-system-prompt` | `$WEBTERM_LLAMA_SYSTEM_PROMPT` | Initial system prompt for `llama` chats. |
+| `--llama-thinking` | `$WEBTERM_LLAMA_THINKING` | Initial thinking level for `llama` chats (`default`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). |
 | `--control-socket` | `$XDG_RUNTIME_DIR/webterm/control.sock` | Unix socket for the local agent control API. |
 | `--no-control` | off | Disable the local control socket. |
 | `--agent NAME=COMMAND` | `pi` if installed | Agent profile for `spawn` (print mode); `{task}` is substituted. |
@@ -77,7 +79,8 @@ profiles carry `print`, `interactive`, and optional `rpc` templates plus an
 optional `adapter` name. The default `pi` RPC profile and every browser-created
 pi session load the bundled `webterm/integration/pi/extension.ts` extension;
 the `llama` profile starts the canonical adapter described in
-[llama.md](llama.md).
+[llama.md](llama.md), forwarding the configured model, system prompt, and
+thinking level as adapter flags.
 
 The config dict currently supports `fontFamily`, `launchers`, `agents`, and
 `pi` (`available`, `cwd`, `sessionDir`); it is served as

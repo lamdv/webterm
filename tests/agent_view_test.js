@@ -346,6 +346,64 @@ assert.ok(
 findByClass(paged.element, "pi-history-more").dispatch("click");
 assert.deepStrictEqual(pagedCalls, [["e1", 40]], "page requested before the oldest entry");
 
+// Model, thinking and system-prompt controls: each selection becomes one
+// canonical command, and the view tracks the value it last set.
+const controlCalls = [];
+const controlled = window.WebtermAgent.create(
+  { id: "3-1", title: "controls", model: "model-a" },
+  {
+    onCommand: (command) => {
+      controlCalls.push(command);
+      if (command.type === "list_models") {
+        return Promise.resolve({
+          models: [
+            { id: "model-a", name: "Model A" },
+            { id: "model-b", name: "Model B" },
+          ],
+          default: "model-a",
+        });
+      }
+      return Promise.resolve({});
+    },
+  }
+);
+controlled.handle({
+  type: "agent_resync",
+  entries: [],
+  state: {
+    model: "model-a",
+    streaming: false,
+    settled: true,
+    thinking_level: "default",
+    system_prompt: "Be terse.",
+  },
+  capabilities: {
+    prompt: true,
+    abort: true,
+    models: {
+      list: true,
+      set: true,
+      thinking: true,
+      levels: ["default", "low", "high"],
+    },
+    system_prompt: true,
+  },
+  dialogs: [],
+  cursor: { seq: 1 },
+});
+
+const controls = findByClass(controlled.element, "agent-controls");
+assert.ok(controls && controls.hidden === false, "control bar rendered");
+const modelSelect = findByClass(controlled.element, "agent-model");
+assert.ok(modelSelect && !modelSelect.hidden, "model picker rendered");
+const thinkingSelect = findByClass(controlled.element, "agent-thinking");
+assert.ok(thinkingSelect && !thinkingSelect.hidden, "thinking picker rendered");
+assert.strictEqual(
+  findByClass(controlled.element, "agent-system-toggle").textContent,
+  "system prompt · set",
+  "system prompt button shows that a prompt is set"
+);
+
 (async () => {
   await new Promise((resolve) => setImmediate(resolve));
   assert.ok(textOf(paged.element).includes("older message"), "earlier page prepended");
@@ -354,6 +412,57 @@ assert.deepStrictEqual(pagedCalls, [["e1", 40]], "page requested before the olde
     null,
     "load-earlier button gone once the history is exhausted"
   );
+
+  assert.deepStrictEqual(
+    modelSelect.children.map((option) => option.value),
+    ["model-a", "model-b"],
+    "model picker populated from list_models"
+  );
+  assert.strictEqual(modelSelect.value, "model-a", "current model selected");
+  assert.deepStrictEqual(
+    thinkingSelect.children.map((option) => option.value),
+    ["default", "low", "high"],
+    "thinking picker uses the adapter's levels"
+  );
+  assert.strictEqual(thinkingSelect.value, "default", "current thinking level selected");
+
+  thinkingSelect.value = "high";
+  thinkingSelect.dispatch("change");
+  assert.deepStrictEqual(
+    controlCalls[controlCalls.length - 1],
+    { type: "set_thinking", level: "high" },
+    "thinking selection sends set_thinking"
+  );
+
+  modelSelect.value = "model-b";
+  modelSelect.dispatch("change");
+  assert.deepStrictEqual(
+    controlCalls[controlCalls.length - 1],
+    { type: "set_model", model: "model-b" },
+    "model selection sends set_model"
+  );
+
+  const systemToggle = findByClass(controlled.element, "agent-system-toggle");
+  systemToggle.dispatch("click");
+  const systemPanel = findByClass(controlled.element, "agent-system-panel");
+  assert.ok(!systemPanel.hidden, "system prompt panel opens");
+  const systemInput = findByClass(controlled.element, "agent-system-input");
+  assert.strictEqual(systemInput.value, "Be terse.", "current system prompt prefilled");
+  systemInput.value = "Be brief.";
+  findByClass(controlled.element, "agent-system-save").dispatch("click");
+  assert.deepStrictEqual(
+    controlCalls[controlCalls.length - 1],
+    { type: "set_system_prompt", text: "Be brief." },
+    "saving the panel sends set_system_prompt"
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(systemPanel.hidden, "system prompt panel closes after saving");
+  assert.ok(
+    textOf(controlled.element).includes("thinking high"),
+    "status bar reports the selected thinking level"
+  );
+
   console.log("agent view smoke test passed");
 })().catch((error) => {
   console.error(error);

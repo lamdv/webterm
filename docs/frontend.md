@@ -248,18 +248,20 @@ chips (`setStatus`), pre-composer widgets (`setWidget`), the chat header title
 (`setTitle`), and composer prefill (`set_editor_text`). A pending dialog adds a
 `!` badge to the session tab and `needs_input` to session metadata.
 
-### Canonical agent view (experimental)
+### Canonical agent view
 
-`?agentui=1` switches pi-backed sessions to `window.WebtermAgent.create()` in
-`agent.js`. The legacy `pi.js` view remains the default; without the query flag
-`app.js` never sends `agent_api` and the server emits no canonical traffic.
+`agent.js` renders every native structured agent (an adapter other than
+`"pi"`, such as `llama`) and pi-backed sessions when `?agentui=1` switches
+them over. The legacy `pi.js` view remains the pi default; native agents have
+no legacy channel, so `app.js` subscribes them with `"agent_api":true` and
+routes `agent_resync` / `agent_event` / `agent_dialog_*` to this view without
+the query flag.
 
-When enabled, `app.js` subscribes with `"agent_api":true`, routes
-`agent_resync` / `agent_event` / `agent_dialog_*` to the canonical view, and
-drives it through the canonical `agent` command envelope: `prompt`, `steer`
-(busy + Ctrl/Cmd+Enter), `follow_up` (busy + Enter), `abort`, and
-`dialog_response`. The view never sees pi's RPC dialect; the server maps each
-canonical command onto the adapter.
+`app.js` drives the view through the canonical `agent` command envelope:
+`prompt`, `steer` (busy + Ctrl/Cmd+Enter), `follow_up` (busy + Enter), `abort`,
+`dialog_response`, and the generic `onCommand` hook used by the controls. The
+view never sees an adapter's native dialect; the server maps each canonical
+command onto the codec.
 
 The view keeps a canonical transcript (entries from `agent_resync`, then live
 `message.*` events), tool execution state keyed by `call_id`, usage/model
@@ -268,6 +270,18 @@ images as placeholders, and user/assistant/tool entries. When the snapshot
 reports `has_more`, a **Load earlier messages** button fetches one backwards
 page with `agent.get_history` and prepends it without moving the reader; it
 disappears once the history is exhausted.
+
+A controls row above the transcript is capability-driven. When
+`models.list` is advertised it fills a model picker from `list_models` and
+sends `set_model`; when `models.thinking` is advertised a thinking picker uses
+the adapter's `models.levels` (falling back to `off`, `minimal`, `low`,
+`medium`, `high`, `xhigh`, `max`) and sends `set_thinking`; when
+`system_prompt` is advertised a panel edits the prompt and sends
+`set_system_prompt` (an empty value clears it). Each control tracks the value
+the adapter accepted in the view's local `state.meta`, so the header and the
+status bar update without a resync. Adapters that do not advertise a control
+never see it, which is why the llama chat has all three and pi's canonical view
+does not.
 
 ### Resize and fitting
 

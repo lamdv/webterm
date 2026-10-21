@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest import mock
 
 from webterm.__main__ import build_parser, main, parse_agents, parse_launchers
 
@@ -102,6 +104,35 @@ class AgentProfileTests(unittest.TestCase):
         self.assertEqual(args.max_agent_depth, 3)
         self.assertEqual(args.max_agent_children, 5)
         self.assertTrue(args.no_control)
+
+    def test_parser_accepts_llama_chat_defaults(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "--llama-url",
+                "http://127.0.0.1:8080",
+                "--llama-model",
+                "gemma",
+                "--llama-system-prompt",
+                "Be terse.",
+                "--llama-thinking",
+                "low",
+            ]
+        )
+        self.assertEqual(args.llama_url, "http://127.0.0.1:8080")
+        self.assertEqual(args.llama_model, "gemma")
+        self.assertEqual(args.llama_system_prompt, "Be terse.")
+        self.assertEqual(args.llama_thinking, "low")
+
+    def test_parser_rejects_unknown_llama_thinking_level(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            build_parser().parse_args(["--llama-thinking", "bogus"])
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_main_rejects_unknown_llama_thinking_from_env(self) -> None:
+        with mock.patch.dict(os.environ, {"WEBTERM_LLAMA_THINKING": "bogus"}):
+            with self.assertRaises(SystemExit) as caught:
+                main([])
+        self.assertEqual(caught.exception.code, 2)
 
 
 if __name__ == "__main__":

@@ -36,6 +36,17 @@
   /** Entries requested per backwards page, matching the pi view. */
   const HISTORY_PAGE_SIZE = 40;
 
+  /** Thinking levels used when an adapter does not advertise its own list. */
+  const FALLBACK_THINKING_LEVELS = [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ];
+
   function renderPlain(parent, text) {
     parent.appendChild(el("div", "pi-text", String(text || "")));
   }
@@ -70,6 +81,8 @@
         : () => Promise.resolve();
     const onAbort =
       typeof options.onAbort === "function" ? options.onAbort : () => Promise.resolve();
+    const onCommand =
+      typeof options.onCommand === "function" ? options.onCommand : null;
     const onDialogResponse =
       typeof options.onDialogResponse === "function"
         ? options.onDialogResponse
@@ -81,6 +94,36 @@
     const titleEl = el("span", "pi-title", session.title || "agent");
     const metaEl = el("span", "pi-status agent-header-meta", "");
     header.append(titleEl, metaEl);
+
+    const controls = el("div", "agent-controls");
+    const modelSelect = el("select", "agent-control agent-model");
+    modelSelect.title = "Model for the next reply";
+    modelSelect.setAttribute("aria-label", "Model");
+    const thinkingSelect = el("select", "agent-control agent-thinking");
+    thinkingSelect.title = "Thinking effort for the next reply";
+    thinkingSelect.setAttribute("aria-label", "Thinking effort");
+    const systemButton = el("button", "agent-system-toggle", "system prompt");
+    systemButton.type = "button";
+    systemButton.title = "Edit the system prompt used for this chat";
+    controls.append(modelSelect, thinkingSelect, systemButton);
+
+    const systemPanel = el("div", "agent-system-panel");
+    systemPanel.hidden = true;
+    const systemLabel = el("label", "agent-system-label", "System prompt");
+    const systemInput = el("textarea", "agent-system-input");
+    systemInput.rows = 4;
+    systemInput.placeholder =
+      "Instructions sent as the system message for every request. Empty clears it.";
+    systemLabel.append(systemInput);
+    const systemActions = el("div", "agent-system-actions");
+    const systemSave = el("button", "agent-system-save", "Save");
+    systemSave.type = "button";
+    const systemClear = el("button", "agent-system-clear", "Clear");
+    systemClear.type = "button";
+    const systemClose = el("button", "agent-system-close", "Cancel");
+    systemClose.type = "button";
+    systemActions.append(systemSave, systemClear, systemClose);
+    systemPanel.append(systemLabel, systemActions);
 
     const banner = el("div", "pi-banner agent-banner");
     banner.hidden = true;
@@ -106,7 +149,7 @@
     actions.append(sendButton, stopButton);
     form.append(input, actions);
 
-    root.append(header, banner, messagesEl, dialogHost, form, footer);
+    root.append(header, controls, systemPanel, banner, messagesEl, dialogHost, form, footer);
 
     const state = {
       entries: [],
@@ -118,6 +161,7 @@
       connected: false,
       meta: {},
       capabilities: {},
+      systemOpen: false,
       usage: { tokens: 0, cost: 0 },
       toolState: new Map(),
       dialogs: new Map(),
@@ -156,6 +200,198 @@
       }, 5000);
     }
 
+    function modelsCapability() {
+      const caps = state.capabilities || {};
+      const models = caps.models;
+      return models && typeof models === "object" ? models : {};
+    }
+
+    function thinkingLevels() {
+      const models = modelsCapability();
+      const levels = Array.isArray(models.levels)
+        ? models.levels.filter((level) => typeof level === "string" && level)
+        : [];
+      return levels.length ? levels : FALLBACK_THINKING_LEVELS;
+    }
+
+    function showModelsError(error) {
+      showNotice(
+        error && error.message ? error.message : "could not load models",
+        "error"
+      );
+    }
+
+    let modelsLoaded = false;
+    let thinkingSignature = "";
+
+    function loadModels() {
+      if (modelsLoaded || !onCommand) return;
+      const models = modelsCapability();
+      if (!models.list) return;
+      modelsLoaded = true;
+      Promise.resolve(onCommand({ type: "list_models" })).then(
+        (data) => {
+          const list = data && Array.isArray(data.models) ? data.models : [];
+          modelSelect.innerHTML = "";
+          for (const model of list) {
+            if (!model || typeof model.id !== "string" || !model.id) continue;
+            const label = model.name ? model.name + " (" + model.id + ")" : model.id;
+            const option = el("option", "", label);
+            option.value = model.id;
+            modelSelect.appendChild(option);
+          }
+          modelSelect.value = state.meta.model || session.model || "";
+          syncControls();
+        },
+        (error) => {
+          modelsLoaded = false;
+          showModelsError(error);
+          scheduleRender();
+        }
+      );
+    }
+
+    function syncControls() {
+      const models = modelsCapability();
+      const showModels = Boolean(models.list && onCommand);
+      modelSelect.hidden = !showModels;
+      if (showModels && !modelSelect.children.length) {
+        const option = el("option", "", "loading models…");
+        option.value = "";
+        modelSelect.appendChild(option);
+      }
+
+      const showThinking = Boolean(models.thinking && onCommand);
+      thinkingSelect.hidden = !showThinking;
+      if (showThinking) {
+        const levels = thinkingLevels();
+        const signature = levels.join("\n");
+        if (signature !== thinkingSignature) {
+          thinkingSignature = signature;
+          thinkingSelect.innerHTML = "";
+          for (const level of levels) {
+            const label = level === "default" ? "thinking: default" : "thinking: " + level;
+            const option = el("option", "", label);
+            option.value = level;
+            thinkingSelect.appendChild(option);
+          }
+        }
+        const level = state.meta.thinking_level;
+        if (typeof level === "string" && level) thinkingSelect.value = level;
+      }
+
+      const showSystem = Boolean(state.capabilities.system_prompt && onCommand);
+      systemButton.hidden = !showSystem;
+      if (!showSystem) state.systemOpen = false;
+      systemButton.classList.toggle("set", Boolean(state.meta.system_prompt));
+      systemButton.textContent = state.meta.system_prompt
+        ? "system prompt · set"
+        : "system prompt";
+      systemPanel.hidden = !state.systemOpen;
+
+      controls.hidden =
+        modelSelect.hidden && thinkingSelect.hidden && systemButton.hidden;
+      modelSelect.disabled = state.exited || !models.set;
+      thinkingSelect.disabled = state.exited;
+      systemButton.disabled = state.exited;
+      systemSave.disabled = state.exited;
+      systemClear.disabled = state.exited;
+    }
+
+    function submitSystemPrompt(text) {
+      if (!onCommand) return;
+      const value = String(text || "");
+      systemSave.disabled = true;
+      Promise.resolve(onCommand({ type: "set_system_prompt", text: value }))
+        .then(
+          () => {
+            state.meta.system_prompt = value.trim();
+            state.systemOpen = false;
+            showNotice(
+              state.meta.system_prompt ? "system prompt updated" : "system prompt cleared"
+            );
+          },
+          (error) => {
+            showNotice(
+              error && error.message ? error.message : "could not set the system prompt",
+              "error"
+            );
+          }
+        )
+        .then(() => {
+          systemSave.disabled = state.exited;
+          scheduleRender();
+        });
+    }
+
+    modelSelect.addEventListener("change", () => {
+      if (!onCommand || !modelsCapability().set) return;
+      const model = modelSelect.value;
+      const previous = state.meta.model || session.model || "";
+      if (!model || model === previous) return;
+      modelSelect.disabled = true;
+      Promise.resolve(onCommand({ type: "set_model", model })).then(
+        () => {
+          state.meta.model = model;
+          modelSelect.disabled = false;
+          showNotice("model: " + model);
+          scheduleRender();
+        },
+        (error) => {
+          modelSelect.value = previous;
+          modelSelect.disabled = false;
+          showNotice(
+            error && error.message ? error.message : "could not switch model",
+            "error"
+          );
+          scheduleRender();
+        }
+      );
+    });
+
+    thinkingSelect.addEventListener("change", () => {
+      if (!onCommand) return;
+      const level = thinkingSelect.value;
+      const previous = state.meta.thinking_level;
+      if (!level || level === previous) return;
+      thinkingSelect.disabled = true;
+      Promise.resolve(onCommand({ type: "set_thinking", level })).then(
+        () => {
+          state.meta.thinking_level = level;
+          thinkingSelect.disabled = false;
+          showNotice("thinking: " + level);
+          scheduleRender();
+        },
+        (error) => {
+          thinkingSelect.value = previous || thinkingLevels()[0] || "";
+          thinkingSelect.disabled = false;
+          showNotice(
+            error && error.message ? error.message : "could not set thinking effort",
+            "error"
+          );
+          scheduleRender();
+        }
+      );
+    });
+
+    systemButton.addEventListener("click", () => {
+      state.systemOpen = !state.systemOpen;
+      if (state.systemOpen) {
+        systemInput.value =
+          typeof state.meta.system_prompt === "string" ? state.meta.system_prompt : "";
+      }
+      scheduleRender();
+    });
+    systemSave.addEventListener("click", () => submitSystemPrompt(systemInput.value));
+    systemClear.addEventListener("click", () => {
+      systemInput.value = "";
+      submitSystemPrompt("");
+    });
+    systemClose.addEventListener("click", () => {
+      state.systemOpen = false;
+      scheduleRender();
+    });
+
     function updateStatus() {
       const bits = [];
       if (state.exited) bits.push("exited");
@@ -165,6 +401,9 @@
       else bits.push("ready");
       const model = state.meta.model || session.model;
       if (model) bits.push(String(model));
+      if (state.meta.thinking_level && state.meta.thinking_level !== "default") {
+        bits.push("thinking " + state.meta.thinking_level);
+      }
       if (state.usage.tokens) bits.push(state.usage.tokens + " tok");
       if (state.usage.cost > 0) bits.push("$" + Number(state.usage.cost).toFixed(4));
       statusEl.textContent = bits.join(" · ");
@@ -384,6 +623,7 @@
         if (state.live) messagesEl.append(renderMessage(state.live, true));
       }
       renderDialogs();
+      syncControls();
       updateStatus();
       if (atBottom) {
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -526,6 +766,12 @@
         case "session.info":
           if (event.model) state.meta.model = event.model;
           if (event.name !== undefined) state.meta.name = event.name;
+          if (typeof event.thinking_level === "string") {
+            state.meta.thinking_level = event.thinking_level;
+          }
+          if (typeof event.system_prompt === "string") {
+            state.meta.system_prompt = event.system_prompt;
+          }
           if (event.title) titleEl.textContent = event.title;
           break;
         case "notice":
@@ -569,6 +815,7 @@
       state.history.firstId =
         typeof message.first_entry_id === "string" ? message.first_entry_id : null;
       if (state.meta.name) titleEl.textContent = state.meta.name;
+      loadModels();
       render();
     }
 

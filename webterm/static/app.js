@@ -758,6 +758,10 @@
             message: text,
           }),
         onAbort: () => sendAgentCommand(session.id, { type: "abort" }),
+        onCommand: (command) =>
+          sendAgentCommand(session.id, command).then(
+            (response) => response && response.data
+          ),
         onDialogResponse: (dialogId, _kind, response) =>
           sendAgentDialogResponse(session.id, dialogId, response),
         onHistory: (before, limit) =>

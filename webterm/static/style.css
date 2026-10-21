@@ -2153,6 +2153,144 @@ h6.pi-md-heading {
   font-size: 11px;
 }
 
+.agent-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+}
+
+.agent-controls[hidden] {
+  display: none;
+}
+
+.agent-control {
+  max-width: min(280px, 45vw);
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-control:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.agent-control:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-system-toggle {
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-system-toggle:hover:not(:disabled),
+.agent-system-toggle.set {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.agent-system-toggle.set {
+  color: var(--accent);
+}
+
+.agent-system-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-system-panel {
+  flex: 0 0 auto;
+  padding: 8px 14px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+
+.agent-system-panel[hidden] {
+  display: none;
+}
+
+.agent-system-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.agent-system-input {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.agent-system-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.agent-system-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.agent-system-actions button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-system-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-alt);
+}
+
+.agent-system-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-system-actions .agent-system-save {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
 .agent-msg.optimistic {
   opacity: 0.7;
 }
