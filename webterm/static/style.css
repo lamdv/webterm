@@ -10,6 +10,10 @@
   --danger: #e5534b;
   --ok: #3fb950;
   --warn: #d29922;
+  /* Tell the UA the page is dark so native widgets (the `<select>` popup and
+     its arrow, scrollbars, form-control defaults) use the dark palette
+     instead of the light system one. */
+  color-scheme: dark;
   font-size: 14px;
 }
 
@@ -2185,8 +2189,33 @@ h6.pi-md-heading {
 }
 
 .agent-control:disabled {
-  opacity: 0.5;
+  /* An explicit dim foreground stays readable on `--bg` (~5:1); halving the
+     control's opacity instead mixed it into the background (~3.5:1). */
+  color: var(--text-dim);
   cursor: default;
+}
+
+/* Native dropdown lists (`agent.js` controls, `app.js` popovers) paint
+   themselves, so the panel styling above does not reach the options. Set them
+   explicitly: normal and disabled text follow the palette, and a selected
+   option (which some browsers paint on `--accent`) keeps a foreground that is
+   readable there. */
+.agent-control option,
+.popover select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.agent-control option:checked,
+.popover select option:checked {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.agent-control option:disabled,
+.popover select option:disabled {
+  background: var(--bg-elevated);
+  color: var(--text-dim);
 }
 
 .agent-system-toggle {

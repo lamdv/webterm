@@ -19,6 +19,21 @@ class AgentViewJSTests(unittest.TestCase):
         self.assertIn('/agent.js', index.read_text(encoding="utf-8"))
         self.assertIsNotNone(resolve_static("/agent.js"))
 
+    def test_native_selects_follow_the_dark_palette(self) -> None:
+        """The UA must be told the page is dark, and option colors set by hand."""
+        style = resolve_static("/style.css")
+        self.assertIsNotNone(style)
+        css = style.read_text(encoding="utf-8")
+        root = css[css.index(":root") : css.index("}", css.index(":root"))]
+        self.assertIn("color-scheme: dark", root)
+        for selector in (".agent-control option", ".popover select option"):
+            block = css[css.index(selector) : css.index("}", css.index(selector))]
+            self.assertIn("background: var(--bg-elevated)", block, selector)
+            self.assertIn("color: var(--text)", block, selector)
+        checked = css[css.index(".agent-control option:checked") :]
+        self.assertIn("background: var(--accent)", checked[: checked.index("}")])
+        self.assertIn("color: var(--bg)", checked[: checked.index("}")])
+
     def test_agent_view_reducer_smoke(self) -> None:
         node = shutil.which("node")
         if node is None:
