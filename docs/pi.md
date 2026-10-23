@@ -19,8 +19,11 @@ wired end to end (the composer takes pasted or dropped images on prompts,
 steering messages, and follow-ups, and the server validates them before they
 reach pi), and the TUI-only surfaces below are disclosed in the UI through
 `/limits`. A mobile pass remains. Tracking
-issue: #10. For the existing PTY-based pi launcher, nothing changes: it stays
-as the escape hatch for TUI-only features.
+issue: #10. The canonical view (`static/agent.js`) is the single long-term
+renderer for pi as well: `static/pi.js` is legacy and is retired feature by
+feature (#13), with the default switched only once parity is reached. For the
+existing PTY-based pi launcher, nothing changes: it stays as the escape hatch
+for TUI-only features.
 
 ## Goals
 

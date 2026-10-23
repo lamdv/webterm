@@ -197,12 +197,15 @@ Unknown ids are ignored.
 
 ### Structured views
 
-Every structured session reports `kind: "agent"`; `session.adapter` selects the
-renderer. `reconcileSessions` gives a native canonical agent (`adapter` other
-than `"pi"`) the canonical view (`ensureAgentView`) and subscribes without
-`agent_api`, because it has no `pi_*` stream at all. pi keeps the pi view below
-unless `?agentui=1` requests the canonical one. Both kinds are routed away from
-xterm by their `kind`.
+Every structured session reports `kind: "agent"`. `agent.js` is the
+**canonical renderer** for all of them, pi included; the pi-specific `pi.js`
+below is legacy and is being retired feature by feature (#13), which is why pi
+still defaults to it until parity. `reconcileSessions` gives a native canonical
+agent (`adapter` other than `"pi"`) the canonical view (`ensureAgentView`) and
+subscribes without `agent_api`, because it has no `pi_*` stream at all. pi
+keeps the pi view unless `?agentui=1` requests the canonical one. Both kinds are
+routed away from xterm by their `kind`. New chat features land in `agent.js`
+only; `pi.js` receives fixes, not features.
 
 Both chat views mount the same **transcript search** (`static/find.js`) above
 their message list: Ctrl/Cmd+F inside the view, or the `find` button in the
