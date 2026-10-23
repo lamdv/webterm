@@ -520,18 +520,27 @@ or the resume picker on a file a tab already has). It does not extend to a
 operational rule, documented here and in the `/limits` modal: close the
 structured session before resuming its file in a TUI or another server.
 
-## Deferred decisions
+## Decisions
 
-- **Compatibility.** Minimum supported pi version, and whether to gate on
-  `pi --version` or feature-detect from `get_state` / `get_commands` and ignore
-  unknown events.
-- **Persistent trust.** Reading pi's trust store to respect a saved deny, or
-  writing a persistent webterm decision.
-- **Server restart.** Pi sessions die with the server today; decide whether a
-  persisted session file enables resume after restart.
-- **TUI interop.** "Open in TUI" is decided (closed session only, documented
-  above) but not built; there is no lock to wait for, only the single-writer
-  rule.
+- **Compatibility.** `pi --version` is probed once at startup (before the loop,
+  so nothing blocking runs in a coroutine), logged when it is not the tested
+  release (`pi_config.TESTED_VERSION`), and exposed as `pi.version` /
+  `pi.testedVersion` in `/config.js`. There is no hard gate: the reducer
+  ignores unknown records and the raw envelope absorbs new commands, so a
+  version mismatch is a warning rather than a refusal.
+- **Persistent trust.** Not implemented, by decision. Trust stays a per-launch
+  choice enforced by the server (`--approve` / `--no-approve`); webterm neither
+  reads nor writes pi's trust store, so a saved deny is not silently overridden
+  and nothing outside the browser is mutated.
+- **Server restart.** The pi process dies with the server, but the conversation
+  does not: the session file is already in the managed root, so the resume
+  picker reopens it after a restart. Nothing auto-resumes, because reviving
+  sessions on boot would restart runs and costs nobody asked for. In-memory
+  losses are the queue, pending dialogs, and the live event ring; the
+  transcript, model, thinking level, and name come back from disk.
+- **TUI interop.** Decided (closed session only, see
+  [Session file contention](#session-file-contention)) and not built; there is
+  no lock to wait for, only the single-writer rule.
 
 ## P0 scope
 

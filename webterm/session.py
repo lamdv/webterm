@@ -544,6 +544,8 @@ class SessionManager:
         #: Model for browser-created pi sessions that do not choose one.  It is
         #: passed to pi verbatim, so ``provider/id`` and ``:thinking`` work.
         self.pi_default_model = pi_default_model or None
+        #: Installed pi version, probed once at startup (None when unknown).
+        self.pi_version: str | None = None
         #: Cached model probe for the new-session picker.
         self.pi_model_cache = PiModelCache()
         #: Webterm-managed root for pi session files; ``None`` disables

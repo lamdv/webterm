@@ -92,7 +92,8 @@ sections:
 - `sessionsMeta` — the latest `sessions` list from the server.
 - `userLaunchers` — user-defined launcher pills, persisted.
 - `CONFIG = window.WEBTERM_CONFIG || {}` — `fontFamily`, `fontSize`,
-  `launchers`, `pi` (`available`, `cwd`, `sessionDir`), and `agents` (structured
+  `launchers`, `pi` (`available`, `cwd`, `sessionDir`, `version`,
+`testedVersion`), and `agents` (structured
   profiles; the `llama` entry drives the browser's llama chat launcher).
 - Reconnect state: `socket`, `reconnectDelay`, `closedByPage`,
   `activateNext`, `restarting`. Each terminal entry also tracks `offset`, the

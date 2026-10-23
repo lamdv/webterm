@@ -318,6 +318,10 @@ def main(argv: list[str] | None = None) -> int:
     shell = args.shell or _default_shell()
     cwd = args.cwd or os.path.expanduser("~")
     pi_bin = shutil.which("pi")
+    # Probe before the loop starts: this is the only pi call the server makes
+    # synchronously, and knowing the version lets a mismatch be reported once
+    # instead of looking like a webterm bug later.
+    pi_version = pi_config.probe_version([pi_bin] if pi_bin else None) if pi_bin else None
 
     manager = SessionManager(
         shell=shell,
@@ -332,6 +336,14 @@ def main(argv: list[str] | None = None) -> int:
         pi_available=pi_bin is not None,
         pi_default_model=args.default_pi_model,
     )
+    manager.pi_version = pi_version
+    if pi_version is not None and not pi_config.version_is_tested(pi_version):
+        log.warning(
+            "pi %s is installed; webterm is tested against %s. Unknown RPC records are"
+            " ignored, but commands may differ.",
+            pi_version,
+            pi_config.TESTED_VERSION,
+        )
 
     config: dict[str, object] = {}
     if args.font:
@@ -384,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         cwd,
         is_available=manager.pi_available,
         default_model=manager.pi_default_model,
+        version=pi_version,
     )
 
     profiles = parse_agents(

@@ -83,7 +83,8 @@ the `llama` profile starts the canonical adapter described in
 thinking level as adapter flags.
 
 The config dict currently supports `fontFamily`, `launchers`, `agents`, and
-`pi` (`available`, `cwd`, `sessionDir`); it is served as
+`pi` (`available`, `cwd`, `sessionDir`, `version`, `testedVersion`); it is
+served as
 `window.WEBTERM_CONFIG` by `/config.js`. At startup `main()` creates and
 resolves the pi session root (`0700`) only when pi is installed or
 `--pi-session-dir` was given explicitly. Without pi, `pi_available` is false,

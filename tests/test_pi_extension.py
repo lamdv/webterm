@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -85,3 +86,24 @@ class ExtensionRegistrationTests(unittest.TestCase):
         self.assertIn("webterm", commands)
         self.assertEqual(commands["webterm"]["source"], "extension")
         self.assertEqual(commands["webterm"]["sourceInfo"]["path"], str(EXTENSION))
+
+
+class PiVersionTests(unittest.TestCase):
+    def test_probe_reads_the_version_line(self) -> None:
+        version = pi_config.probe_version(
+            [sys.executable, "-c", "print('9.9.9')"]
+        )
+        self.assertEqual(version, "9.9.9")
+
+    def test_probe_returns_none_when_the_binary_is_missing(self) -> None:
+        self.assertIsNone(pi_config.probe_version(["/nonexistent/pi"]))
+
+    def test_frontend_config_reports_version_and_the_tested_release(self) -> None:
+        config = pi_config.frontend_config(
+            None, "/tmp/project", is_available=True, version="9.9.9"
+        )
+        self.assertEqual(config["version"], "9.9.9")
+        self.assertEqual(config["testedVersion"], pi_config.TESTED_VERSION)
+        self.assertTrue(pi_config.version_is_tested(pi_config.TESTED_VERSION))
+        self.assertFalse(pi_config.version_is_tested("9.9.9"))
+        self.assertFalse(pi_config.version_is_tested(None))

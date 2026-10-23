@@ -7,7 +7,9 @@ backend plugin interface.
 from __future__ import annotations
 
 import os
+import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +38,42 @@ def available() -> bool:
     return shutil.which("pi") is not None
 
 
+#: The pi release webterm is developed and tested against.  A different version
+#: is not blocked — pi's RPC surface is version-agnostic enough that the reducer
+#: ignores unknown records — but it is reported so a protocol change is not
+#: mistaken for a webterm bug.
+TESTED_VERSION = "1.3.0"
+
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+
+
+def probe_version(command: list[str] | str | None = None) -> str | None:
+    """Return the installed pi version, or None when it cannot be read.
+
+    Called once at startup, before the event loop runs: ``pi --version`` is a
+    short-lived synchronous call, and probing lazily inside a coroutine would
+    block the loop.
+    """
+    argv = list(command) if isinstance(command, list) and command else command()
+    try:
+        result = subprocess.run(
+            [*argv, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = _VERSION_RE.search(result.stdout or "")
+    return match.group(0) if match else None
+
+
+def version_is_tested(version: str | None) -> bool:
+    """Return True when *version* is the release this webterm was tested with."""
+    return version == TESTED_VERSION
+
+
 def extension_path() -> str | None:
     """Return the bundled pi extension path, if it is present."""
     path = Path(__file__).with_name("extension.ts")
@@ -58,6 +96,7 @@ def frontend_config(
     *,
     is_available: bool | None = None,
     default_model: str | None = None,
+    version: str | None = None,
 ) -> dict[str, object]:
     """Return the pi block exposed through ``/config.js``."""
     return {
@@ -65,6 +104,8 @@ def frontend_config(
         "cwd": os.path.abspath(os.path.expanduser(cwd)),
         "sessionDir": session_dir,
         "defaultModel": default_model,
+        "version": version,
+        "testedVersion": TESTED_VERSION,
     }
 
 
