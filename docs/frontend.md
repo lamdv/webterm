@@ -399,12 +399,86 @@ with the slash palette open it only closes the palette.
 Typing `/` at the start of the composer opens a filterable slash-command
 palette (ArrowUp/ArrowDown move, Enter or Tab accepts, Escape closes). Enter
 with the palette open accepts the active entry and never sends the draft as a
-prompt. The entries are capability-gated and map onto controls the view already
-has: `/compact` (adapter `compaction`) sends `{"type":"compact"}`, `/model`
-(`models.set`) focuses the model picker, `/thinking` (`models.thinking`) focuses
-the thinking picker, and `/system` (`system_prompt`) toggles and focuses the
-system-prompt panel. `/limits`, tree/fork/clone, and export remain in `pi.js`;
-they move here in later phases of #13.
+prompt. The core entries are capability-gated and map onto controls the view
+already has: `/compact` (adapter `compaction`) sends `{"type":"compact"}`,
+`/model` (`models.set`) focuses the model picker, `/thinking`
+(`models.thinking`) focuses the thinking picker, and `/system`
+(`system_prompt`) toggles and focuses the system-prompt panel. After them the
+palette appends one entry per adapter-declared command, and last `/help` (see
+below).
+
+#### Declared commands
+
+A backend's own operations are not view features. `agent_resync` carries the
+adapter's `commands` manifest and its `help` list (both absent for an adapter
+that has neither), and the view renders that manifest instead of hardcoding
+names:
+
+```json
+{"name":"export","title":"Export session","description":"Download HTML or JSONL",
+ "args":[{"name":"format","type":"choice","title":"Format","required":true,
+          "choices":[{"value":"html","label":"HTML"}]}],
+ "danger":false}
+```
+
+Each declared command becomes one palette entry, listed after the core
+built-ins in manifest order with its `title` (also the row's tooltip) and
+`description`, and a `danger` chip when the adapter marks it destructive.
+Accepting one never changes the view's own state machine:
+
+- **No args** — the entry sends `{"type":"command","name":…}` immediately
+  (`args` is omitted).
+- **With args** — a small generic form opens (`div.agent-command-form`). It has
+  one control per arg, chosen by `type` only: a text `<input>` for `string`, a
+  `<select>` of `choices` (`{value,label}`) for `choice`, a checkbox for
+  `boolean`; an unknown type falls back to a text input. The arg's `title` is
+  its label, its `description` the help line under the control, and a required
+  arg gets an `*`.
+
+**Run** sends `{"type":"command","name":…,"args":{…}}` with the typed and
+selected values and closes the form; Enter in a field submits, Escape or
+**Cancel** closes without sending. Validation is local: an empty required arg
+blocks the submit with `Required: <label>` and keeps the form open, while an
+empty optional arg is simply left out of `args`. A boolean is always sent, so a
+checkbox that was never ticked reads as `false`.
+
+The form holds no backend knowledge — no field name, choice, or default is
+written in `agent.js` — so a new arg'd command needs no view change at all.
+
+#### Help dialog
+
+`help` entries (`{name,reason}`) are the features the adapter says **cannot**
+work over the protocol. While that list is non-empty the palette ends with
+`/help`, which opens a dialog listing one `name — reason` row per entry; with no
+entries the palette entry and the dialog do not exist. This replaces the
+hardcoded `/limits` gap list of the legacy view, so a missing feature reads as
+the adapter's own documented gap instead of a broken control.
+
+#### Render hints
+
+The response to a declared command comes back as `data`, which the view routes
+through a small fixed vocabulary (one dialog at a time; a resync closes it):
+
+| `data` | Rendered as |
+|---|---|
+| `{"notice":{"level","text"}}` | the banner the view already uses for notices, with the level as its class |
+| `{"download":{"url","filename","mime_type"}}` | a link to the server's authenticated route, labelled with `filename` (else `download`), carrying `download` and the MIME type below it |
+| `{"tree":{"nodes":[…],"leaf_id"}}` | a dialog of collapsible nodes: `label`, `detail`, a `current` chip on `leaf_id`, nested children rendered the same way (top-level branches start open), and one button per `actions` entry — a button sends that action's `command` through exactly the same path as a palette entry |
+| `{"text":"…"}` | a `<pre>` block; the text is never parsed as markup |
+| `{"refresh":true}` | `get_snapshot` through the view's command hook; the server also broadcasts `agent_resync`, which is what actually rehydrates the transcript |
+| anything else | a collapsible JSON `<details>` card, so an unknown shape stays visible instead of being dropped |
+
+A `success:false` answer arrives as a rejection from the command hook and takes
+the existing notice path (`showNotice(…, "error")`), so the adapter's own
+wording is what the human sees. Empty data renders nothing. The renderer knows
+only these shapes: it cannot render a backend's meaning, which is what keeps
+the manifest — not the view — the place where a feature is described.
+
+The view therefore carries no backend vocabulary: names, titles, args, choices,
+node labels, and results all arrive from the adapter, and the only fixed words
+in `agent.js` are the four core slash commands and the `help` entry. `pi.js`
+keeps its own hardcoded command list because it speaks pi's dialect directly;
+the canonical view does not grow with a backend.
 
 #### Transcript rendering
 
@@ -667,6 +741,8 @@ There is no browser test runner. The server's tests assert that `index.html` is
 served and that the xterm.js CDN tag is present (`tests/test_server.py`). The
 frontend is otherwise exercised manually, except for fake-DOM smoke tests run
 with Node through unittest (`tests/agent_view_test.js`,
-`tests/app_view_test.js`, `tests/path_complete_test.js`). Keep `app.js`
+`tests/agent_queue_test.js`, `tests/agent_declared_test.js`,
+`tests/app_view_test.js`, `tests/attach_test.js`, `tests/find_test.js`,
+`tests/limits_test.js`, `tests/path_complete_test.js`). Keep `app.js`
 dependency-free and avoid introducing a build step; anything added must run
 from the served static files.
