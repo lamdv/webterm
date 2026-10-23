@@ -496,8 +496,9 @@ Consequences:
   safe only when the structured session is **closed first**. That is why the
   `/limits` modal and this document both say so, and why no "open in TUI"
   button exists yet.
-- Resuming the same file twice from the browser is the same hazard, with no
-  guard today: two tabs can hold two live sessions over one file.
+- Resuming the same file twice from the browser would be the same hazard; the
+  server refuses it while a live session owns the file (see the decision
+  below).
 - Fork and clone write a new file with `wx`, so a fork target that already
   exists fails rather than overwriting — the safe failure.
 
