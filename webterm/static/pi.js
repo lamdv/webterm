@@ -1984,4 +1984,14 @@
   }
 
   window.WebtermPi = { create };
+  // Transitional registration: the pi view keeps the legacy raw envelope until
+  // its UI is ported onto the shared base class, at which point this file is
+  // replaced by a subclass that registers itself the same way.
+  if (window.WebtermAgentViews) {
+    window.WebtermAgentViews.register("pi", {
+      transport: "pi",
+      label: "pi",
+      create,
+    });
+  }
 })();

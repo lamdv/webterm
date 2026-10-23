@@ -2457,4 +2457,9 @@
   }
 
   window.WebtermAgent = { create };
+  // The generic view every adapter falls back to.  A backend with its own UI
+  // registers the same shape under its adapter name from its own module.
+  if (window.WebtermAgentViews) {
+    window.WebtermAgentViews.register("", { transport: "canonical", create });
+  }
 })();

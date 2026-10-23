@@ -18,7 +18,8 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/pathcomplete.js` | Literal `@path` completion popup shared by the chat composers, exposed as `window.WebtermPathComplete`. |
 | `webterm/static/attach.js` | Composer image input: paste, drag/drop, thumbnail strip, exposed as `window.WebtermAttach`. |
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
-| `webterm/static/agent.js` | Experimental canonical agent chat view, exposed as `window.WebtermAgent`. Enabled with `?agentui=1`. |
+| `webterm/static/agent.js` | The generic canonical agent chat view, exposed as `window.WebtermAgent`; also registers itself as the base of the adapter view registry. Enabled for pi with `?agentui=1`. |
+| `webterm/static/views.js` | Adapter view registry (self-registration + on-demand module loading), exposed as `window.WebtermAgentViews`. |
 | `webterm/static/find.js` | Client-side transcript search bar shared by both chat views, exposed as `window.WebtermFind`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
 
@@ -31,12 +32,13 @@ layout and the structure of `app.js`. For the server side see
 3. `xterm.js` from jsDelivr (pinned, `integrity`, `crossorigin`).
 4. `/config.js` (generated).
 5. `/highlight.js`.
-6. `/find.js`.
-7. `/pathcomplete.js`.
-8. `/attach.js`.
-9. `/pi.js`.
-10. `/agent.js`.
-11. `/app.js`.
+6. `/views.js`.
+7. `/find.js`.
+8. `/pathcomplete.js`.
+9. `/attach.js`.
+10. `/pi.js`.
+11. `/agent.js`.
+12. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -198,15 +200,34 @@ Unknown ids are ignored.
 
 ### Structured views
 
-Every structured session reports `kind: "agent"`. `agent.js` is the
-**canonical renderer** for all of them, pi included; the pi-specific `pi.js`
-below is legacy and is being retired feature by feature (#13), which is why pi
-still defaults to it until parity. `reconcileSessions` gives a native canonical
-agent (`adapter` other than `"pi"`) the canonical view (`ensureAgentView`) and
-subscribes without `agent_api`, because it has no `pi_*` stream at all. pi
-keeps the pi view unless `?agentui=1` requests the canonical one. Both kinds are
-routed away from xterm by their `kind`. New chat features land in `agent.js`
-only; `pi.js` receives fixes, not features.
+Every structured session reports `kind: "agent"`. Which view renders it is
+decided by an **adapter view registry** (`static/views.js`), not by a list of
+backend names in `app.js`:
+
+```js
+window.WebtermAgentViews.register("pi", {transport: "pi", label: "pi", create});
+```
+
+`create(session, hooks)` returns the view handle (`element`, `handle`,
+`setExited`, `activate`, `destroy`). `transport` selects the envelope the view
+speaks: `"canonical"` (the shared `agent` command and `agent_event` stream) or
+`"pi"` (the legacy raw pi envelope), and it is what `app.js` builds hooks for
+and what decides whether a subscription asks for `agent_api`. The view
+registered under `""` is the base every adapter falls back to; the generic
+canonical view (`agent.js`) registers it.
+
+The server advertises adapters in `/config.js` (`agentAdapters`, see
+[backend.md](backend.md)); `WebtermAgentViews.preload()` injects any advertised
+`view` module that the page has not loaded, so **adding a backend means adding
+a module and a registry/config entry, not editing `app.js` or `index.html`**.
+An adapter with no module, or whose module fails to load, uses the base view,
+and the declared commands in its resync keep its features reachable.
+
+`reconcileSessions` resolves `session.adapter` through the registry; `?agentui=1`
+forces the base canonical view for every adapter, which is how pi is previewed
+on the shared renderer. Both kinds are routed away from xterm by their `kind`.
+`agent.js` is the long-term renderer and receives new chat features; the pi
+module below is legacy until its UI is ported onto the base class (#13).
 
 Both chat views mount the same **transcript search** (`static/find.js`) above
 their message list: Ctrl/Cmd+F inside the view, or the `find` button in the

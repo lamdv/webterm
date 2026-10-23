@@ -403,6 +403,22 @@
     return Boolean(session) && session.kind === "agent" && session.adapter === "pi";
   }
 
+  /** Pick the view for an agent session from the adapter registry.
+   *
+   * No backend name appears here: modules register themselves under their
+   * adapter id, the server advertises which adapters exist, and anything
+   * without a registered view falls back to the generic canonical view.  The
+   * `?agentui=1` switch forces the generic view for every adapter, which is
+   * how pi is previewed on the shared renderer.
+   */
+  function viewFactory(session) {
+    const registry = window.WebtermAgentViews;
+    if (!registry || !session || session.kind !== "agent") return null;
+    const base = registry.base();
+    if (USE_AGENT_UI && base) return base;
+    return registry.resolve(session.adapter) || base;
+  }
+
   function reconcileSessions(sessions) {
     sessionsMeta = sessions;
     trackAnswers(sessions);
@@ -416,11 +432,12 @@
     for (const session of sessions) {
       seen.add(session.id);
       if (session.kind === "agent") {
-        // A native canonical agent has no pi view to fall back to; pi's view
-        // stays the default for pi sessions until the canonical one replaces it.
-        const canonical = !isPiSession(session) || USE_AGENT_UI;
-        if (canonical) ensureAgentView(session);
-        else ensurePiView(session);
+        // The registered view decides its envelope: a legacy `pi` view speaks
+        // the raw pi stream, every other view speaks the canonical one.
+        const factory = viewFactory(session);
+        const canonical = !factory || factory.transport !== "pi";
+        if (canonical) ensureAgentView(session, factory);
+        else ensurePiView(session, factory);
         if (!subscribed.has(session.id)) {
           subscribed.add(session.id);
           const subscribe = { type: "subscribe", session_id: session.id };
@@ -702,7 +719,7 @@
     return 1;
   }
 
-  function ensurePiView(session) {
+  function ensurePiView(session, factory) {
     let entry = piViews.get(session.id);
     if (entry) return entry;
 
@@ -712,8 +729,9 @@
     terminalArea.appendChild(wrapper);
 
     let view = null;
-    if (window.WebtermPi) {
-      view = window.WebtermPi.create(session, {
+    const create = (factory && factory.create) || (window.WebtermPi && window.WebtermPi.create);
+    if (create) {
+      view = create(session, {
         onCommand: (command) => sendPiCommand(session.id, command),
         onRefresh: () => request({ type: "pi_snapshot", session_id: session.id }),
         onHistory: (before, limit) =>
@@ -735,7 +753,7 @@
     return entry;
   }
 
-  function ensureAgentView(session) {
+  function ensureAgentView(session, factory) {
     let entry = agentViews.get(session.id);
     if (entry) return entry;
 
@@ -745,8 +763,10 @@
     terminalArea.appendChild(wrapper);
 
     let view = null;
-    if (window.WebtermAgent) {
-      view = window.WebtermAgent.create(session, {
+    const create =
+      (factory && factory.create) || (window.WebtermAgent && window.WebtermAgent.create);
+    if (create) {
+      view = create(session, {
         onPrompt: (text, streamingBehavior, images) =>
           sendAgentCommand(session.id, {
             // A prompt during a run becomes the canonical mid-run command; the
@@ -1120,6 +1140,9 @@
 
   function tabTag(session) {
     if (session.agent) return String(session.agent);
+    const registry = window.WebtermAgentViews;
+    const registered = registry ? registry.get(session.adapter) : null;
+    if (registered && registered.label) return registered.label;
     if (isPiSession(session)) return "pi";
     if (session.kind === "agent") return String(session.adapter || "agent");
     if (session.role === "agent") return "agent";
@@ -2456,6 +2479,12 @@
   }
 
   setStatus("", "connecting…");
+  // Adapter views the server advertises but the page did not load.  A session
+  // that appears before a module finishes loading uses the generic view; the
+  // declared commands in its resync keep its features reachable either way.
+  if (window.WebtermAgentViews) {
+    window.WebtermAgentViews.preload(CONFIG.agentAdapters || []);
+  }
   renderLaunchers();
   connect();
 
