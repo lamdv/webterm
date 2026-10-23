@@ -17,6 +17,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/highlight.js` | Safe fenced-code and diff highlighter, exposed as `window.WebtermHighlight`. |
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
 | `webterm/static/agent.js` | Experimental canonical agent chat view, exposed as `window.WebtermAgent`. Enabled with `?agentui=1`. |
+| `webterm/static/find.js` | Client-side transcript search bar shared by both chat views, exposed as `window.WebtermFind`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
 
 ### Load order
@@ -28,9 +29,10 @@ layout and the structure of `app.js`. For the server side see
 3. `xterm.js` from jsDelivr (pinned, `integrity`, `crossorigin`).
 4. `/config.js` (generated).
 5. `/highlight.js`.
-6. `/pi.js`.
-7. `/agent.js`.
-8. `/app.js`.
+6. `/find.js`.
+7. `/pi.js`.
+8. `/agent.js`.
+9. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -197,6 +199,22 @@ than `"pi"`) the canonical view (`ensureAgentView`) and subscribes without
 `agent_api`, because it has no `pi_*` stream at all. pi keeps the pi view below
 unless `?agentui=1` requests the canonical one. Both kinds are routed away from
 xterm by their `kind`.
+
+Both chat views mount the same **transcript search** (`static/find.js`) above
+their message list: Ctrl/Cmd+F inside the view, or the `find` button in the
+header, opens a bar with a query field, a `3 / 12` match count, next/previous
+buttons and a one-line snippet. Search runs over the text the view rendered,
+not over the DOM, so the count matches what the reader can see; the hit is
+marked inside the bar's snippet and the revealed entry gets a transient
+outline, because both renderers rebuild entry nodes while a reply streams and
+an in-place mark would vanish on the next delta. Revealing an entry opens every
+collapsed block under it (tool cards, thinking), and when the query has no
+match but earlier history is unloaded, the bar offers **search earlier
+messages**, which fetches one page and re-runs the query. A live, not yet
+finished message is searchable only after the adapter appends it as an entry,
+so the count never points at a node that has no stable id. The bar stops
+keyboard events it handles (Enter, Shift+Enter, Esc) so a search never sends a
+prompt or aborts a run.
 
 ### Pi view
 

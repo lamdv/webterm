@@ -74,7 +74,10 @@
     const header = el("div", "pi-header");
     const titleEl = el("span", "pi-title", session.title || "pi");
     const uiStatusesEl = el("div", "pi-ui-statuses");
-    header.append(titleEl, uiStatusesEl);
+    const findButton = el("button", "pi-find-toggle", "find");
+    findButton.type = "button";
+    findButton.title = "Search this transcript (Ctrl+F)";
+    header.append(titleEl, uiStatusesEl, findButton);
 
     // Runtime status lives in a bar at the very bottom of the view, under the
     // composer, so the header stays a pure title bar.
@@ -84,6 +87,7 @@
 
     const banner = el("div", "pi-banner");
     banner.hidden = true;
+    const findHost = el("div", "find-host");
     const messagesEl = el("div", "pi-messages");
     let stickToBottom = true;
     messagesEl.addEventListener("scroll", () => {
@@ -123,6 +127,7 @@
     root.append(
       header,
       banner,
+      findHost,
       messagesEl,
       queueEl,
       paletteEl,
@@ -263,7 +268,7 @@
       }
     }
 
-    function appendMessage(message, live) {
+    function appendMessage(message, live, entryId) {
       if (!message || typeof message !== "object") return;
       const role = message.role || "assistant";
       if (role === "toolResult") {
@@ -273,11 +278,13 @@
           (message.toolName || "tool") + (message.isError ? " result · error" : " result"),
           false
         );
+        if (typeof entryId === "string") details.dataset.entryId = entryId;
         renderOutput(details, messageText(message), { toolName: message.toolName });
         messagesEl.appendChild(details);
         return;
       }
       const row = el("div", "pi-msg " + role + (live ? " live" : ""));
+      if (typeof entryId === "string") row.dataset.entryId = entryId;
       if (role === "assistant" || role === "system" || role === "custom") {
         const content = Array.isArray(message.content) ? message.content : [];
         if (role === "assistant" && message.errorMessage) {
@@ -702,9 +709,9 @@
       const before = history.firstId;
       const anchor = { height: messagesEl.scrollHeight, top: messagesEl.scrollTop };
       render();
-      Promise.resolve(options.onHistory(before, HISTORY_PAGE_SIZE))
+      return Promise.resolve(options.onHistory(before, HISTORY_PAGE_SIZE))
         .then((result) => {
-          if (generation !== history.generation) return;
+          if (generation !== history.generation) return false;
           const page = result && Array.isArray(result.entries) ? result.entries : [];
           const known = new Set(
             state.messages.map((item) => item.entryId).filter(Boolean)
@@ -720,13 +727,15 @@
           state.messages = older.concat(state.messages);
           scrollAnchor = anchor;
           render();
+          return true;
         })
         .catch((error) => {
-          if (generation !== history.generation) return;
+          if (generation !== history.generation) return false;
           history.loading = false;
           history.error =
             error && error.message ? error.message : "could not load earlier messages";
           render();
+          return false;
         });
     }
 
@@ -739,7 +748,7 @@
       if (state.history.hasMore || state.history.loading || state.history.error) {
         messagesEl.appendChild(historyRow());
       }
-      for (const item of state.messages) appendMessage(item.message, false);
+      for (const item of state.messages) appendMessage(item.message, false, item.entryId);
       if (state.live) appendMessage(state.live, true);
       for (const tool of state.liveTools.values()) {
         if (!tool.rendered) appendLiveTool(tool);
@@ -1774,6 +1783,64 @@
       }
     });
     stopButton.addEventListener("click", abort);
+
+    /** Open every collapsed block under a node so a match inside a tool card or
+     * a thinking block is visible.  Browsers fire `toggle` when `open` changes,
+     * which is what keeps the state in `openState` across the next render. */
+    function expandCollapsed(node) {
+      if (!node || typeof node !== "object") return;
+      if (node.tagName === "DETAILS") node.open = true;
+      for (const child of node.children || []) expandCollapsed(child);
+    }
+
+    function entryNode(entryId) {
+      for (const child of messagesEl.children || []) {
+        if (child && child.dataset && child.dataset.entryId === entryId) return child;
+      }
+      return null;
+    }
+
+    let findHitTimer = null;
+
+    function revealEntry(entryId) {
+      const node = entryNode(entryId);
+      if (!node) return;
+      expandCollapsed(node);
+      if (typeof node.scrollIntoView === "function") {
+        node.scrollIntoView({ block: "center" });
+      }
+      node.classList.add("find-hit");
+      if (findHitTimer) clearTimeout(findHitTimer);
+      findHitTimer = setTimeout(() => node.classList.remove("find-hit"), 2000);
+    }
+
+    const finder = window.WebtermFind
+      ? window.WebtermFind.create(findHost, {
+          items: () =>
+            state.messages.map((item) => ({
+              id: item.entryId,
+              role: (item.message && item.message.role) || "message",
+              text: messageText(item.message),
+            })),
+          reveal: revealEntry,
+          hasMore: () => state.history.hasMore,
+          loadEarlier: () => {
+            const pending = loadEarlier();
+            return pending === undefined ? false : pending;
+          },
+          focusTarget: () => input,
+        })
+      : null;
+    findButton.hidden = !finder;
+    if (finder) findButton.addEventListener("click", () => finder.toggle());
+    root.addEventListener("keydown", (event) => {
+      if (!finder) return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (event.altKey) return;
+      if (String(event.key || "").toLowerCase() !== "f") return;
+      event.preventDefault();
+      finder.toggle();
+    });
 
     render();
 

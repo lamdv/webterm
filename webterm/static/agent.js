@@ -99,7 +99,10 @@
     const header = el("div", "pi-header agent-header");
     const titleEl = el("span", "pi-title", session.title || "agent");
     const metaEl = el("span", "pi-status agent-header-meta", "");
-    header.append(titleEl, metaEl);
+    const findButton = el("button", "pi-find-toggle", "find");
+    findButton.type = "button";
+    findButton.title = "Search this transcript (Ctrl+F)";
+    header.append(titleEl, metaEl, findButton);
 
     const controls = el("div", "agent-controls");
     const modelSelect = el("select", "agent-control agent-model");
@@ -164,6 +167,7 @@
 
     const banner = el("div", "pi-banner agent-banner");
     banner.hidden = true;
+    const findHost = el("div", "find-host");
     const messagesEl = el("div", "pi-messages agent-messages");
     const dialogHost = el("div", "agent-dialog-host");
     dialogHost.hidden = true;
@@ -186,7 +190,7 @@
     actions.append(sendButton, stopButton);
     form.append(input, actions);
 
-    root.append(header, controls, systemPanel, banner, messagesEl, dialogHost, form, footer);
+    root.append(header, controls, systemPanel, banner, findHost, messagesEl, dialogHost, form, footer);
 
     const state = {
       entries: [],
@@ -830,6 +834,7 @@
 
     function buildEntry(entry, blocks, key, signature, isLive) {
       const article = el("article", "pi-msg agent-msg");
+      if (typeof entry.id === "string") article.dataset.entryId = entry.id;
       if (entry.role) article.classList.add("role-" + entry.role);
       if (entry.role === "tool") {
         article.classList.add(entry.is_error ? "error" : "ok");
@@ -1148,9 +1153,9 @@
       history.error = "";
       scrollAnchor = { height: messagesEl.scrollHeight, top: messagesEl.scrollTop };
       render();
-      Promise.resolve(onHistory(before, HISTORY_PAGE_SIZE))
+      return Promise.resolve(onHistory(before, HISTORY_PAGE_SIZE))
         .then((page) => {
-          if (generation !== history.generation) return;
+          if (generation !== history.generation) return false;
           const entries = page && Array.isArray(page.entries) ? page.entries : [];
           const known = new Set(state.entries.map((entry) => entry.id).filter(Boolean));
           const older = entries.filter((entry) => entry && !known.has(entry.id));
@@ -1163,13 +1168,15 @@
           }
           state.entries = older.concat(state.entries);
           render();
+          return true;
         })
         .catch((error) => {
-          if (generation !== history.generation) return;
+          if (generation !== history.generation) return false;
           history.loading = false;
           history.error =
             error && error.message ? error.message : "could not load earlier messages";
           render();
+          return false;
         });
     }
 
@@ -1495,6 +1502,64 @@
           showNotice(error && error.message ? error.message : "abort failed", "error")
         );
       }
+    });
+
+    /** Open every collapsed block under a node so a match inside a thinking
+     * block or a tool card is visible.  The view's own open flags follow the
+     * browser's `toggle` event, so the state survives the next render. */
+    function expandCollapsed(node) {
+      if (!node || typeof node !== "object") return;
+      if (node.tagName === "DETAILS") node.open = true;
+      for (const child of node.children || []) expandCollapsed(child);
+    }
+
+    function entryNode(entryId) {
+      for (const child of messagesEl.children || []) {
+        if (child && child.dataset && child.dataset.entryId === entryId) return child;
+      }
+      return null;
+    }
+
+    let findHitTimer = null;
+
+    function revealEntry(entryId) {
+      const node = entryNode(entryId);
+      if (!node) return;
+      expandCollapsed(node);
+      if (typeof node.scrollIntoView === "function") {
+        node.scrollIntoView({ block: "center" });
+      }
+      node.classList.add("find-hit");
+      if (findHitTimer) clearTimeout(findHitTimer);
+      findHitTimer = setTimeout(() => node.classList.remove("find-hit"), 2000);
+    }
+
+    const finder = window.WebtermFind
+      ? window.WebtermFind.create(findHost, {
+          items: () =>
+            state.entries.map((entry) => ({
+              id: entry && entry.id,
+              role: (entry && entry.role) || "message",
+              text: textOfEntry(entry),
+            })),
+          reveal: revealEntry,
+          hasMore: () => state.history.hasMore,
+          loadEarlier: () => {
+            const pending = loadEarlier();
+            return pending === undefined ? false : pending;
+          },
+          focusTarget: () => input,
+        })
+      : null;
+    findButton.hidden = !finder;
+    if (finder) findButton.addEventListener("click", () => finder.toggle());
+    root.addEventListener("keydown", (event) => {
+      if (!finder) return;
+      if (!event.ctrlKey && !event.metaKey) return;
+      if (event.altKey) return;
+      if (String(event.key || "").toLowerCase() !== "f") return;
+      event.preventDefault();
+      finder.toggle();
     });
 
     render();
