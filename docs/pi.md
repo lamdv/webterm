@@ -14,11 +14,11 @@ place. Thinking blocks stay plain text. Transcript search (Ctrl/Cmd+F or the
 header button, shared with the canonical view) is in place too, the chat
 composers complete `@` file paths as literal path text (RPC mode has no
 `@file` expansion of its own, see
-[frontend.md](frontend.md#literal-path-completion)), and image input (#12) is
-wired end to end: the composer takes pasted or dropped images on prompts,
+[frontend.md](frontend.md#literal-path-completion)), image input (#12) is
+wired end to end (the composer takes pasted or dropped images on prompts,
 steering messages, and follow-ups, and the server validates them before they
-reach pi. A note disclosing the TUI-only commands below and a mobile pass
-remain. Tracking issue: #10. For the existing PTY-based pi launcher, nothing
+reach pi), and the TUI-only surfaces below are disclosed in the UI through
+`/limits`. A mobile pass remains. Tracking issue: #10. For the existing PTY-based pi launcher, nothing
 changes: it stays as the escape hatch for TUI-only features.
 
 ## Goals
@@ -438,6 +438,36 @@ cascade and depth/session limits.
   viewer is attached.
 - `--max-agent-children` caps live children per parent (default 16) in addition
   to `--max-agent-depth`, `--max-sessions`, and the kill cascade.
+
+## TUI-only commands
+
+`pi --mode rpc` exposes prompts, models, sessions, tools, queues, and extension
+dialogs, but not the TUI's own screens. These do nothing in the browser, so the
+composer names them instead of pretending: `/limits` opens a modal listing the
+gap, and a draft that starts with one of the commands is refused with a banner
+(the draft is kept). The refusal is deliberate — forwarding `/login` as a
+prompt would spend a turn and still not authenticate anything.
+
+| Command | Why it cannot work over RPC |
+|---|---|
+| `/login`, `/logout` | Provider sign-in is a TUI screen; the credential flow has no RPC verb. |
+| `/settings` | Settings are edited through pi's settings UI, not a command payload. |
+| `/trust` | Project trust is decided once, before the process starts; webterm asks it as an explicit launch choice. |
+| `/scoped-models` | Per-scope model allowlists live in settings. |
+| `/share` | Publishing a session has no RPC surface. |
+| `/bug` | Bug-report collection is interactive. |
+| `/changelog` | A TUI viewer. |
+| extension screens (`ctx.ui.custom()`) | Arbitrary extension renderers are not expressible over RPC; see the non-goals. |
+
+Everything else in the TUI's command set has a webterm equivalent: `/model`,
+`/provider`, and `/thinking` are pickers, `/new`, `/compact`, `/fork`,
+`/clone`, `/tree`, and `/export` are built-ins, and `/name`, `/resume`, and
+`/model` also exist as buttons and dialogs.
+
+The escape hatch is the PTY launcher: close the structured session, then start
+`pi agent` from the sidebar (or run `pi --session-dir <root> --resume <file>`
+in a shell tab). Closing first matters because two processes sharing one session
+file is the contention risk in "Deferred decisions".
 
 ## Deferred decisions
 

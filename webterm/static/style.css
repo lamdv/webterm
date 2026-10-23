@@ -1614,6 +1614,40 @@ button,
   overflow-y: auto;
 }
 
+/* `/limits`: the TUI-only surfaces, named so a missing feature is never
+   mistaken for a broken prompt. */
+.pi-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 60ch;
+  line-height: 1.5;
+}
+
+.pi-limits-lead {
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.pi-limits-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  margin: 0;
+}
+
+.pi-limits-list dt {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pi-limits-list dd {
+  margin: 0;
+  color: var(--text-dim);
+}
+
 .pi-modal-list {
   display: flex;
   flex-direction: column;

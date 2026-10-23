@@ -241,11 +241,15 @@ is described by its tooltip and the busy placeholder. Toasts float above the
 composer from a zero-height host, not from a hardcoded offset. The composer
 recognizes webterm built-ins
 (`/new`, `/compact`, `/model`, `/provider`, `/reload`, `/fork`, `/clone`,
-`/tree`, `/export`) and merges pi's `get_commands` results for
+`/tree`, `/export`, `/limits`) and merges pi's `get_commands` results for
 extension/template/skill commands. `/model` and `/provider` are webterm-side
 pickers over `get_available_models`; selecting an entry sends `set_model` and
 updates the bottom status bar's model label from the response without a full
-resync.
+resync. `/limits` opens a modal naming the TUI-only surfaces RPC cannot
+reach, and a draft that starts with one of those commands (`/login`,
+`/settings`, `/trust`, and friends) is refused with a banner pointing at the
+same modal instead of being sent to the model as a prompt; the draft stays in
+the composer so it can be edited or copied.
 
 Model text is rendered through `WebtermHighlight.renderText()`, which splits
 fenced code blocks into DOM-only highlighted `<pre>` nodes. Tool arguments are

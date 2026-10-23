@@ -64,8 +64,34 @@
     { name: "clone", description: "Clone the active branch", source: "webterm" },
     { name: "tree", description: "Show the session tree", source: "webterm" },
     { name: "export", description: "Download HTML or JSONL", source: "webterm" },
+    { name: "limits", description: "What RPC mode cannot do", source: "webterm" },
   ];
   const BUILTIN_NAMES = new Set(BUILTIN_COMMANDS.map((command) => command.name));
+
+  //: Commands pi's TUI answers but RPC does not expose.  The composer cannot
+  //: forward them, so `/limits` documents them and a direct attempt is refused
+  //: instead of being sent to the model as a prompt that cannot do the job.
+  const TUI_ONLY_COMMANDS = [
+    ["/login, /logout", "sign in to or out of a provider through pi's login screens"],
+    ["/settings", "edit settings through pi's settings UI"],
+    ["/trust", "project trust is chosen once, before the process starts"],
+    ["/scoped-models", "per-scope model allowlists"],
+    ["/share", "publish the session"],
+    ["/bug", "collect a bug report"],
+    ["/changelog", "read the release notes"],
+    ["extension screens", "ctx.ui.custom() has no RPC representation"],
+  ];
+  const TUI_ONLY_NAMES = new Set(
+    ["login", "logout", "settings", "trust", "scoped-models", "share", "bug", "changelog"]
+  );
+
+  /** The TUI-only command a draft starts with, or null. */
+  function tuiOnlyName(text) {
+    const match = /^\/([a-z-]+)(?:\s|$)/i.exec(String(text || ""));
+    if (!match) return null;
+    const name = match[1].toLowerCase();
+    return TUI_ONLY_NAMES.has(name) ? name : null;
+  }
   //: Entries requested per backwards transcript page.  The server caps this.
   const HISTORY_PAGE_SIZE = 100;
 
@@ -1140,6 +1166,37 @@
       return { close: closeModal, content };
     }
 
+    /** List the surfaces RPC cannot reach, so a TUI habit is not mistaken for a
+     * broken prompt.  This is the parity-illusion guard: the gap is named, and
+     * the PTY launcher is offered as the way around it. */
+    function showLimits() {
+      const body = el("div", "pi-limits");
+      body.appendChild(
+        el(
+          "p",
+          "pi-limits-lead",
+          "The browser drives pi over RPC. Prompts, models, sessions, tools, " +
+            "queues and extension dialogs work, but the TUI's own screens do " +
+            "not exist here, so these do nothing:"
+        )
+      );
+      const list = el("dl", "pi-limits-list");
+      for (const [name, why] of TUI_ONLY_COMMANDS) {
+        list.append(el("dt", "", name), el("dd", "", why));
+      }
+      body.appendChild(list);
+      body.appendChild(
+        el(
+          "p",
+          "pi-limits-lead",
+          "Use the pi agent launcher from the sidebar, or run " +
+            "pi --session-dir <root> --resume <file> in a shell tab. Close this " +
+            "session first so two processes do not share one session file."
+        )
+      );
+      showModal("What RPC mode cannot do", body);
+    }
+
     function entryLabel(entry) {
       if (!entry || typeof entry !== "object") return "entry";
       if (entry.type === "message" && entry.message) {
@@ -1640,7 +1697,8 @@
       const passive =
         command.name === "export" ||
         command.name === "tree" ||
-        command.name === "thinking";
+        command.name === "thinking" ||
+        command.name === "limits";
       if (state.busy && !passive) {
         setBanner("stop pi before running /" + command.name);
         render();
@@ -1666,6 +1724,10 @@
       if (command.name === "export") {
         const format = command.args && command.args.toLowerCase() === "jsonl" ? "jsonl" : "html";
         downloadExport(format, command);
+        return true;
+      }
+      if (command.name === "limits") {
+        showLimits();
         return true;
       }
       if (command.name === "tree") {
@@ -1700,6 +1762,12 @@
       closePalette();
       if (pathComplete) pathComplete.close();
       if (runSlashCommand(text)) return;
+      const tuiOnly = tuiOnlyName(text);
+      if (tuiOnly) {
+        setBanner("/" + tuiOnly + " is TUI-only; see /limits, or use the pi agent launcher");
+        render();
+        return;
+      }
       const wasBusy = state.busy;
       const command = { type: "prompt", message: text };
       if (wasBusy) command.streamingBehavior = behavior || "followUp";
