@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -54,6 +55,7 @@ class FakeLlamaHandler(BaseHTTPRequestHandler):
         FakeLlamaHandler.requests.append(request)
         model = request.get("model", "")
         slow = "slow" in json.dumps(request.get("messages", []))
+        reasoning = "reason please" in json.dumps(request.get("messages", []))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
@@ -65,6 +67,15 @@ class FakeLlamaHandler(BaseHTTPRequestHandler):
                 "model": model,
             }
         ]
+        if reasoning:
+            chunks.append(
+                {
+                    "choices": [
+                        {"delta": {"reasoning_content": "pondering "}, "index": 0}
+                    ],
+                    "model": model,
+                }
+            )
         if not slow:
             chunks.extend(
                 {
@@ -353,6 +364,257 @@ class LlamaAdapterTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("SSL", message)
             self.assertIn("use http://", message)
             self.assertTrue(await session.wait_for_settled(5))
+        finally:
+            session.force_close()
+
+    # ------------------------------------------------------- message editing
+
+    async def wait_for_entries(self, session: object, count: int) -> list[dict]:
+        """Wait until the transcript has *count* entries ending in a reply."""
+        deadline = time.monotonic() + 5.0
+        entries: list[dict] = []
+        while time.monotonic() < deadline:
+            entries = (await session.snapshot())["entries"]  # type: ignore[attr-defined]
+            if len(entries) == count and entries[-1].get("role") == "assistant":
+                return entries
+            await asyncio.sleep(0.02)
+        self.fail(f"transcript did not reach {count} entries: {entries!r}")
+        return entries
+
+    async def test_edit_message_rewrites_the_transcript_and_runs_again(self) -> None:
+        session = await self.start()
+        try:
+            self.assertTrue(session.capabilities.to_dict()["edit_message"])
+            self.assertIn("edit_message", NATIVE_CODEC.commands)
+            await session.prompt("first question")
+            await self.wait_for_entries(session, 2)
+            await session.prompt("second question")
+            entries = await self.wait_for_entries(session, 4)
+            first_user = entries[0]
+            self.assertEqual(first_user["role"], "user")
+
+            edited = await NATIVE_CODEC.command(
+                session,
+                "edit_message",
+                {
+                    "type": "edit_message",
+                    "entry_id": first_user["id"],
+                    "message": "rewritten question",
+                },
+                "test-edit",
+            )
+            self.assertTrue(edited["success"])
+            data = edited["data"]
+            self.assertEqual(data["disposition"], "started")
+            self.assertEqual(data["removed"], 4)
+            self.assertNotEqual(data["entry_id"], first_user["id"])
+
+            entries = await self.wait_for_entries(session, 2)
+            self.assertEqual(
+                entries[0]["content"], [{"type": "text", "text": "rewritten question"}]
+            )
+            self.assertEqual(entries[0]["id"], data["entry_id"])
+            # The edited prompt is the whole conversation: the earlier helper
+            # messages and their answers were dropped before the request.
+            self.assertEqual(
+                FakeLlamaHandler.requests[-1]["messages"],
+                [{"role": "user", "content": "rewritten question"}],
+            )
+
+            events = [event for _, event in session.events_since(0)]
+            truncated = [
+                event for event in events if event.get("event") == "transcript.truncated"
+            ]
+            self.assertEqual(len(truncated), 1)
+            self.assertEqual(truncated[0]["entry_id"], first_user["id"])
+            self.assertEqual(truncated[0]["removed"], 4)
+            user_events = [
+                event["message"]
+                for event in events
+                if event.get("event") == "message.finished"
+                and event.get("message", {}).get("role") == "user"
+            ]
+            self.assertEqual(
+                [message["content"][0]["text"] for message in user_events],
+                ["first question", "second question", "rewritten question"],
+            )
+        finally:
+            session.force_close()
+
+    async def test_edit_message_validates_the_entry_and_text(self) -> None:
+        session = await self.start()
+        try:
+            await session.prompt("keep me")
+            entries = await self.wait_for_entries(session, 2)
+            user_id = entries[0]["id"]
+            cases = (
+                ({"entry_id": "entry-missing", "message": "x"}, "no entry"),
+                ({"entry_id": user_id, "message": "   "}, "edited message is empty"),
+                ({"entry_id": 7, "message": "x"}, "needs the entry_id"),
+                ({"message": "x"}, "needs the entry_id"),
+            )
+            for fields, expected in cases:
+                with self.assertRaises(AgentCommandError) as caught:
+                    await session.command("edit_message", **fields)
+                self.assertIn(expected, str(caught.exception))
+            # A rejected edit changes nothing and does not wedge the run slot.
+            self.assertEqual((await session.snapshot())["entries"], entries)
+            await session.prompt("still alive")
+            await self.wait_for_entries(session, 4)
+        finally:
+            session.force_close()
+
+    async def test_edit_message_is_refused_while_a_run_is_active(self) -> None:
+        session = await self.start()
+        try:
+            await session.prompt("slow please")
+            entries = (await session.snapshot())["entries"]
+            self.assertEqual(entries[0]["content"][0]["text"], "slow please")
+            with self.assertRaises(AgentCommandError) as caught:
+                await session.command(
+                    "edit_message", entry_id=entries[0]["id"], message="faster"
+                )
+            self.assertIn("a run is already active", str(caught.exception))
+            await session.command("abort")
+            self.assertTrue(await session.wait_for_settled(5))
+            entries = (await session.snapshot())["entries"]
+            self.assertEqual(
+                entries[0]["content"], [{"type": "text", "text": "slow please"}]
+            )
+        finally:
+            session.force_close()
+
+    async def test_edit_answer_rewrites_the_answer_without_a_run(self) -> None:
+        session = await self.start()
+        try:
+            capabilities = session.capabilities.to_dict()
+            self.assertTrue(capabilities["edit_message"])
+            self.assertTrue(capabilities["edit_answer"])
+
+            await session.prompt("reason please")
+            entries = await self.wait_for_entries(session, 2)
+            answer = entries[1]
+            self.assertEqual(
+                [block["type"] for block in answer["content"]], ["thinking", "text"]
+            )
+            await session.prompt("second question")
+            await self.wait_for_entries(session, 4)
+            requests_before = len(FakeLlamaHandler.requests)
+
+            edited = await session.command(
+                "edit_message", entry_id=answer["id"], message="corrected answer"
+            )
+            self.assertEqual(edited["disposition"], "updated")
+            self.assertEqual(edited["removed"], 3)
+            self.assertNotEqual(edited["entry_id"], answer["id"])
+
+            entries = (await session.snapshot())["entries"]
+            self.assertEqual([entry["role"] for entry in entries], ["user", "assistant"])
+            self.assertEqual(entries[1]["id"], edited["entry_id"])
+            # The answer's thinking survives; its text is the replacement.
+            self.assertEqual(
+                entries[1]["content"],
+                [
+                    {"type": "thinking", "text": "pondering "},
+                    {"type": "text", "text": "corrected answer"},
+                ],
+            )
+            # An answer edit is a transcript rewrite, not a run.
+            self.assertEqual(len(FakeLlamaHandler.requests), requests_before)
+            self.assertFalse((await session.get_state())["streaming"])
+
+            events = [event for _, event in session.events_since(0)]
+            truncated = [
+                event for event in events if event.get("event") == "transcript.truncated"
+            ]
+            self.assertEqual(len(truncated), 1)
+            self.assertEqual(truncated[0]["entry_id"], answer["id"])
+            self.assertEqual(truncated[0]["removed"], 3)
+
+            # The next prompt sends the corrected answer as history, which is
+            # the point of editing one.
+            await session.prompt("carry on")
+            self.assertTrue(await session.wait_for_settled(5))
+            self.assertEqual(
+                FakeLlamaHandler.requests[-1]["messages"],
+                [
+                    {"role": "user", "content": "reason please"},
+                    {"role": "assistant", "content": "corrected answer"},
+                    {"role": "user", "content": "carry on"},
+                ],
+            )
+        finally:
+            session.force_close()
+
+    async def test_streamed_answer_carries_its_transcript_entry_id(self) -> None:
+        """The id a client sees while streaming is the one it can edit by.
+
+        The assistant entry is appended only when the run ends, so its id has
+        to be reserved up front; a per-run alias here would make an edit fail
+        with "no entry 'message-1'" until the client re-read the snapshot.
+        """
+        session = await self.start()
+        try:
+            await session.prompt("reason please")
+            self.assertTrue(await session.wait_for_settled(5))
+            entries = (await session.snapshot())["entries"]
+            self.assertEqual([entry["role"] for entry in entries], ["user", "assistant"])
+            answer = entries[1]
+            events = [event for _, event in session.events_since(0)]
+            finished = [
+                event["message"]
+                for event in events
+                if event.get("event") == "message.finished"
+                and event.get("message", {}).get("role") == "assistant"
+            ]
+            self.assertEqual([message["id"] for message in finished], [answer["id"]])
+            started = [
+                event["message"]
+                for event in events
+                if event.get("event") == "message.started"
+            ]
+            self.assertEqual([message["id"] for message in started], [answer["id"]])
+            deltas = {
+                event["message_id"]
+                for event in events
+                if event.get("event") == "message.delta"
+            }
+            self.assertEqual(deltas, {answer["id"]})
+
+            # The id from the stream alone is enough to edit the answer.
+            edited = await session.command(
+                "edit_message", entry_id=finished[0]["id"], message="rewritten answer"
+            )
+            self.assertEqual(edited["disposition"], "updated")
+            self.assertEqual(
+                (await session.snapshot())["entries"][1]["content"],
+                [
+                    {"type": "thinking", "text": "pondering "},
+                    {"type": "text", "text": "rewritten answer"},
+                ],
+            )
+        finally:
+            session.force_close()
+
+    async def test_edit_answer_is_refused_while_a_run_is_active(self) -> None:
+        session = await self.start()
+        try:
+            await session.prompt("Say hi")
+            entries = await self.wait_for_entries(session, 2)
+            answer = entries[1]
+            await session.prompt("slow please")
+            with self.assertRaises(AgentCommandError) as caught:
+                await session.command(
+                    "edit_message", entry_id=answer["id"], message="softer"
+                )
+            self.assertIn("a run is already active", str(caught.exception))
+            await session.command("abort")
+            self.assertTrue(await session.wait_for_settled(5))
+            entries = (await session.snapshot())["entries"]
+            self.assertEqual(entries[1]["id"], answer["id"])
+            self.assertEqual(
+                entries[1]["content"], [{"type": "text", "text": "hello from llama"}]
+            )
         finally:
             session.force_close()
 

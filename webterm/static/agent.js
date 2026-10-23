@@ -210,6 +210,9 @@
         generation: 0,
       },
       usage: { tokens: 0, cost: 0 },
+      // One past turn at a time is editable: which entry, its draft text, and
+      // whether an edit_message command is in flight.
+      edit: { id: null, draft: "", saving: false },
       toolState: new Map(),
       dialogs: new Map(),
       history: {
@@ -712,12 +715,14 @@
 
     /** What an entry's DOM depends on structurally; streamed text is excluded so
      * deltas patch the existing nodes instead of rebuilding them. */
-    function structureSignature(entry, blocks) {
+    function structureSignature(entry, blocks, editing) {
       const extra = entry.role === "tool" || !blocks.length ? textOfEntry(entry) : "";
       return [
         entry.role || "",
         entry.is_error ? "error" : "",
         entry.optimistic ? "optimistic" : "",
+        editing ? "editing" : "",
+        editAvailable(entry) ? "editable" : "",
         blocks.map(blockKind).join("|"),
         extra,
       ].join("\u0001");
@@ -830,9 +835,23 @@
         article.classList.add(entry.is_error ? "error" : "ok");
       }
       if (entry.optimistic) article.classList.add("optimistic");
-      article.append(el("div", "pi-role", roleLabel(entry)));
+      const head = el("div", "agent-msg-head");
+      head.append(el("div", "pi-role", roleLabel(entry)));
+      if (editAvailable(entry) && !editingEntry(entry)) {
+        const editButton = el("button", "agent-edit", "edit");
+        editButton.type = "button";
+        editButton.title =
+          entry.role === "assistant"
+            ? "Edit this answer and drop the messages after it"
+            : "Edit this message and run it again";
+        editButton.addEventListener("click", () => openEditor(entry));
+        head.append(editButton);
+      }
+      article.append(head);
       const records = [];
-      if (entry.role === "tool") {
+      if (editingEntry(entry)) {
+        article.append(buildEditor(entry));
+      } else if (entry.role === "tool") {
         renderPre(article, textOfEntry(entry), "agent-tool-output");
       } else if (!blocks.length) {
         renderPlain(article, isLive ? "…" : "");
@@ -846,12 +865,136 @@
       return { node: article, blocks: records, signature };
     }
 
+    /** Rewriting a past turn is capability-gated per role: a user message
+     * needs ``edit_message`` (the adapter drops the later entries and runs
+     * again), an assistant answer needs ``edit_answer`` (it is rewritten in
+     * place and nothing runs). */
+    function editAvailable(entry) {
+      const caps = state.capabilities || {};
+      if (!onCommand || state.exited || !entry || !entry.id || entry.optimistic) {
+        return false;
+      }
+      if (entry.role === "user") return Boolean(caps.edit_message);
+      if (entry.role === "assistant") return Boolean(caps.edit_answer);
+      return false;
+    }
+
+    function editingEntry(entry) {
+      return Boolean(entry && entry.id && state.edit.id === entry.id);
+    }
+
+    /** Swapping the body for a textarea only touches this entry, so the rest of
+     * the transcript keeps its nodes (and any selection). */
+    function buildEditor(entry) {
+      const editingAnswer = entry.role === "assistant";
+      const wrap = el("div", "agent-edit-form");
+      const field = el("textarea", "agent-edit-input");
+      field.rows = 3;
+      field.value = state.edit.draft;
+      field.setAttribute("aria-label", editingAnswer ? "Edit answer" : "Edit message");
+      field.addEventListener("input", () => {
+        state.edit.draft = field.value;
+      });
+      field.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.shiftKey) return;
+        event.preventDefault();
+        submitEdit(entry);
+      });
+      const actionsEl = el("div", "agent-edit-actions");
+      const save = el("button", "agent-edit-save", editingAnswer ? "Save" : "Save & resend");
+      save.type = "button";
+      save.disabled = state.edit.saving;
+      save.addEventListener("click", () => submitEdit(entry));
+      const cancel = el("button", "agent-edit-cancel", "Cancel");
+      cancel.type = "button";
+      cancel.disabled = state.edit.saving;
+      cancel.addEventListener("click", () => closeEditor());
+      actionsEl.append(save, cancel);
+      wrap.append(field, actionsEl);
+      if (typeof field.focus === "function") field.focus();
+      if (typeof field.setSelectionRange === "function") {
+        const end = field.value.length;
+        field.setSelectionRange(end, end);
+      }
+      return wrap;
+    }
+
+    function openEditor(entry) {
+      if (!editAvailable(entry)) return;
+      state.edit.id = entry.id;
+      state.edit.draft = textOfEntry(entry);
+      state.edit.saving = false;
+      scheduleRender();
+    }
+
+    function closeEditor() {
+      state.edit.id = null;
+      state.edit.draft = "";
+      state.edit.saving = false;
+      scheduleRender();
+    }
+
+    /** The truncation itself arrives as a ``transcript.truncated`` event from
+     * the adapter; this only reports the outcome and closes the editor. */
+    function submitEdit(entry) {
+      if (!onCommand || state.exited || state.edit.saving) return;
+      const editingAnswer = entry.role === "assistant";
+      if (state.busy || state.meta.streaming) {
+        showNotice(
+          editingAnswer
+            ? "Wait for the current reply before editing an answer."
+            : "Wait for the current reply before editing a message.",
+          "warning"
+        );
+        return;
+      }
+      const text = String(state.edit.draft || "").trim();
+      if (!text) {
+        showNotice(
+          editingAnswer
+            ? "An edited answer cannot be empty."
+            : "An edited message cannot be empty.",
+          "warning"
+        );
+        return;
+      }
+      state.edit.saving = true;
+      scheduleRender();
+      Promise.resolve(
+        onCommand({ type: "edit_message", entry_id: entry.id, message: text })
+      ).then(
+        (data) => {
+          const removed = data && typeof data.removed === "number" ? data.removed : 0;
+          const dropped = removed > 1 ? removed - 1 : 0;
+          const what = editingAnswer ? "answer edited" : "message edited";
+          showNotice(
+            dropped ? what + "; " + dropped + " later message(s) dropped" : what
+          );
+        },
+        (error) => {
+          // Keep the editor open so the rejected text can be corrected.
+          showNotice(
+            error && error.message
+              ? error.message
+              : editingAnswer
+                ? "could not edit the answer"
+                : "could not edit the message",
+            "error"
+          );
+        }
+      ).then(() => {
+        state.edit.saving = false;
+        scheduleRender();
+      });
+    }
+
     /** Reuse an entry's nodes when only block contents changed; rebuild when the
      * structure (role, block kinds, optimistic/tool state) actually differs. */
     function renderEntry(entry, isLive, index) {
-      const blocks = Array.isArray(entry.content) ? entry.content : [];
+      const editing = editingEntry(entry);
+      const blocks = editing || !Array.isArray(entry.content) ? [] : entry.content;
       const key = entryKey(entry, index);
-      const signature = structureSignature(entry, blocks);
+      const signature = structureSignature(entry, blocks, editing);
       let record = renderedEntries.get(key);
       if (!record || record.signature !== signature) {
         record = buildEntry(entry, blocks, key, signature, isLive);
@@ -1198,6 +1341,24 @@
           state.usage.tokens = Number(event.total_tokens) || 0;
           state.usage.cost = Number(event.cost) || 0;
           break;
+        case "transcript.truncated": {
+          // Everything from ``entry_id`` on left the adapter's transcript, so
+          // drop it here too; the adapter re-sends the edited user message or
+          // answer as a fresh message.finished.
+          const entryId = typeof event.entry_id === "string" ? event.entry_id : "";
+          const at = entryId
+            ? state.entries.findIndex((entry) => entry && entry.id === entryId)
+            : -1;
+          if (at >= 0) state.entries = state.entries.slice(0, at);
+          if (
+            state.edit.id &&
+            !state.entries.some((entry) => entry && entry.id === state.edit.id)
+          ) {
+            state.edit.id = null;
+            state.edit.draft = "";
+          }
+          break;
+        }
         case "session.info":
           if (event.model) state.meta.model = event.model;
           if (event.name !== undefined) state.meta.name = event.name;
@@ -1235,6 +1396,10 @@
       state.busy = Boolean(state.meta.streaming);
       state.settled = message.state ? message.state.settled !== false : true;
       state.live = null;
+      // Entry ids change with the snapshot, so an open editor cannot survive it.
+      state.edit.id = null;
+      state.edit.draft = "";
+      state.edit.saving = false;
       state.toolState.clear();
       state.dialogs.clear();
       const dialogs = Array.isArray(message.dialogs) ? message.dialogs : [];

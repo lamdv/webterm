@@ -47,6 +47,7 @@ TOOL_UPDATED = "tool.updated"
 TOOL_FINISHED = "tool.finished"
 QUEUE_UPDATED = "queue.updated"
 USAGE = "usage"
+TRANSCRIPT_TRUNCATED = "transcript.truncated"
 SESSION_INFO = "session.info"
 NOTICE = "notice"
 RAW = "raw"
@@ -65,6 +66,7 @@ EVENT_NAMES = frozenset(
         TOOL_FINISHED,
         QUEUE_UPDATED,
         USAGE,
+        TRANSCRIPT_TRUNCATED,
         SESSION_INFO,
         NOTICE,
         RAW,
@@ -99,6 +101,7 @@ OPTIONAL_COMMANDS = frozenset(
         "clear_queue",
         "set_thinking",
         "set_system_prompt",
+        "edit_message",
         "set_session_name",
         "compact",
         "fork",
@@ -205,6 +208,12 @@ class Capabilities:
     #: The adapter serves a plain-text system-prompt library
     #: (``list_prompts`` / ``save_prompt`` / ``delete_prompt``).
     prompt_library: bool = False
+    #: The adapter accepts ``edit_message``: rewrite a past user entry,
+    #: dropping the entries after it, and run from the edited prompt.
+    edit_message: bool = False
+    #: ``edit_message`` also accepts an ``assistant`` entry: rewrite the answer
+    #: in place, dropping the entries after it, without starting a run.
+    edit_answer: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -262,6 +271,8 @@ class Capabilities:
             attachments_images=_flag_from(source, "attachments_images", attachments, "images"),
             raw=_flag(source, "raw"),
             prompt_library=_flag(source, "prompt_library"),
+            edit_message=_flag(source, "edit_message"),
+            edit_answer=_flag(source, "edit_answer"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -292,6 +303,8 @@ class Capabilities:
             "attachments": {"images": self.attachments_images},
             "raw": self.raw,
             "prompt_library": self.prompt_library,
+            "edit_message": self.edit_message,
+            "edit_answer": self.edit_answer,
         }
 
     def supports_dialog(self, kind: str) -> bool:

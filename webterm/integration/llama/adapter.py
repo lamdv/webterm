@@ -48,6 +48,8 @@ CAPABILITIES = {
     },
     "system_prompt": True,
     "prompt_library": True,
+    "edit_message": True,
+    "edit_answer": True,
     "snapshot": True,
     "history": {"paging": True},
     "resume": False,
@@ -181,11 +183,21 @@ class LlamaAgent:
 
     # -------------------------------------------------------------- transcript
 
-    def _add_entry(self, role: str, content: list[dict[str, Any]]) -> dict[str, Any]:
+    def _reserve_entry_id(self) -> str:
+        """Allocate the id an entry will be appended under, before it exists."""
         with self._state_lock:
             self._entry_counter += 1
+            return f"entry-{self._entry_counter}"
+
+    def _add_entry(
+        self, role: str, content: list[dict[str, Any]], entry_id: str | None = None
+    ) -> dict[str, Any]:
+        with self._state_lock:
+            if entry_id is None:
+                self._entry_counter += 1
+                entry_id = f"entry-{self._entry_counter}"
             entry = {
-                "id": f"entry-{self._entry_counter}",
+                "id": entry_id,
                 "role": role,
                 "content": content,
                 "timestamp": _now(),
@@ -310,54 +322,194 @@ class LlamaAgent:
 
     # ----------------------------------------------------------------- commands
 
+    def _claim_run(self, command_id: object, command_name: str) -> int | None:
+        """Mark a run active and return its number, or answer ``busy`` and None."""
+        with self._state_lock:
+            if self._running:
+                run_number = None
+            else:
+                self._running = True
+                self.streaming = True
+                self._run_counter += 1
+                run_number = self._run_counter
+        if run_number is None:
+            self.respond(
+                command_id, command_name, success=False, error="a run is already active"
+            )
+        return run_number
+
+    def _release_run(self) -> None:
+        with self._state_lock:
+            self._running = False
+            self.streaming = False
+
+    def _resolve_model(self, command_id: object, command_name: str) -> bool:
+        """Make sure a model is selected before a run appends to the transcript."""
+        try:
+            self._ensure_model()
+        except Exception as exc:  # noqa: BLE001 - report the server's failure
+            self._release_run()
+            self.respond(command_id, command_name, success=False, error=self._detail(exc))
+            return False
+        return True
+
+    def _start_thread(self, run_number: int) -> None:
+        """Stream one run on its own thread; the command loop stays responsive.
+
+        The entry id is reserved here, on the command thread, so the streamed
+        reply carries the id its transcript entry will have: clients edit and
+        page by that id, and it must not be a per-run ``message-N`` alias that
+        only the event stream knows about.
+        """
+        run_id = f"run-{run_number}"
+        entry_id = self._reserve_entry_id()
+        threading.Thread(
+            target=self._run,
+            args=(run_id, entry_id),
+            name=f"llama-{run_id}",
+            daemon=True,
+        ).start()
+
     def prompt(self, command: dict[str, Any]) -> None:
         command_id = command.get("id")
         message = command.get("message")
         if not isinstance(message, str) or not message.strip():
             self.respond(command_id, "prompt", success=False, error="prompt message is empty")
             return
-        with self._state_lock:
-            if self._running:
-                busy = True
-            else:
-                busy = False
-                self._running = True
-                self.streaming = True
-                self._run_counter += 1
-                run_number = self._run_counter
-        if busy:
-            self.respond(
-                command_id, "prompt", success=False, error="a run is already active"
-            )
+        run_number = self._claim_run(command_id, "prompt")
+        if run_number is None:
             return
-        try:
-            self._ensure_model()
-        except Exception as exc:  # noqa: BLE001 - report the server's failure
-            with self._state_lock:
-                self._running = False
-                self.streaming = False
-            self.respond(command_id, "prompt", success=False, error=self._detail(exc))
+        if not self._resolve_model(command_id, "prompt"):
             return
         self._abort.clear()
-        self._add_entry("user", [{"type": "text", "text": message}])
-        run_id = f"run-{run_number}"
-        message_id = f"message-{run_number}"
+        entry = self._add_entry("user", [{"type": "text", "text": message}])
+        # The entry is authoritative, so a client replaces its optimistic copy
+        # with the id the transcript will page and edit by.
+        self.event("message.finished", message=entry)
         self.respond(command_id, "prompt", {"disposition": "started"})
-        threading.Thread(
-            target=self._run,
-            args=(run_id, message_id),
-            name=f"llama-{run_id}",
-            daemon=True,
-        ).start()
+        self._start_thread(run_number)
 
-    def _run(self, run_id: str, message_id: str) -> None:
+    def edit_message(self, command: dict[str, Any]) -> None:
+        """Rewrite one past entry and continue the conversation from it.
+
+        A user entry is replaced by a fresh user entry and a run starts, which
+        is what editing a chat prompt means.  An assistant entry is replaced by
+        a fresh assistant entry and nothing runs: the corrected answer becomes
+        history for the next prompt.  Either way everything after the edited
+        entry is dropped, so the entry id stays the old one only in the client's
+        memory; the ``transcript.truncated`` event tells every client where the
+        transcript now ends.
+        """
+        command_id = command.get("id")
+        entry_id = command.get("entry_id")
+        message = command.get("message")
+        if not isinstance(entry_id, str) or not entry_id:
+            self.respond(
+                command_id,
+                "edit_message",
+                success=False,
+                error="edit_message needs the entry_id of a user message or answer",
+            )
+            return
+        if not isinstance(message, str) or not message.strip():
+            self.respond(
+                command_id,
+                "edit_message",
+                success=False,
+                error="edited message is empty",
+            )
+            return
+        with self._state_lock:
+            index = next(
+                (at for at, entry in enumerate(self.entries) if entry["id"] == entry_id),
+                None,
+            )
+            role = self.entries[index].get("role") if index is not None else None
+        if index is None:
+            self.respond(
+                command_id,
+                "edit_message",
+                success=False,
+                error=f"no entry {entry_id!r} in this transcript",
+            )
+            return
+        if role not in ("user", "assistant"):
+            self.respond(
+                command_id,
+                "edit_message",
+                success=False,
+                error="only user messages and answers can be edited",
+            )
+            return
+        if role == "assistant":
+            self._replace_answer(command_id, entry_id, index, message)
+            return
+        run_number = self._claim_run(command_id, "edit_message")
+        if run_number is None:
+            return
+        if not self._resolve_model(command_id, "edit_message"):
+            return
+        self._abort.clear()
+        with self._state_lock:
+            removed = len(self.entries) - index
+            del self.entries[index:]
+        self.event("transcript.truncated", entry_id=entry_id, removed=removed)
+        entry = self._add_entry("user", [{"type": "text", "text": message}])
+        self.event("message.finished", message=entry)
+        self.respond(
+            command_id,
+            "edit_message",
+            {"disposition": "started", "entry_id": entry["id"], "removed": removed},
+        )
+        self._start_thread(run_number)
+
+    def _replace_answer(
+        self, command_id: object, entry_id: str, index: int, message: str
+    ) -> None:
+        """Rewrite one assistant entry without starting a run.
+
+        The busy check and the truncation share the state lock, so an edit can
+        never cut into the assistant entry a live run is about to append.  The
+        old answer's non-text blocks (thinking) are carried over and its text is
+        replaced by *message*.
+        """
+        with self._state_lock:
+            if self._running:
+                removed = None
+                kept: list[dict[str, Any]] = []
+            else:
+                kept = [
+                    dict(block)
+                    for block in (self.entries[index].get("content") or [])
+                    if isinstance(block, dict) and block.get("type") != "text"
+                ]
+                removed = len(self.entries) - index
+                del self.entries[index:]
+        if removed is None:
+            self.respond(
+                command_id,
+                "edit_message",
+                success=False,
+                error="a run is already active",
+            )
+            return
+        self.event("transcript.truncated", entry_id=entry_id, removed=removed)
+        entry = self._add_entry("assistant", [*kept, {"type": "text", "text": message}])
+        self.event("message.finished", message=entry)
+        self.respond(
+            command_id,
+            "edit_message",
+            {"disposition": "updated", "entry_id": entry["id"], "removed": removed},
+        )
+
+    def _run(self, run_id: str, entry_id: str) -> None:
         text: list[str] = []
         thinking: list[str] = []
         seen_thinking = False
         usage: dict[str, Any] | None = None
         reason = "stop"
         self.event("run.started", run_id=run_id)
-        self.event("message.started", message={"id": message_id, "role": "assistant"})
+        self.event("message.started", message={"id": entry_id, "role": "assistant"})
         try:
             payload = {
                 "model": self.model,
@@ -402,7 +554,7 @@ class LlamaAgent:
                             thinking.append(reasoning)
                             self.event(
                                 "message.delta",
-                                message_id=message_id,
+                                message_id=entry_id,
                                 block_index=0,
                                 block_type="thinking",
                                 delta=reasoning,
@@ -412,7 +564,7 @@ class LlamaAgent:
                             text.append(content)
                             self.event(
                                 "message.delta",
-                                message_id=message_id,
+                                message_id=entry_id,
                                 block_index=1 if seen_thinking else 0,
                                 block_type="text",
                                 delta=content,
@@ -442,15 +594,10 @@ class LlamaAgent:
                 blocks.append({"type": "thinking", "text": "".join(thinking)})
             if text:
                 blocks.append({"type": "text", "text": "".join(text)})
-            entry = self._add_entry("assistant", blocks)
-            self.event(
-                "message.finished",
-                message={
-                    "id": message_id,
-                    "role": "assistant",
-                    "content": entry["content"],
-                },
-            )
+            entry = self._add_entry("assistant", blocks, entry_id=entry_id)
+            # The finished message is the entry itself, id included, so a
+            # client's edit or page target stays valid after the run.
+            self.event("message.finished", message=entry)
             if usage is not None:
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
@@ -684,6 +831,7 @@ class LlamaAgent:
             "set_model": self.set_model,
             "set_thinking": self.set_thinking,
             "set_system_prompt": self.set_system_prompt,
+            "edit_message": self.edit_message,
             "list_prompts": self.list_prompts,
             "save_prompt": self.save_prompt,
             "delete_prompt": self.delete_prompt,

@@ -73,6 +73,8 @@ The agent sends exactly one `hello` immediately after startup:
    "models":{"list":true,"set":true,"thinking":false,"levels":[]},
    "system_prompt":false,
    "prompt_library":false,
+   "edit_message":false,
+   "edit_answer":false,
    "snapshot":true,
    "history":{"paging":true},
    "resume":true,
@@ -100,6 +102,8 @@ Capability groups:
 | `models.levels` | thinking levels `set_thinking` accepts; empty means the adapter has no fixed vocabulary and the client falls back to `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `system_prompt` | the adapter accepts `set_system_prompt` |
 | `prompt_library` | the adapter accepts `list_prompts`, `save_prompt`, and `delete_prompt` (a plain-text system-prompt library; see [llama.md](llama.md)) |
+| `edit_message` | the adapter accepts `edit_message`: rewrite a past user entry, drop the entries after it, and run again from the edited prompt |
+| `edit_answer` | `edit_message` also accepts an `assistant` entry: rewrite the answer in place, drop the entries after it, and start no run |
 | `snapshot`, `history.paging` | transcript hydration and backwards paging |
 | `resume`, `export.native` | agent-owned session files and exports |
 | `usage.tokens`, `usage.cost` | usage reporting |
@@ -131,6 +135,16 @@ Capability-gated commands: `steer`, `follow_up`, `clear_queue`,
 `raw` (whose `command` field is passed to the native protocol). `set_thinking` carries `level`; the
 adapter advertises the levels it understands in `models.levels`.
 `set_system_prompt` carries `text`, and an empty string clears the prompt.
+`edit_message` carries `entry_id` (a `user` or, when `edit_answer` is
+advertised, an `assistant` entry from the transcript) and `message` (its
+replacement). Either way the adapter drops that entry and every entry after
+it, emits `transcript.truncated`, and appends the replacement as a fresh
+entry. For a `user` entry it then starts a run and answers
+`{"disposition":"started","entry_id":<new entry id>,"removed":<count>}`; for
+an `assistant` entry it starts nothing and answers
+`{"disposition":"updated","entry_id":<new entry id>,"removed":<count>}`, so
+the corrected answer is history for the next prompt. A run in flight refuses
+the edit with `success:false` rather than interleaving two transcripts.
 Saving a library prompt never changes the active system prompt; applying one
 is an explicit `set_system_prompt`.
 
@@ -222,6 +236,7 @@ Canonical events:
 | `tool.updated` | `call_id`, `delta` or `output` | live tool output |
 | `tool.finished` | `call_id`, `output`, `is_error` | tool execution ended |
 | `queue.updated` | `steering`, `follow_up` | pending input |
+| `transcript.truncated` | `entry_id`, `removed` | the adapter dropped `entry_id` and every entry after it; clients truncate their transcript to match |
 | `usage` | `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost` | usage |
 | `session.info` | `model`, `session_file`, `name`, ... | session metadata changed |
 | `notice` | `level`, `code`, `text` | banner/compaction/retry notice |

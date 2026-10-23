@@ -283,6 +283,25 @@ status bar update without a resync. Adapters that do not advertise a control
 never see it, which is why the llama chat has all three and pi's canonical view
 does not.
 
+A past turn carries a small **edit** button in its entry header: user messages
+when the adapter advertises `edit_message`, assistant answers when it advertises
+`edit_answer` (the llama chat does both; pi's canonical view does neither).
+Clicking it swaps that entry's body for a textarea holding the message or
+answer text, with a save button and **Cancel**; Enter saves and Shift+Enter
+adds a line. The save button reads **Save & resend** for a user message and
+**Save** for an answer, because only the former starts a run. Saving sends one
+`{type:"edit_message",entry_id,message}` command with the trimmed text and
+closes the editor when the adapter's `transcript.truncated` event arrives —
+the transcript is server-owned, so the response only reports the outcome
+(`message edited; N later message(s) dropped`, or `answer edited; ...`). The
+event drops every entry from `entry_id` on, and the adapter's new entry then
+arrives as a `message.finished`, which replaces any optimistic copy exactly
+like a fresh prompt. An empty draft is refused locally, an edit while a run is
+streaming is refused with a warning instead of being sent, a rejected edit
+keeps the editor open with the adapter's `error`, and a resync or a truncation
+that removes the entry closes the editor. Without the matching capability the
+button never exists.
+
 Above the textarea, the same panel carries a saved-prompt library when the
 adapter advertises `prompt_library` (`div.agent-system-library`): a
 `select.agent-prompt-pick` whose first option is the `saved prompts…`

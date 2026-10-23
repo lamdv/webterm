@@ -94,6 +94,67 @@ Sending both keeps one adapter working across builds. Templates that do not
 support thinking ignore the fields, so the control is harmless for models such
 as Gemma.
 
+## Editing a past message or answer
+
+Every user message and every assistant answer in the transcript carries a small
+**edit** button. The canonical view shows the former whenever an adapter
+advertises `edit_message` and the latter whenever it advertises `edit_answer`
+(both are `true` here). Clicking one swaps that entry's body for a textarea with
+Save and Cancel; Enter saves and Shift+Enter adds a line. Saving sends one
+canonical command, and the button is labelled **Save & resend** for a user
+message and **Save** for an answer:
+
+```json
+{"type":"edit_message","entry_id":"entry-3","message":"Ask it differently"}
+```
+
+The adapter rewrites the conversation rather than the entry in place: it drops
+that entry and **everything after it**, appends the replacement as a fresh
+entry, and then either runs or does not, depending on the role.
+
+- **A user message** is appended as a new `user` entry and a run starts. The
+  request therefore carries the edited prompt as the whole conversation, which
+  is what "edit a chat turn and try again" means. Editing the first message of
+  a four-message chat discards the other three.
+- **An assistant answer** is appended as a new `assistant` entry and **no run
+  starts**. The answer's thinking blocks are carried over and its text becomes
+  the replacement, so a corrected answer is simply part of the history the next
+  prompt sends. Editing an answer is the way to fix what the model said before
+  asking the follow-up question you actually wanted.
+
+Every attached client learns about the truncation from a canonical event, not
+from the command response:
+
+```json
+{"type":"event","event":"transcript.truncated","entry_id":"entry-3","removed":2}
+```
+
+A client drops entries from `entry_id` on, and the adapter's `message.finished`
+for the replacement entry then appends the edited message or answer with its new
+id. The response repeats the useful numbers:
+
+- a user edit answers
+  `{"disposition":"started","entry_id":"entry-9","removed":2}`;
+- an answer edit answers
+  `{"disposition":"updated","entry_id":"entry-9","removed":2}`;
+
+where `removed` counts every dropped entry including the one that was edited.
+The UI reports `removed - 1` as the number of later messages that were
+discarded.
+
+Refusals are ordinary `success:false` answers that leave the transcript alone:
+
+- a run is streaming (`a run is already active`) — stop it first;
+- the entry does not exist (`no entry 'entry-3' in this transcript`);
+- the entry is neither a user message nor an answer
+  (`only user messages and answers can be edited`);
+- the replacement text is empty.
+
+Model, thinking level and system prompt are untouched by an edit; they apply to
+the next request exactly as they would to a fresh prompt. Editing an answer
+does not regenerate it: if you want a new answer, edit the prompt that produced
+it, or ask a follow-up question.
+
 ## Prompt library
 
 Reusable system prompts live as plain-text files, one per prompt, so a prompt
@@ -147,7 +208,8 @@ stdin/stdout, so there is no Python codec and no special handling in
 
 | Command | Behaviour |
 |---|---|
-| `prompt` | Appends the user entry, returns `started`, streams from `POST /v1/chat/completions`. |
+| `prompt` | Appends the user entry, emits it as a `message.finished`, returns `started`, and streams from `POST /v1/chat/completions`. |
+| `edit_message` | Rewrites a past entry: drops it and every later entry (announced with `transcript.truncated`) and appends the replacement. A user message then starts a run; an answer starts none. |
 | `abort` | Closes the in-flight HTTP response; the run finishes with reason `aborted`. |
 | `get_state` | Current model, provider, streaming flag, thinking level, and system prompt. |
 | `get_snapshot` / `get_history` | In-memory canonical transcript, newest-page and backwards paging. |
@@ -165,8 +227,15 @@ as a canonical `usage` event. A `reasoning_content` delta becomes a thinking
 block; normal `content` deltas become text. Errors surface as a `notice` and
 `run.finished` with reason `error`, without killing the session.
 
+An answer's entry id is reserved before the run streams, so `message.started`,
+every `message.delta` and the closing `message.finished` all name the entry the
+reply is appended as. A client that has never seen a snapshot can therefore
+edit or page by the id it just streamed, instead of needing a reload to learn
+the transcript's real id.
+
 Capabilities advertised in `hello` are deliberately minimal: prompt, abort,
 models list/set with thinking levels, a system prompt, a prompt library,
+editing a past user message (`edit_message`) and an answer (`edit_answer`),
 snapshot, history paging, token usage, and the `raw` introspection above.
 Steering, follow-ups, queues, dialogs, tools, images, resume, and export are
 off, so the UI hides those controls. The native codec's spawn result also reads
@@ -189,9 +258,14 @@ model-management playground, open `/ui/` directly in a browser.
 `tests/test_llama_agent.py` runs a small OpenAI-compatible streaming server and
 drives a real `AgentSession`: streaming text, usage, model discovery and
 selection, the system prompt and thinking fields on the request, validation,
-snapshot/history, abort, and the prompt library (seeding, save, list, delete,
-name/size validation, and the `--prompt-dir`/environment override).
+snapshot/history, abort, the prompt library (seeding, save, list, delete,
+name/size validation, and the `--prompt-dir`/environment override), and message
+editing (truncation, the re-sent request, the entry/text refusals, and editing
+an answer: no run, kept thinking, and the corrected answer on the next
+request).
 `tests/test_control.py` covers profile adapter inference and native
 `set_model`; `tests/test_ctl.py` covers pi `--provider`/`--model` forwarding.
-`tests/agent_view_test.js` exercises the model, thinking, system-prompt, and
-prompt-library controls in the canonical browser view.
+`tests/agent_view_test.js` exercises the model, thinking, system-prompt,
+prompt-library, and message-editing controls in the canonical browser view
+(edit-button gating per role, the in-place editor, the `edit_message` command,
+the truncation event, and the refusal while a run is busy).

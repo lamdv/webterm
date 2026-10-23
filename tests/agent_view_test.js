@@ -883,6 +883,274 @@ assert.strictEqual(
     assert.ok(findByClass(plain.element, name), name + " still rendered");
   }
 
+  // ---------------------------------------------------------------- editing
+  // Editing a past user message: capability-gated edit button, an in-place
+  // textarea, one edit_message command, and a transcript truncation driven by
+  // the adapter's transcript.truncated event rather than by the response.
+  const editCalls = [];
+  const editing = window.WebtermAgent.create(
+    { id: "8-1", title: "editing" },
+    {
+      onCommand: (command) => {
+        editCalls.push(command);
+        if (command.type === "edit_message") {
+          return Promise.resolve({
+            disposition: "started",
+            entry_id: "e5",
+            removed: 3,
+          });
+        }
+        return Promise.resolve({});
+      },
+    }
+  );
+  editing.handle({
+    type: "agent_resync",
+    entries: [
+      { id: "e1", role: "user", content: [{ type: "text", text: "first question" }] },
+      { id: "e2", role: "assistant", content: [{ type: "text", text: "first answer" }] },
+      { id: "e3", role: "user", content: [{ type: "text", text: "second question" }] },
+      { id: "e4", role: "assistant", content: [{ type: "text", text: "second answer" }] },
+    ],
+    state: { streaming: false, settled: true },
+    capabilities: { prompt: true, abort: true, edit_message: true },
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  const editButtons = () => editing.element.querySelectorAll(".agent-edit");
+  assert.strictEqual(
+    editButtons().length,
+    2,
+    "only user messages carry an edit button"
+  );
+
+  // Cancel sends nothing and restores the message text.
+  editButtons()[0].dispatch("click");
+  let editField = findByClass(editing.element, "agent-edit-input");
+  assert.ok(editField, "clicking edit swaps the message for a textarea");
+  assert.strictEqual(editField.value, "first question", "the textarea starts with the text");
+  assert.strictEqual(
+    editButtons().length,
+    1,
+    "the entry being edited loses its edit button"
+  );
+  findByClass(editing.element, "agent-edit-cancel").dispatch("click");
+  assert.strictEqual(findByClass(editing.element, "agent-edit-input"), null, "cancel closes the editor");
+  assert.ok(textOf(editing.element).includes("first question"), "the message is unchanged");
+  assert.deepStrictEqual(editCalls, [], "cancel sends no command");
+
+  // An empty draft is rejected locally.
+  editButtons()[0].dispatch("click");
+  editField = findByClass(editing.element, "agent-edit-input");
+  editField.value = "   ";
+  editField.dispatch("input");
+  findByClass(editing.element, "agent-edit-save").dispatch("click");
+  assert.deepStrictEqual(editCalls, [], "an empty edit is not sent");
+  assert.ok(
+    textOf(editing.element).includes("cannot be empty"),
+    "the empty draft is reported"
+  );
+
+  // Save sends one edit_message and reports how much was dropped.
+  editField.value = "rewritten question";
+  editField.dispatch("input");
+  findByClass(editing.element, "agent-edit-save").dispatch("click");
+  assert.deepStrictEqual(
+    editCalls,
+    [{ type: "edit_message", entry_id: "e1", message: "rewritten question" }],
+    "save sends the edited text for that entry"
+  );
+  await tick();
+  assert.ok(
+    textOf(editing.element).includes("message edited; 2 later message(s) dropped"),
+    "the outcome names the dropped messages"
+  );
+
+  // The adapter owns the truncation: the transcript follows its event.
+  editing.handle({
+    type: "agent_event",
+    event: { event: "transcript.truncated", entry_id: "e1", removed: 3 },
+  });
+  editing.handle({
+    type: "agent_event",
+    event: {
+      event: "message.finished",
+      message: {
+        id: "e5",
+        role: "user",
+        content: [{ type: "text", text: "rewritten question" }],
+      },
+    },
+  });
+  const transcript = textOf(editing.element);
+  assert.ok(transcript.includes("rewritten question"), "the edited message is shown");
+  for (const gone of ["first answer", "second question", "second answer"]) {
+    assert.ok(!transcript.includes(gone), gone + " was dropped from the transcript");
+  }
+  assert.strictEqual(
+    editing.element.querySelectorAll(".agent-msg").length,
+    1,
+    "only the edited message remains"
+  );
+  assert.strictEqual(editButtons().length, 1, "the re-sent message is editable again");
+
+  // A run in flight refuses the edit before it reaches the adapter.
+  editing.handle({
+    type: "agent_event",
+    event: { event: "run.started", run_id: "run-9" },
+  });
+  editButtons()[0].dispatch("click");
+  editField = findByClass(editing.element, "agent-edit-input");
+  editField.value = "too soon";
+  editField.dispatch("input");
+  findByClass(editing.element, "agent-edit-save").dispatch("click");
+  assert.strictEqual(
+    editCalls.length,
+    1,
+    "a busy session does not send another edit_message"
+  );
+  assert.ok(
+    textOf(editing.element).includes("Wait for the current reply"),
+    "the busy refusal is shown"
+  );
+  editing.handle({
+    type: "agent_event",
+    event: { event: "run.finished", run_id: "run-9", reason: "stop" },
+  });
+  editing.handle({
+    type: "agent_event",
+    event: { event: "run.settled", run_id: "run-9" },
+  });
+
+  // ------------------------------------------------ editing an agent answer
+  // An answer is editable only when the adapter advertises `edit_answer`; the
+  // same command rewrites the transcript and starts no run, so the button says
+  // just Save.
+  const answerCalls = [];
+  const answering = window.WebtermAgent.create(
+    { id: "10-1", title: "answering" },
+    {
+      onCommand: (command) => {
+        answerCalls.push(command);
+        if (command.type === "edit_message") {
+          return Promise.resolve({ disposition: "updated", entry_id: "a5", removed: 3 });
+        }
+        return Promise.resolve({});
+      },
+    }
+  );
+  answering.handle({
+    type: "agent_resync",
+    entries: [
+      { id: "a1", role: "user", content: [{ type: "text", text: "first question" }] },
+      { id: "a2", role: "assistant", content: [{ type: "text", text: "first answer" }] },
+      { id: "a3", role: "user", content: [{ type: "text", text: "second question" }] },
+      { id: "a4", role: "assistant", content: [{ type: "text", text: "second answer" }] },
+    ],
+    state: { streaming: false, settled: true },
+    capabilities: { prompt: true, abort: true, edit_answer: true },
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  const answerButtons = () => answering.element.querySelectorAll(".agent-edit");
+  assert.strictEqual(
+    answerButtons().length,
+    2,
+    "only assistant answers carry an edit button for edit_answer"
+  );
+
+  answerButtons()[0].dispatch("click");
+  const answerField = findByClass(answering.element, "agent-edit-input");
+  assert.ok(answerField, "clicking edit swaps the answer for a textarea");
+  assert.strictEqual(answerField.value, "first answer", "the textarea starts with the answer");
+  const answerSave = findByClass(answering.element, "agent-edit-save");
+  assert.strictEqual(answerSave.textContent, "Save", "an answer is saved, not resent");
+
+  answerField.value = "corrected answer";
+  answerField.dispatch("input");
+  answerSave.dispatch("click");
+  assert.deepStrictEqual(
+    answerCalls,
+    [{ type: "edit_message", entry_id: "a2", message: "corrected answer" }],
+    "saving an answer sends one edit_message"
+  );
+  await tick();
+  assert.ok(
+    textOf(answering.element).includes("answer edited; 2 later message(s) dropped"),
+    "the answer outcome names the dropped messages"
+  );
+
+  answering.handle({
+    type: "agent_event",
+    event: { event: "transcript.truncated", entry_id: "a2", removed: 3 },
+  });
+  answering.handle({
+    type: "agent_event",
+    event: {
+      event: "message.finished",
+      message: {
+        id: "a5",
+        role: "assistant",
+        content: [{ type: "text", text: "corrected answer" }],
+      },
+    },
+  });
+  const answerTranscript = textOf(answering.element);
+  assert.ok(answerTranscript.includes("corrected answer"), "the corrected answer is shown");
+  for (const gone of ["first answer", "second question", "second answer"]) {
+    assert.ok(!answerTranscript.includes(gone), gone + " was dropped from the transcript");
+  }
+  assert.strictEqual(
+    answering.element.querySelectorAll(".agent-msg").length,
+    2,
+    "the question and the corrected answer remain"
+  );
+  assert.strictEqual(
+    answerCalls.length,
+    1,
+    "an answer edit sends nothing besides the edit_message"
+  );
+
+  // Without the capability no edit affordance exists at all.
+  const noEdit = window.WebtermAgent.create(
+    { id: "9-1", title: "no editing" },
+    { onCommand: () => Promise.resolve({}) }
+  );
+  noEdit.handle({
+    type: "agent_resync",
+    entries: [
+      { id: "e1", role: "user", content: [{ type: "text", text: "hello" }] },
+      { id: "e2", role: "assistant", content: [{ type: "text", text: "hi" }] },
+    ],
+    state: { streaming: false, settled: true },
+    capabilities: { prompt: true },
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  assert.strictEqual(
+    noEdit.element.querySelectorAll(".agent-edit").length,
+    0,
+    "no edit button without the capability"
+  );
+
+  // edit_message alone does not make answers editable.
+  noEdit.handle({
+    type: "agent_resync",
+    entries: [
+      { id: "e1", role: "user", content: [{ type: "text", text: "hello" }] },
+      { id: "e2", role: "assistant", content: [{ type: "text", text: "hi" }] },
+    ],
+    state: { streaming: false, settled: true },
+    capabilities: { prompt: true, edit_message: true },
+    dialogs: [],
+    cursor: { seq: 0 },
+  });
+  assert.strictEqual(
+    noEdit.element.querySelectorAll(".agent-edit").length,
+    1,
+    "edit_message covers user messages only"
+  );
+
   console.log("agent view smoke test passed");
 })().catch((error) => {
   console.error(error);
