@@ -83,7 +83,14 @@ The agent sends exactly one `hello` immediately after startup:
    "tools":{"streaming":true,"updates":true},
    "attachments":{"images":false},
    "raw":false
- }}
+ },
+ "commands":[
+   {"name":"fork","title":"Fork from a message",
+    "description":"Branch from an earlier user message",
+    "args":[{"name":"entry_id","type":"string","required":true}]}
+ ],
+ "help":[{"name":"/login","reason":"provider sign-in is a TUI-only screen"}]
+}
 ```
 
 `protocol` must be an accepted major version (`1` today). A missing or invalid
@@ -108,7 +115,7 @@ Capability groups:
 | `resume`, `export.native` | agent-owned session files and exports |
 | `usage.tokens`, `usage.cost` | usage reporting |
 | `tools.streaming`, `tools.updates` | live tool args / output |
-| `fork`, `clone`, `compaction` | agent-specific session operations |
+| `compaction` | the adapter accepts `compact` |
 | `attachments.images` | image input on `prompt`, `steer`, and `follow_up` (see [Images](#images)) |
 | `raw` | native command escape hatch |
 
@@ -125,11 +132,12 @@ Core commands every agent should implement:
 | `get_history` | `before`, `limit` | `{entries, has_more, first_entry_id}` |
 | `list_models` | `refresh` | `{models, default, fetched_at?}` |
 | `set_model` | `provider?`, `model` | `{model, provider?}` |
+| `command` | `name`, `args?` | adapter-defined; see [Declared commands](#declared-commands) |
 | `shutdown` | — | `{}` |
 
 Capability-gated commands: `steer`, `follow_up`, `clear_queue`,
-`set_thinking`, `set_system_prompt`, `set_session_name`, `compact`, `fork`,
-`clone`, `switch_session`, `export`, the prompt-library trio `list_prompts`
+`set_thinking`, `set_system_prompt`, `set_session_name`, `compact`,
+`switch_session`, the prompt-library trio `list_prompts`
 (`{prompts:[{name,text}]}`), `save_prompt` (`name`, `text` →
 `{prompt:{name,text}}`), and `delete_prompt` (`name` → `{name,deleted}`), and
 `raw` (whose `command` field is passed to the native protocol). `set_thinking` carries `level`; the
@@ -145,14 +153,14 @@ an `assistant` entry it starts nothing and answers
 `{"disposition":"updated","entry_id":<new entry id>,"removed":<count>}`, so
 the corrected answer is history for the next prompt. A run in flight refuses
 the edit with `success:false` rather than interleaving two transcripts.
-`fork` carries `entry_id` — the user entry to branch from — and answers with
-the adapter's own data (pi returns the forked prompt as `text`, and may report
-`cancelled` when an extension vetoed it). `clone` duplicates the active branch
-and carries nothing. `export` carries `format` (`html` or `jsonl`) and answers
-`{format, path, url}`, where `url` is the authenticated download route the
-browser can follow; the file is written under the managed agent directory, not
-invented by the client. Saving a library prompt never changes the active
-system prompt; applying one is an explicit `set_system_prompt`.
+Saving a library prompt never changes the active system prompt; applying one is
+an explicit `set_system_prompt`.
+
+Backend-specific operations are **not** core commands. A fork, a session tree,
+an export, or a provider login is that backend's feature, so it is declared in
+`hello` and invoked through the generic `command` record — see
+[Declared commands](#declared-commands). The core stays small on purpose: the
+shared view knows shapes, never a backend's vocabulary.
 
 `webterm-<pid>-<n>` is the default command id. Agents must echo it in the
 response. A success response means *accepted*, not finished; completion is
@@ -204,6 +212,43 @@ Images are defined only for the three prompt commands: sending the field on any
 other command (except `raw`, which is a deliberate pass-through) is a
 validation error, not an ignored key.
 
+### Declared commands
+
+A backend's own operations are advertised in `hello.commands` and invoked
+through the core `command` record. The shared view renders the manifest; it
+never hardcodes a backend's names.
+
+```json
+{"name":"export","title":"Export session","description":"Download HTML or JSONL",
+ "args":[{"name":"format","type":"choice","required":true,
+          "choices":[{"value":"html","label":"HTML"},{"value":"jsonl","label":"JSONL"}]}]}
+```
+
+| Field | Meaning |
+|---|---|
+| `name` | Invoked as `{"type":"command","name":"export","args":{"format":"html"}}`. Unique per session. |
+| `title`, `description` | Palette label and help text. `title` defaults to `name`. |
+| `args` | Ordered controls to render: `string`, `choice` (with `choices` of `{value,label}`), or `boolean`. `required` marks a value the client must fill. |
+| `danger` | Destructive; the client may confirm first. |
+
+The adapter answers with `success:true` plus `data`, or `success:false` plus
+`error`. Data is rendered through a small, fixed **render-hint vocabulary**, so
+a backend can produce a rich result without shipping UI code:
+
+| `data` | Rendered as |
+|---|---|
+| `{"notice":{"level":"info \| warning \| error","text":"…"}}` | inline banner |
+| `{"download":{"url":"…","filename":"…","mime_type":"…"}}` | a download link through the authenticated route |
+| `{"tree":{"nodes":[…],"leaf_id":"…"}}` | collapsible node tree; a node is `{id,label,children?,detail?}` and may carry `actions:[{name,label,command:{name,args}}]` whose command is another declared command |
+| `{"text":"…"}` | preformatted text block |
+| `{"refresh":true}` | re-request a snapshot after the command (fork, clone, switch) |
+| anything else | collapsible JSON card |
+
+`hello.help` is the complementary list: features that **cannot** work over the
+protocol (`[{"name":"/login","reason":"…"}]`). The view shows them in a help
+dialog, so a missing capability reads as a documented gap rather than a broken
+control. An adapter without declared commands simply omits both fields.
+
 ### Browser envelope
 
 The protocol describes agent pipes. A browser wraps the same flat record in an
@@ -240,14 +285,13 @@ The current pi adapter answers:
 |---|---|
 | `prompt`, `steer`, `follow_up` | one pi prompt; the mid-run forms set `streamingBehavior`, and `images` become pi `ImageContent` |
 | `abort`, `get_state`, `set_model`, `set_thinking`, `set_session_name`, `compact`, `clear_queue` | one pi RPC call, with the response data normalized |
-| `fork`, `clone` | pi `fork` (`entryId`) and `clone`; a fork may answer `cancelled` when an extension vetoed it |
-| `export` | pi `export_html` for `html`, the live session file for `jsonl`; answered with the managed path and download URL |
+| `command` (declared `fork`, `clone`, `export`, `tree`) | pi-specific operations: `fork`/`clone`, an export that answers a `download` hint, and a generic `tree` rendering of `get_tree` |
+| `raw` | passes the native command through, except server-owned `extension_ui_response` |
 | `get_snapshot` | newest transcript page plus `cursor.seq`; also emits `agent_resync` (always for native agents, for pi only when the connection opted in) |
 | `get_history` | one backwards page before `before` |
 | `list_models` | the cached model probe for the session's cwd |
 | `dialog_response` | the server-owned dialog queue; `approved` becomes pi's `confirmed` |
 | `shutdown` | graceful close |
-| `raw` | passes the native command through, except server-owned `extension_ui_response` |
 
 ### Events
 

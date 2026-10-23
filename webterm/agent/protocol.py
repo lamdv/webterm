@@ -91,6 +91,7 @@ CORE_COMMANDS = frozenset(
         "get_history",
         "list_models",
         "set_model",
+        "command",
         "shutdown",
     }
 )
@@ -106,10 +107,7 @@ OPTIONAL_COMMANDS = frozenset(
         "edit_message",
         "set_session_name",
         "compact",
-        "fork",
-        "clone",
         "switch_session",
-        "export",
         "dialog_response",
         "raw",
     }
@@ -223,8 +221,6 @@ class Capabilities:
     usage_cost: bool = False
     tool_streaming: bool = True
     tool_updates: bool = True
-    fork: bool = False
-    clone: bool = False
     compaction: bool = False
     attachments_images: bool = False
     raw: bool = False
@@ -288,8 +284,6 @@ class Capabilities:
             usage_cost=_flag_from(source, "usage_cost", usage, "cost"),
             tool_streaming=_flag_from(source, "tool_streaming", tools, "streaming", True),
             tool_updates=_flag_from(source, "tool_updates", tools, "updates", True),
-            fork=_flag(source, "fork"),
-            clone=_flag(source, "clone"),
             compaction=_flag(source, "compaction"),
             attachments_images=_flag_from(source, "attachments_images", attachments, "images"),
             raw=_flag(source, "raw"),
@@ -320,8 +314,6 @@ class Capabilities:
             "export": {"native": self.export_native},
             "usage": {"tokens": self.usage_tokens, "cost": self.usage_cost},
             "tools": {"streaming": self.tool_streaming, "updates": self.tool_updates},
-            "fork": self.fork,
-            "clone": self.clone,
             "compaction": self.compaction,
             "attachments": {"images": self.attachments_images},
             "raw": self.raw,
@@ -333,6 +325,182 @@ class Capabilities:
     def supports_dialog(self, kind: str) -> bool:
         """Return True when *kind* is an advertised dialog method."""
         return kind in self.dialogs
+
+
+# ---------------------------------------------------------------------------
+# Declared commands and help
+# ---------------------------------------------------------------------------
+
+#: Argument types a declared command may use.  The browser renders a control per
+#: type and treats an unknown type as a plain string.
+ARG_TYPES = frozenset({"string", "choice", "boolean"})
+
+
+@dataclass(frozen=True)
+class CommandArg:
+    """One argument of an adapter-declared command."""
+
+    name: str
+    type: str = "string"
+    title: str = ""
+    description: str = ""
+    required: bool = False
+    #: ``(value, label)`` pairs for ``type="choice"``.
+    choices: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class DeclaredCommand:
+    """A backend feature the browser can invoke without knowing its meaning.
+
+    The canonical view lists these in its palette and sends
+    ``{"type":"command","name":...,"args":{...}}``; only the adapter interprets
+    the name.  This is what keeps one backend's vocabulary out of the shared UI.
+    """
+
+    name: str
+    title: str = ""
+    description: str = ""
+    args: tuple[CommandArg, ...] = ()
+    danger: bool = False
+
+
+@dataclass(frozen=True)
+class HelpEntry:
+    """A backend feature that cannot work through the protocol.
+
+    ``/help`` lists them, so a missing feature reads as a documented gap
+    instead of a broken button.
+    """
+
+    name: str
+    reason: str = ""
+
+
+def _parse_command_args(raw: object, command: str) -> tuple[CommandArg, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProtocolError(f"hello.commands[{command!r}].args must be a list")
+    args: list[CommandArg] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ProtocolError(f"hello.commands[{command!r}] args must be objects")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ProtocolError(f"hello.commands[{command!r}] arg needs a name")
+        kind = entry.get("type", "string")
+        if not isinstance(kind, str):
+            raise ProtocolError(f"hello.commands[{command!r}].{name}.type must be a string")
+        if kind not in ARG_TYPES:
+            raise ProtocolError(
+                f"unsupported arg type {kind!r} (allowed: {', '.join(sorted(ARG_TYPES))})"
+            )
+        choices: list[tuple[str, str]] = []
+        raw_choices = entry.get("choices")
+        if isinstance(raw_choices, list):
+            for choice in raw_choices:
+                if isinstance(choice, dict):
+                    value = choice.get("value")
+                    label = choice.get("label", value)
+                    if isinstance(value, str) and isinstance(label, str):
+                        choices.append((value, label))
+                elif isinstance(choice, str):
+                    choices.append((choice, choice))
+        args.append(
+            CommandArg(
+                name=name.strip(),
+                type=kind,
+                title=str(entry.get("title") or ""),
+                description=str(entry.get("description") or ""),
+                required=bool(entry.get("required", False)),
+                choices=tuple(choices),
+            )
+        )
+    return tuple(args)
+
+
+def parse_declared_commands(raw: object) -> tuple[DeclaredCommand, ...]:
+    """Validate an adapter's declared-command manifest."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProtocolError("hello.commands must be a list")
+    commands: list[DeclaredCommand] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ProtocolError("hello.commands entries must be objects")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ProtocolError("hello.commands entries need a name")
+        name = name.strip()
+        if name in seen:
+            raise ProtocolError(f"duplicate declared command {name!r}")
+        seen.add(name)
+        title = entry.get("title")
+        description = entry.get("description")
+        commands.append(
+            DeclaredCommand(
+                name=name,
+                title=title if isinstance(title, str) else name,
+                description=description if isinstance(description, str) else "",
+                args=_parse_command_args(entry.get("args"), name),
+                danger=bool(entry.get("danger", False)),
+            )
+        )
+    return tuple(commands)
+
+
+def parse_help_entries(raw: object) -> tuple[HelpEntry, ...]:
+    """Validate an adapter's declared help/gap list."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ProtocolError("hello.help must be a list")
+    entries: list[HelpEntry] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise ProtocolError("hello.help entries must be objects")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise ProtocolError("hello.help entries need a name")
+        reason = entry.get("reason")
+        entries.append(
+            HelpEntry(
+                name=name.strip(),
+                reason=reason if isinstance(reason, str) else "",
+            )
+        )
+    return tuple(entries)
+
+
+def find_declared_command(
+    commands: tuple[DeclaredCommand, ...] | list[DeclaredCommand] | object, name: str
+) -> DeclaredCommand | None:
+    """Return the declared command called *name*, or None."""
+    for command in commands if isinstance(commands, (tuple, list)) else ():
+        if command.name == name:
+            return command
+    return None
+
+
+def declared_command_record(name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build the canonical ``command`` record that invokes a declared command."""
+    return {"type": "command", "name": name, "args": dict(args or {})}
+
+
+def parse_command_invocation(command: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Return ``(name, args)`` for a ``command`` record, validated."""
+    name = command.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ProtocolError("command needs the name of a declared command")
+    raw_args = command.get("args")
+    if raw_args is None:
+        return name.strip(), {}
+    if not isinstance(raw_args, dict):
+        raise ProtocolError("command args must be an object")
+    return name.strip(), dict(raw_args)
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +521,10 @@ class Hello:
     capabilities: Capabilities
     session_id: str | None = None
     version: str | None = None
+    #: Adapter features the browser may invoke without knowing their meaning.
+    commands: tuple[DeclaredCommand, ...] = ()
+    #: Backend features that cannot work through the protocol.
+    help: tuple[HelpEntry, ...] = ()
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -381,6 +553,8 @@ def parse_hello(record: object) -> Hello:
         capabilities=Capabilities.from_dict(record.get("capabilities")),
         session_id=session_id,
         version=version,
+        commands=parse_declared_commands(record.get("commands")),
+        help=parse_help_entries(record.get("help")),
     )
 
 
