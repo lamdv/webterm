@@ -346,7 +346,13 @@ as the pi view, fed by an `onListEntries` hook over `list_entries`.
 
 The view keeps a canonical transcript (entries from `agent_resync`, then live
 `message.*` events), tool execution state keyed by `call_id`, usage/model
-status, and a server-owned dialog panel. It renders text, thinking, tool cards,
+status, and a server-owned dialog panel. Adapter-owned presentation is
+shape-only: `status.updated` renders a keyed chip in the header,
+`widget.updated` a composer panel above or below the input, `title.updated`
+the view title, and `editor.prefill` fills an empty composer (never a draft).
+The `agent_resync` snapshot carries the replayable subset (`ui.status`,
+`ui.widgets`, `ui.title`), so a reconnect restores chips and widgets instead of
+losing them. It renders text, thinking, tool cards,
 images as placeholders, and user/assistant/tool entries. When the snapshot
 reports `has_more`, a **Load earlier messages** button fetches one backwards
 page with `agent.get_history` and prepends it without moving the reader; it

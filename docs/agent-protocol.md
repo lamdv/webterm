@@ -117,6 +117,7 @@ Capability groups:
 | `tools.streaming`, `tools.updates` | live tool args / output |
 | `compaction` | the adapter accepts `compact` |
 | `attachments.images` | image input on `prompt`, `steer`, and `follow_up` (see [Images](#images)) |
+| `ui.status`, `ui.widgets`, `ui.title`, `ui.editor` | adapter-owned presentation: keyed status chips, composer widgets, a view title, and a composer prefill |
 | `raw` | native command escape hatch |
 
 ### Commands
@@ -322,6 +323,10 @@ Canonical events:
 | `tool.updated` | `call_id`, `delta` or `output` | live tool output |
 | `tool.finished` | `call_id`, `output`, `is_error` | tool execution ended |
 | `queue.updated` | `steering`, `follow_up` | pending input |
+| `status.updated` | `key`, `text` | a keyed header chip; an empty `text` clears the key |
+| `widget.updated` | `key`, `text`, `placement` | a composer panel (`above` or `below`); empty `text` clears the key |
+| `title.updated` | `title` | the view's own title; empty falls back to the session name |
+| `editor.prefill` | `text` | prefill the composer; a non-empty draft is never overwritten |
 | `transcript.truncated` | `entry_id`, `removed` | the adapter dropped `entry_id` and every entry after it; clients truncate their transcript to match |
 | `usage` | `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost` | usage |
 | `session.info` | `model`, `session_file`, `name`, ... | session metadata changed |
