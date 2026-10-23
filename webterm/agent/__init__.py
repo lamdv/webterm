@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .process import fork_agent
+from .process import AgentProcess, fork_agent
 from .protocol import (
     PROTOCOL_VERSION,
     SUPPORTED_PROTOCOLS,
@@ -33,6 +33,7 @@ __all__ = [
     "AgentClosed",
     "AgentCommandError",
     "AgentError",
+    "AgentProcess",
     "AgentProtocolError",
     "AgentSession",
     "AgentSubscriber",

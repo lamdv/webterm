@@ -434,8 +434,8 @@ than hanging the spawner.
 webterm/agent/
 ├── __init__.py
 ├── protocol.py     # capabilities, hello, validation, event names
-├── process.py      # fork/exec into pipes, shared child environment
-└── session.py      # AgentSession: commands, events, replay, dialogs, close
+├── process.py      # AgentProcess: pipes, replay, timers, close; fork helper
+└── session.py      # AgentSession: canonical records, hello, dialogs, usage
 ```
 
 `SessionManager.create_agent(argv, ...)` forks the child, registers it with the

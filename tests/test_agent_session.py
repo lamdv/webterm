@@ -11,12 +11,14 @@ from pathlib import Path
 
 from webterm.agent import (
     AgentClosed,
+    AgentProcess,
     AgentProtocolError,
     AgentSession,
     Capabilities,
     ProtocolError,
     parse_hello,
 )
+from webterm.integration.pi import PiSession
 from webterm.session import SessionManager
 
 FAKE_AGENT = Path(__file__).with_name("fake_agent.py")
@@ -300,6 +302,41 @@ class AgentSessionTests(unittest.IsolatedAsyncioTestCase):
         session = await self.start()
         with self.assertRaises(ValueError):
             await session.prompt("   ")
+
+
+class SharedAgentProcessTests(unittest.TestCase):
+    """Both structured-agent dialects share one process/transport base.
+
+    The close/escalation behaviour of that base is covered for each dialect by
+    ``AgentSessionTests.test_close_terminates_the_agent`` and
+    ``test_pi.PiSessionTests.test_close_escalates_when_stdin_eof_is_ignored``;
+    this test pins the extraction itself so the machinery cannot drift back
+    into two copies.
+    """
+
+    def test_both_sessions_inherit_the_shared_process_base(self) -> None:
+        self.assertTrue(issubclass(AgentSession, AgentProcess))
+        self.assertTrue(issubclass(PiSession, AgentProcess))
+
+    def test_process_lifecycle_is_defined_once_on_the_base(self) -> None:
+        for name in (
+            "attach",
+            "detach",
+            "send_command",
+            "events_since",
+            "close",
+            "force_close",
+            "wait",
+            "wait_for_settled",
+            "_mark_dead",
+            "_on_child_exit",
+            "_feed",
+            "_signal",
+        ):
+            self.assertIs(
+                getattr(AgentSession, name), getattr(AgentProcess, name), name
+            )
+            self.assertIs(getattr(PiSession, name), getattr(AgentProcess, name), name)
 
 
 if __name__ == "__main__":

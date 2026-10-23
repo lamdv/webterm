@@ -13,11 +13,11 @@ for the client see [frontend.md](frontend.md).
 | `webterm/__main__.py` | CLI entry point: argument parsing, config assembly, `asyncio.run`. |
 | `webterm/server.py` | HTTP static serving, WebSocket upgrade, `ClientConnection` command loop and fan-out, shutdown. |
 | `webterm/session.py` | `Session` (PTY + scrollback + subscribers + lineage) and `SessionManager` (spawn, reap, list, kill, limits, GC). |
-| `webterm/agent/session.py` | `AgentSession`: a canonical JSONL agent child over three pipes, command correlation, event replay, dialogs, and two-phase close. |
+| `webterm/agent/session.py` | `AgentSession`: the canonical JSONL dialect over the shared agent process — hello handshake, command correlation, record validation, dialogs, run/usage state. |
 | `webterm/agent/codec.py` | The adapter seam: `AgentCodec` plus `NativeCodec`, which serves an `AgentSession` whose child already speaks canonical JSONL. |
 | `webterm/agent/protocol.py` | Canonical agent protocol: capabilities, command names, hello validation, event names, response records, and payload validation. |
-| `webterm/agent/process.py` | Fork/exec into stdin/stdout/stderr pipes with the shared `WEBTERM_*` child environment. |
-| `webterm/integration/pi/session.py` | `PiSession`: a `pi --mode rpc` child over three pipes, JSONL event fan-out, snapshot/resync, server-owned extension dialogs/UI state, and two-phase close. |
+| `webterm/agent/process.py` | `AgentProcess`, the process/transport lifecycle every structured agent session shares, plus `fork_agent`: fork/exec into stdin/stdout/stderr pipes with the shared `WEBTERM_*` child environment. |
+| `webterm/integration/pi/session.py` | `PiSession`: the pi RPC dialect over the shared agent process — raw record ring, snapshot/resync, server-owned extension dialogs/UI state, activity, and usage. |
 | `webterm/integration/pi/canonical.py` | Translation from pi RPC events, snapshots, history, models, and extension UI into the canonical agent protocol. |
 | `webterm/integration/pi/codec.py` | `PiCodec`: the canonical surface over a `PiSession`, so the server never branches on pi. |
 | `webterm/integration/pi/models.py` | Model probe for the new-session picker: throwaway RPC child, field whitelist, per-cwd cache. |
@@ -303,6 +303,21 @@ Owns one PTY master fd and its child process.
 - `kill` and `close_all` terminate sessions.
 
 `DEFAULT_SCROLLBACK` is 100 000 bytes; `READ_SIZE` is 65 536.
+
+## `agent/process.py` — the shared agent process
+
+`AgentProcess` owns the lifecycle that both structured agent dialects share:
+the fork'd stdin/stdout/stderr pipes and their non-blocking setup, byte
+buffering with LF-only line splitting, stderr tail logging, attach/detach
+fan-out, the replay event ring (`events_since`/`_remember`), timers, `wait()`,
+reaper-driven `_on_child_exit`, and the two-phase close (`close`,
+`force_close`, `_send_term`/`_send_kill`/`_force_dead`, `_signal`,
+`_mark_dead`). `AgentSession` (canonical JSONL) and `PiSession` (pi RPC) are
+dialects over it: each keeps its line handler and record validation or
+translation, its dialogs/UI queues, activity and usage state, and the parts of
+`info()` that differ, and overrides only the hooks where the wire genuinely
+differs (error classes, close grace periods, stdin-write policy, pending-input
+bookkeeping). `fork_agent` and `fork_pi` stay the fork helpers next to it.
 
 ## Protocol
 

@@ -122,6 +122,11 @@ session already switches later).
 
 ## Process model
 
+`PiSession` inherits the pipes, readers, line splitting, event ring, timers,
+and two-phase close from the shared `AgentProcess` base in
+`webterm/agent/process.py`; this section describes the pi-specific behaviour
+layered on that base.
+
 Pi is spawned with `fork`/`execvpe` and raw pipes, not
 `asyncio.create_subprocess_exec`. The existing reaper calls
 `os.waitpid(-1, os.WNOHANG)` for every child; an asyncio subprocess watcher
