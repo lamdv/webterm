@@ -190,7 +190,28 @@
     actions.append(sendButton, stopButton);
     form.append(input, actions);
 
-    root.append(header, controls, systemPanel, banner, findHost, messagesEl, dialogHost, form, footer);
+    // Literal `@path` completion; the path is plain text, not an expansion.
+    const pathComplete =
+      typeof options.onListEntries === "function" && window.WebtermPathComplete
+        ? window.WebtermPathComplete.create({
+            input: input,
+            basePath: session.cwd || "",
+            listEntries: options.onListEntries,
+          })
+        : null;
+
+    root.append(
+      header,
+      controls,
+      systemPanel,
+      banner,
+      findHost,
+      messagesEl,
+      dialogHost,
+      ...(pathComplete ? [pathComplete.element] : []),
+      form,
+      footer
+    );
 
     const state = {
       entries: [],
@@ -1461,6 +1482,7 @@
     function sendPrompt(behavior) {
       const text = input.value.trim();
       if (!text || state.exited) return;
+      if (pathComplete) pathComplete.close();
       input.value = "";
       // A prompt sent during a run must say how to queue it.  The canonical
       // view asks for follow-up by default; Ctrl+Enter requests steering,
@@ -1491,6 +1513,7 @@
       sendPrompt();
     });
     input.addEventListener("keydown", (event) => {
+      if (pathComplete && pathComplete.keydown(event)) return;
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       sendPrompt(event.ctrlKey || event.metaKey ? "steer" : undefined);
@@ -1582,6 +1605,7 @@
         updateStatus();
         input.disabled = true;
         sendButton.disabled = true;
+        if (pathComplete) pathComplete.close();
         scheduleRender();
       },
       activate: () => {
@@ -1589,6 +1613,7 @@
       },
       destroy: () => {
         clearTimeout(streamTimer);
+        if (pathComplete) pathComplete.destroy();
         if (state.noticeTimer) clearTimeout(state.noticeTimer);
         if (state.prompts.armTimer) clearTimeout(state.prompts.armTimer);
         state.prompts.armTimer = null;

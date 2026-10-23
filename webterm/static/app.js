@@ -720,6 +720,8 @@
           request({ type: "pi_history", session_id: session.id, before, limit }),
         onExport: (format) =>
           request({ type: "pi_export", session_id: session.id, format }),
+        onListEntries: (path) =>
+          request({ type: "list_entries", path: path || undefined }),
         onUiResponse: (requestId, response) =>
           sendPiUiResponse(session.id, requestId, response),
       });
@@ -768,6 +770,8 @@
           sendAgentCommand(session.id, { type: "get_history", before, limit }).then(
             (response) => response && response.data
           ),
+        onListEntries: (path) =>
+          request({ type: "list_entries", path: path || undefined }),
       });
       wrapper.appendChild(view.element);
     } else {

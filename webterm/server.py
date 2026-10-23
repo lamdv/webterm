@@ -66,6 +66,8 @@ DISCOVERY_PROTOCOL = 1
 MAX_HTTP_HEADER = 64 * 1024
 #: Timeout for one canonical agent command round trip.
 AGENT_COMMAND_TIMEOUT = 30.0
+#: Entries returned by one `list_entries` call (directories and files together).
+MAX_LISTED_ENTRIES = 500
 
 #: Codecs by ``session.adapter``.  An adapter nobody registered falls through
 #: to the canonical codec, which is what a plain canonical agent speaks.
@@ -709,6 +711,8 @@ class ClientConnection:
             return self._pi_ui_response(message)
         if kind == "list_dirs":
             return self._list_dirs(message)
+        if kind == "list_entries":
+            return self._list_entries(message)
         if kind == "list_pi_sessions":
             return self._list_pi_sessions(message)
         if kind == "pi_models":
@@ -1023,6 +1027,51 @@ class ClientConnection:
             "path": path,
             "parent": None if parent == path else parent,
             "dirs": entries,
+            "truncated": truncated,
+        }
+
+    def _list_entries(self, message: dict) -> dict:
+        """List directories and files for literal `@path` completion.
+
+        Unlike `list_dirs` this includes files; directories come first, then
+        files, each sorted case-insensitively. The result is capped so one huge
+        directory cannot flood the browser.
+        """
+        raw = message.get("path")
+        base = self.manager.cwd if raw is None or not str(raw).strip() else str(raw)
+        path = os.path.abspath(os.path.expanduser(base))
+        if not os.path.isdir(path):
+            raise RequestError("bad_request", f"not a directory: {path}")
+        entries: list[dict[str, str]] = []
+        truncated = False
+        try:
+            with os.scandir(path) as scan:
+                for entry in scan:
+                    try:
+                        is_dir = entry.is_dir()
+                        is_file = entry.is_file()
+                    except OSError:
+                        continue
+                    if not is_dir and not is_file:
+                        continue
+                    if len(entries) >= MAX_LISTED_ENTRIES:
+                        truncated = True
+                        break
+                    entries.append(
+                        {
+                            "name": entry.name,
+                            "path": entry.path,
+                            "type": "dir" if is_dir else "file",
+                        }
+                    )
+        except OSError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        entries.sort(key=lambda item: (item["type"] != "dir", item["name"].casefold()))
+        parent = os.path.dirname(path)
+        return {
+            "path": path,
+            "parent": None if parent == path else parent,
+            "entries": entries,
             "truncated": truncated,
         }
 

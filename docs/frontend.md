@@ -15,6 +15,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/style.css` | All styling and CSS custom properties. |
 | `webterm/static/app.js` | Client logic (a single IIFE). |
 | `webterm/static/highlight.js` | Safe fenced-code and diff highlighter, exposed as `window.WebtermHighlight`. |
+| `webterm/static/pathcomplete.js` | Literal `@path` completion popup shared by the chat composers, exposed as `window.WebtermPathComplete`. |
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
 | `webterm/static/agent.js` | Experimental canonical agent chat view, exposed as `window.WebtermAgent`. Enabled with `?agentui=1`. |
 | `webterm/static/find.js` | Client-side transcript search bar shared by both chat views, exposed as `window.WebtermFind`. |
@@ -30,9 +31,10 @@ layout and the structure of `app.js`. For the server side see
 4. `/config.js` (generated).
 5. `/highlight.js`.
 6. `/find.js`.
-7. `/pi.js`.
-8. `/agent.js`.
-9. `/app.js`.
+7. `/pathcomplete.js`.
+8. `/pi.js`.
+9. `/agent.js`.
+10. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -266,6 +268,35 @@ chips (`setStatus`), pre-composer widgets (`setWidget`), the chat header title
 (`setTitle`), and composer prefill (`set_editor_text`). A pending dialog adds a
 `!` badge to the session tab and `needs_input` to session metadata.
 
+#### Literal `@path` completion
+
+Both chat composers (the pi view and the canonical agent view) bind
+`pathcomplete.js`, which completes file paths as **literal text**. pi running
+over RPC has no `@file` expansion, so nothing is hidden behind the token: the
+model receives the absolute path exactly as inserted.
+
+- **Trigger** — the caret sits in an `@` token that starts the message or
+  follows whitespace, contains no whitespace, and ends at the caret. `@` alone
+  lists the session's `cwd` (the server's default when the session has none);
+  everything after `@` up to the last `/` names the directory to list (relative
+  to that cwd, or absolute/`~`), and the remainder filters entry names
+  case-insensitively. `@src/` therefore descends into `src`.
+- **Listing** — a `list_entries` request (`{path}`) is answered from the same
+  synchronous scan as `list_dirs`, but with files: directories first, then
+  files, sorted case-insensitively and capped at 500 entries with `truncated`.
+  The picker renders at most 50 matches, building them with `textContent`.
+- **Keys** — ArrowUp/ArrowDown move, Enter/Tab accept, Escape closes the popup
+  only (it never aborts the run or clears the draft), and Shift+Enter stays a
+  newline. While the popup is open plain Enter accepts and never sends: the
+  composer only sees a key the picker declined, and Ctrl/Cmd+Enter still
+  steers.
+- **Insertion** — accepting replaces the whole `@token` with the absolute path
+  from the server. Accepting a directory keeps the `@` and appends `/`, so the
+  picker stays open to descend further. A path containing whitespace is wrapped
+  in double quotes with `\`, `"`, `$` and the backtick backslash-escaped, so
+  the model and a shell both read it as one word. Entry names containing a
+  newline are never offered, which keeps the mention on one line.
+
 ### Canonical agent view
 
 `agent.js` renders every native structured agent (an adapter other than
@@ -279,7 +310,8 @@ the query flag.
 `prompt`, `steer` (busy + Ctrl/Cmd+Enter), `follow_up` (busy + Enter), `abort`,
 `dialog_response`, and the generic `onCommand` hook used by the controls. The
 view never sees an adapter's native dialect; the server maps each canonical
-command onto the codec.
+command onto the codec. Its composer binds the same literal `@path` completion
+as the pi view, fed by an `onListEntries` hook over `list_entries`.
 
 The view keeps a canonical transcript (entries from `agent_resync`, then live
 `message.*` events), tool execution state keyed by `call_id`, usage/model
@@ -568,5 +600,8 @@ All storage access is wrapped in `try/catch`, since storage may be unavailable
 
 There is no browser test runner. The server's tests assert that `index.html` is
 served and that the xterm.js CDN tag is present (`tests/test_server.py`). The
-frontend is otherwise exercised manually. Keep `app.js` dependency-free and avoid
-introducing a build step; anything added must run from the served static files.
+frontend is otherwise exercised manually, except for fake-DOM smoke tests run
+with Node through unittest (`tests/agent_view_test.js`,
+`tests/app_view_test.js`, `tests/path_complete_test.js`). Keep `app.js`
+dependency-free and avoid introducing a build step; anything added must run
+from the served static files.

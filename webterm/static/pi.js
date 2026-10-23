@@ -124,6 +124,17 @@
     actions.append(sendButton, stopButton);
     form.append(input, actions);
 
+    // Literal `@path` completion: RPC pi has no `@file` expansion, so the
+    // picker writes the real path into the message instead.
+    const pathComplete =
+      typeof options.onListEntries === "function" && window.WebtermPathComplete
+        ? window.WebtermPathComplete.create({
+            input: input,
+            basePath: session.cwd || "",
+            listEntries: options.onListEntries,
+          })
+        : null;
+
     root.append(
       header,
       banner,
@@ -133,6 +144,7 @@
       paletteEl,
       widgetsAboveEl,
       toastHost,
+      ...(pathComplete ? [pathComplete.element] : []),
       form,
       widgetsBelowEl,
       footer
@@ -1658,6 +1670,7 @@
       const text = input.value.trim();
       if (!text || state.exited) return;
       closePalette();
+      if (pathComplete) pathComplete.close();
       if (runSlashCommand(text)) return;
       const wasBusy = state.busy;
       const command = { type: "prompt", message: text };
@@ -1698,6 +1711,7 @@
       state.state.pendingMessageCount = 0;
       state.ui = { requests: [], status: {}, widgets: {}, title: "" };
       closePalette();
+      if (pathComplete) pathComplete.close();
       closeUiDialog();
       render();
     }
@@ -1742,6 +1756,7 @@
     input.addEventListener("click", updatePalette);
     input.addEventListener("blur", () => setTimeout(closePalette, 0));
     input.addEventListener("keydown", (event) => {
+      if (pathComplete && pathComplete.keydown(event)) return;
       if (!paletteEl.hidden) {
         if (event.key === "ArrowDown") {
           event.preventDefault();
@@ -1852,6 +1867,7 @@
         if (!state.exited) input.focus();
       },
       destroy: () => {
+        if (pathComplete) pathComplete.destroy();
         closeUiDialog();
         root.remove();
       },
