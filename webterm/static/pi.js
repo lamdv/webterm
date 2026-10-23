@@ -122,6 +122,19 @@
     const sendLabel = el("span", "pi-send-label", "Send");
     sendButton.append(sendLabel);
     actions.append(sendButton, stopButton);
+    // Image input is capability-gated in reset(); the controller owns paste,
+    // drop, and the thumbnail strip, and the views share it with agent.js.
+    const attach = window.WebtermAttach
+      ? window.WebtermAttach.create({
+          form,
+          input,
+          onNotice: (text) => {
+            setBanner(text);
+            render();
+          },
+        })
+      : null;
+    if (attach) form.append(attach.element);
     form.append(input, actions);
 
     // Literal `@path` completion: RPC pi has no `@file` expansion, so the
@@ -152,6 +165,7 @@
 
     const state = {
       seq: -1,
+      capabilities: {},
       messages: [],
       live: null,
       liveTools: new Map(),
@@ -183,6 +197,15 @@
       state.banner = text || "";
       banner.textContent = state.banner;
       banner.hidden = !state.banner;
+    }
+
+    function imagesEnabled() {
+      const attachments = state.capabilities && state.capabilities.attachments;
+      return Boolean(attachments && attachments.images);
+    }
+
+    function syncAttach() {
+      if (attach) attach.setEnabled(imagesEnabled() && !state.exited);
     }
 
     function renderHeader() {
@@ -810,6 +833,11 @@
       state.history.loading = false;
       state.history.error = "";
       state.seq = typeof message.seq === "number" ? message.seq : -1;
+      state.capabilities =
+        message.capabilities && typeof message.capabilities === "object"
+          ? message.capabilities
+          : {};
+      syncAttach();
       state.state = message.state || {};
       state.live = null;
       state.liveTools.clear();
@@ -1675,13 +1703,25 @@
       const wasBusy = state.busy;
       const command = { type: "prompt", message: text };
       if (wasBusy) command.streamingBehavior = behavior || "followUp";
+      // The pi envelope takes pi's ImageContent shape; the canonical views
+      // send canonical entries and the server translates those instead.
+      const images = attach ? attach.images() : [];
+      if (images.length) {
+        command.images = images.map((image) => ({
+          type: "image",
+          data: image.data,
+          mimeType: image.mime_type,
+        }));
+      }
       input.value = "";
+      if (attach) attach.clear();
       setBanner("");
       if (!wasBusy) state.busy = true;
       const result = options.onCommand(command);
       if (result && typeof result.catch === "function") {
         result.catch((error) => {
           restoreDraft(text);
+          if (attach) attach.add(images);
           commandError(error, wasBusy);
         });
       }
@@ -1705,6 +1745,7 @@
     function setExited() {
       state.exited = true;
       state.busy = false;
+      syncAttach();
       state.live = null;
       state.liveTools.clear();
       state.queues = { steering: [], followUp: [] };

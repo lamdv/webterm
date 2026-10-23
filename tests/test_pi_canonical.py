@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import os
 import shutil
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from webterm.integration.pi.canonical import (
     CanonicalCommandError,
@@ -1262,6 +1266,49 @@ class PiAgentCommandServerTests(unittest.IsolatedAsyncioTestCase):
                 response = result["result"]["agent_response"]
                 self.assertTrue(response["success"])
                 self.assertEqual(response["data"], {"disposition": "queued"})
+
+    async def test_prompt_images_reach_pi_stdin(self) -> None:
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 16).decode("ascii")
+        prompt_log = Path(self.cwd) / "prompts.jsonl"
+        with mock.patch.dict(os.environ, {"FAKE_PI_PROMPT_FILE": str(prompt_log)}):
+            session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"],
+            {
+                "type": "prompt",
+                "message": "what is this",
+                "images": [{"mime_type": "image/png", "data": png}],
+            },
+            request_id="img1",
+        )
+        await self._collect(self._result("img1"))
+        await wait_until(
+            lambda: prompt_log.exists() and prompt_log.stat().st_size > 0
+        )
+        record = json.loads(prompt_log.read_text(encoding="utf-8").splitlines()[0])
+        self.assertEqual(record["message"], "what is this")
+        self.assertEqual(
+            record["images"],
+            [{"type": "image", "data": png, "mimeType": "image/png"}],
+        )
+
+    async def test_invalid_images_answer_a_transport_error(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(
+            session["id"],
+            {
+                "type": "prompt",
+                "message": "look",
+                "images": [{"mime_type": "image/tiff", "data": "AAAA"}],
+            },
+            request_id="img2",
+        )
+        error = await self.client.recv_json_until(self._reply("img2"))
+        self.assertEqual(error["type"], "error")
+        self.assertEqual(error["error"]["code"], "bad_request")
+        self.assertIn("unsupported image type", error["error"]["message"])
 
     async def test_abort_is_accepted(self) -> None:
         session = await self._create_pi()

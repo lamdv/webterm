@@ -11,13 +11,15 @@ storage, resume picker, export, tree/fork/clone, extension UI, and pi subagent
 orchestration plus safe markdown rendering for assistant output (headings,
 lists, tables, links, fenced code) with unified-diff highlighting (#11) are in
 place. Thinking blocks stay plain text. Transcript search (Ctrl/Cmd+F or the
-header button, shared with the canonical view) is in place too, and the chat
+header button, shared with the canonical view) is in place too, the chat
 composers complete `@` file paths as literal path text (RPC mode has no
-`@file` expansion of its own), see
-[frontend.md](frontend.md#literal-path-completion). Image paste, a note
-disclosing the TUI-only commands below, and a mobile pass remain. Tracking
-issue: #10. For the existing PTY-based pi launcher, nothing changes: it stays
-as the escape hatch for TUI-only features.
+`@file` expansion of its own, see
+[frontend.md](frontend.md#literal-path-completion)), and image input (#12) is
+wired end to end: the composer takes pasted or dropped images on prompts,
+steering messages, and follow-ups, and the server validates them before they
+reach pi. A note disclosing the TUI-only commands below and a mobile pass
+remain. Tracking issue: #10. For the existing PTY-based pi launcher, nothing
+changes: it stays as the escape hatch for TUI-only features.
 
 ## Goals
 
@@ -219,14 +221,18 @@ Keep the existing text-JSON control plane and binary terminal frames. Add:
 - `create` accepts `mode: "pi"` plus `cwd`, `title`, `trust`, `provider`,
   `model`, and `resume`.
 - Client to server: `{"type":"pi","session_id":...,"command":{...}}`, a raw
-  RPC command envelope. Webterm does not model every RPC command.
+  RPC command envelope. Webterm does not model every RPC command, but it does
+  validate `prompt.images` (pi `ImageContent`) against the canonical limits
+  before the record reaches pi's stdin.
 - Client to server: `{"type":"agent","session_id":...,"command":{...}}`,
   the canonical agent envelope: `prompt`, `steer`, `follow_up`, `abort`,
   `get_snapshot`, `get_history`, `list_models`, `set_model`, `set_thinking`,
   `set_session_name`, `compact`, `clear_queue`, `dialog_response`, `shutdown`,
   and `raw`. It maps onto the RPC below, so a canonical client needs no pi
   vocabulary; `raw` forwards a native command except `extension_ui_response`,
-  which stays server-owned.
+  which stays server-owned. `prompt`, `steer`, and `follow_up` may carry
+  canonical `images` (`{mime_type, data}` with raw base64); the adapter
+  translates them to pi's `ImageContent` (`{type:"image", data, mimeType}`).
 - Server to client: the RPC response is returned as `pi_response` in the
   correlated `result` for the browser's request id. Server-generated RPC ids
   avoid collisions when two clients drive the same session. Errors for a
@@ -235,6 +241,9 @@ Keep the existing text-JSON control plane and binary terminal frames. Add:
   surfaces as `bad_kind` only to a client that correlates).
 - Server to client: `pi_event`, `{session_id, seq, record}`.
 - Server to client: `pi_resync` when a client attaches or a gap is detected.
+  It carries the canonical `capabilities` map (the same one `agent_resync`
+  sends), so the legacy view can gate image input on `attachments.images`
+  instead of guessing from the adapter name.
 - Client to server: `pi_history`, `{session_id, before, limit}`, answers
   `{entries, hasMore, firstEntryId}` with the entries immediately before
   `before` for backwards transcript paging.
@@ -244,6 +253,15 @@ Keep the existing text-JSON control plane and binary terminal frames. Add:
 - Extension UI: `pi_ui_request`, `pi_ui_resolved`, `pi_ui_response`, plus a
   small replayed `ui_state` for status/widget/title.
 - `kind`, `adapter`, `closing`, and `trusted` on session metadata.
+
+Images travel as base64 inside the JSON command, so they share the existing
+frame budget: at most 4 images per command, 3 MiB decoded each and 4 MiB
+decoded in total (about 5.6 MiB encoded), which stays well under the 8 MiB
+WebSocket frame cap. The canonical limits and their error messages are defined
+in `webterm/agent/protocol.py` and documented in
+[agent-protocol.md](agent-protocol.md#images); pi's own RPC accepts `images` on
+`prompt`, `steer`, and `follow_up`, and the browser builds that shape directly
+for the legacy envelope.
 
 `input` and binary offset frames remain terminal-only. Sending `input` or
 `resize` to a pi session is a request error, not a silent no-op.

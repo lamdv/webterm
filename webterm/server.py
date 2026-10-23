@@ -35,6 +35,7 @@ from .integration.pi import (
     PiError,
     PiSession,
     PiSessionClosed,
+    pi_command_images,
     pi_dialog_to_canonical,
     pi_ui_request_to_events,
     pi_ui_resolved_to_canonical,
@@ -813,6 +814,9 @@ class ClientConnection:
             {
                 "type": "pi_resync",
                 "session_id": session.id,
+                # The raw pi envelope carries no capability map; the pi view
+                # gates image input (and anything else) on this declaration.
+                "capabilities": PI_CODEC.capabilities(session),
                 **snapshot,
             }
         )
@@ -1308,6 +1312,13 @@ class ClientConnection:
         command = message.get("command")
         if not isinstance(command, dict):
             raise RequestError("bad_request", "command must be an object")
+        if command.get("type") == "prompt" and command.get("images") is not None:
+            # The raw envelope skips the canonical translation, so validate its
+            # images here: the server, not the browser, enforces the limits.
+            try:
+                pi_command_images(command)
+            except CanonicalCommandError as exc:
+                raise RequestError("bad_request", str(exc)) from exc
         timeout = _optional_float(message.get("timeout"))
         try:
             response = await session.rpc(

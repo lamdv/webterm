@@ -188,6 +188,16 @@
     const stopButton = el("button", "agent-stop", "Stop");
     stopButton.type = "button";
     actions.append(sendButton, stopButton);
+    // Image input is capability-gated in updateStatus(); the controller owns
+    // paste, drop, and the thumbnail strip.
+    const attach = window.WebtermAttach
+      ? window.WebtermAttach.create({
+          form,
+          input,
+          onNotice: (text) => showNotice(text, "warning"),
+        })
+      : null;
+    if (attach) form.append(attach.element);
     form.append(input, actions);
 
     // Literal `@path` completion; the path is plain text, not an expansion.
@@ -703,6 +713,10 @@
       const canPrompt = !state.exited && state.capabilities.prompt !== false;
       input.disabled = !canPrompt;
       sendButton.disabled = !canPrompt;
+      const attachments = state.capabilities.attachments;
+      if (attach) {
+        attach.setEnabled(canPrompt && Boolean(attachments && attachments.images));
+      }
       stopButton.hidden = !state.busy || state.capabilities.abort === false;
       metaEl.textContent = model ? String(model) : "";
     }
@@ -1483,25 +1497,30 @@
       const text = input.value.trim();
       if (!text || state.exited) return;
       if (pathComplete) pathComplete.close();
+      const images = attach ? attach.images() : [];
       input.value = "";
+      if (attach) attach.clear();
       // A prompt sent during a run must say how to queue it.  The canonical
       // view asks for follow-up by default; Ctrl+Enter requests steering,
       // matching the pi view's gesture.
       const streamingBehavior = state.busy ? behavior || "followUp" : undefined;
+      const content = [{ type: "text", text: text }];
+      for (const image of images) content.push({ type: "image", ...image });
       state.entries.push({
         id: "local-" + ++state.localCounter,
         role: "user",
-        content: [{ type: "text", text: text }],
+        content: content,
         optimistic: true,
       });
       stickToBottom = true;
       scheduleRender();
-      const promise = onPrompt(text, streamingBehavior);
+      const promise = onPrompt(text, streamingBehavior, images);
       if (promise && promise.catch) {
         promise.catch((error) => {
           state.entries = state.entries.filter(
             (entry) => !(entry.optimistic && textOfEntry(entry) === text)
           );
+          if (attach) attach.add(images);
           showNotice(error && error.message ? error.message : "prompt failed", "error");
           scheduleRender();
         });

@@ -21,8 +21,10 @@ from typing import Any
 
 from .protocol import (
     CANONICAL_COMMANDS,
+    IMAGE_COMMANDS,
     CanonicalCommandError,
     response_record,
+    validate_images,
 )
 from .session import (
     DEFAULT_COMMAND_TIMEOUT,
@@ -133,6 +135,8 @@ class NativeCodec(AgentCodec):
             for key, value in command.items()
             if key not in ("type", "id", "timeout")
         }
+        if "images" in fields:
+            fields["images"] = self._validated_images(session, name, fields)
         try:
             if name == "prompt":
                 message = fields.pop("message", None)
@@ -140,7 +144,9 @@ class NativeCodec(AgentCodec):
                     raise CanonicalCommandError(
                         "prompt message must be a non-empty string"
                     )
-                data = await session.prompt(message, timeout=timeout)
+                data = await session.prompt(
+                    message, images=fields.get("images"), timeout=timeout
+                )
             else:
                 data = await session.command(name, timeout=timeout, **fields)
         except AgentCommandError as exc:
@@ -148,6 +154,16 @@ class NativeCodec(AgentCodec):
         except ValueError as exc:
             raise CanonicalCommandError(str(exc)) from exc
         return response_record(name, command_id, data=data)
+
+    @staticmethod
+    def _validated_images(session: AgentSession, name: str, fields: dict) -> list:
+        """Validate a command's images and check the adapter advertises them."""
+        if name not in IMAGE_COMMANDS:
+            raise CanonicalCommandError(f"{name} does not accept images")
+        images = validate_images({"images": fields.get("images")})
+        if images and not session.capabilities.attachments_images:
+            raise CanonicalCommandError("this adapter does not accept images")
+        return images
 
     async def result(self, session: AgentSession, *, settled: bool) -> dict:
         result: dict[str, object] = {

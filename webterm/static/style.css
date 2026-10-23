@@ -1217,11 +1217,51 @@ button,
 
 .pi-composer {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: stretch;
   padding: 10px 12px;
   border-top: 1px solid var(--border);
   background: var(--bg-alt);
+}
+
+/* Pending composer images: one wrapping row above the textarea. */
+.pi-attach-strip {
+  display: flex;
+  flex-basis: 100%;
+  order: -1;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.pi-attach-strip[hidden] {
+  display: none;
+}
+
+.pi-attach-item {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.pi-attach-thumb {
+  display: block;
+  max-width: 72px;
+  max-height: 72px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.pi-composer .pi-attach-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  line-height: 1;
+  background: var(--bg-elevated);
 }
 
 .pi-input {

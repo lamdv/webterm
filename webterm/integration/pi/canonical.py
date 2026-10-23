@@ -20,7 +20,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...agent.protocol import CanonicalCommandError, Capabilities, response_record
+from ...agent.protocol import (
+    IMAGE_COMMANDS,
+    CanonicalCommandError,
+    Capabilities,
+    response_record,
+    validate_images,
+)
 
 #: Capabilities of the pi adapter.  pi exposes more than the canonical core
 #: requires; the extra features stay available to pi-specific UI.
@@ -1003,6 +1009,37 @@ def _require_message(command: dict) -> str:
     return message
 
 
+def _pi_images(command: dict) -> list[dict[str, str]]:
+    """Translate a command's canonical ``images`` into pi ``ImageContent``."""
+    return [
+        {"type": "image", "data": image["data"], "mimeType": image["mime_type"]}
+        for image in validate_images(command)
+    ]
+
+
+def pi_command_images(command: dict) -> list[dict[str, str]]:
+    """Validate a *pi-shaped* ``prompt`` command's ``images`` array.
+
+    The legacy ``pi`` envelope bypasses the canonical translation, so the
+    server validates it here with the same limits before pi's stdin sees it.
+    Returns the images as canonical entries.
+    """
+    raw = command.get("images")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise CanonicalCommandError("images must be a list of image objects")
+    canonical: list[dict] = []
+    for entry in raw:
+        if isinstance(entry, dict):
+            canonical.append(
+                {"mime_type": entry.get("mimeType"), "data": entry.get("data")}
+            )
+        else:
+            canonical.append({})
+    return validate_images({"images": canonical})
+
+
 def pi_command_from_canonical(command: dict) -> dict:
     """Translate one canonical command record into a pi RPC command.
 
@@ -1024,9 +1061,14 @@ def pi_command_from_canonical(command: dict) -> dict:
         if name in PI_SESSION_COMMANDS:
             raise CanonicalCommandError(f"{name} is resolved from session state")
         raise CanonicalCommandError(f"unsupported agent command {name!r}")
+    if name != "raw" and name not in IMAGE_COMMANDS and command.get("images") is not None:
+        raise CanonicalCommandError(f"{name} does not accept images")
 
     if name in ("prompt", "steer", "follow_up"):
         rpc: dict[str, Any] = {"type": "prompt", "message": _require_message(command)}
+        images = _pi_images(command)
+        if images:
+            rpc["images"] = images
         behavior = _STREAMING_BEHAVIOR.get(name)
         if behavior is not None:
             rpc["streamingBehavior"] = behavior

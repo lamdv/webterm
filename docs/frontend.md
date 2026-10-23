@@ -16,6 +16,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/app.js` | Client logic (a single IIFE). |
 | `webterm/static/highlight.js` | Safe fenced-code and diff highlighter, exposed as `window.WebtermHighlight`. |
 | `webterm/static/pathcomplete.js` | Literal `@path` completion popup shared by the chat composers, exposed as `window.WebtermPathComplete`. |
+| `webterm/static/attach.js` | Composer image input: paste, drag/drop, thumbnail strip, exposed as `window.WebtermAttach`. |
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
 | `webterm/static/agent.js` | Experimental canonical agent chat view, exposed as `window.WebtermAgent`. Enabled with `?agentui=1`. |
 | `webterm/static/find.js` | Client-side transcript search bar shared by both chat views, exposed as `window.WebtermFind`. |
@@ -32,9 +33,10 @@ layout and the structure of `app.js`. For the server side see
 5. `/highlight.js`.
 6. `/find.js`.
 7. `/pathcomplete.js`.
-8. `/pi.js`.
-9. `/agent.js`.
-10. `/app.js`.
+8. `/attach.js`.
+9. `/pi.js`.
+10. `/agent.js`.
+11. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -390,6 +392,31 @@ thinking block's open flag is keyed by entry id plus block index in
 the live entry into the transcript, and prepended history pages. Scroll
 position is re-anchored after an older page is prepended so the reader keeps
 their place.
+
+### Composer images
+
+Both structured views attach images through `window.WebtermAttach`
+(`attach.js`), a single controller per composer shared by `pi.js` and
+`agent.js`. It owns paste (`paste` on the textarea, `clipboardData.files`) and
+drag/drop onto the composer, and a thumbnail strip (`div.pi-attach-strip`) that
+sits above the textarea with one remove button per image. Images are held as
+canonical `{mime_type, data}` entries with raw base64; the pi view converts
+them to pi's `ImageContent` shape only when it builds the raw RPC command,
+while the canonical view passes them to `prompt`, `steer`, and `follow_up`
+unchanged.
+
+Input is capability-gated: the view calls `setEnabled()` from the snapshot's
+`attachments.images` (pi's `pi_resync` now carries the capability map, just
+like `agent_resync`), so an agent that does not accept images has no attach
+affordance and a stale draft is dropped when the capability disappears.
+Sending takes the strip's images and clears them; a rejected command restores
+the draft so nothing is lost. The browser checks the same limits as the server
+(4 images, 3 MiB each, 4 MiB per message, png/jpeg/webp/gif) only to answer
+locally with the server's wording (`too many images`, `image too large`,
+`unsupported image type`, `images are too large`); the server re-validates and
+is the authority. Pending images live in memory for the life of the view:
+nothing is written to `localStorage`, so base64 blobs never enter the quota,
+and a page reload or a view teardown drops them.
 
 ### Resize and fitting
 
