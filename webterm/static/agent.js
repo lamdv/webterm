@@ -1,12 +1,22 @@
-/* Canonical agent chat view.  Plain script, no build step: WebtermAgent.
+/* Canonical agent chat view.  Plain script, no build step: WebtermAgentView.
  *
  * This is the browser-side consumer of the shadow agent_* stream.  It is
  * deliberately separate from pi.js so the existing pi view remains the default
  * while the canonical model is validated.  Enable it with ?agentui=1.
+ *
+ * ``AgentView`` is the shared implementation and the base view of the adapter
+ * registry.  A backend module subclasses it, overrides the extension points
+ * (``adapterPaletteEntries``, ``handleAdapterEvent``, ``applySnapshotExtra``,
+ * ``headerExtras``) and registers its own class under its adapter id; the base
+ * class keeps the whole canonical renderer, so a subclass never forks it.
  */
 "use strict";
 
 (function () {
+  function arrayOf(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
   function el(tag, className, text) {
     const node = document.createElement(tag);
     if (className) node.className = className;
@@ -150,8 +160,88 @@
     return entry.role || "message";
   }
 
-  function create(session, options) {
-    options = options || {};
+  /** The shared canonical chat view and the base of the adapter registry.
+   *
+   * ``session`` is the server's session metadata, ``hooks`` the callbacks
+   * ``app.js`` builds for the canonical envelope (``onPrompt``, ``onAbort``,
+   * ``onCommand``, ``onDialogResponse``, ``onHistory``, ``onListEntries``).
+   *
+   * A backend module extends this class, overrides the four extension points
+   * below, and registers its class in ``views.js`` under its adapter id:
+   *
+   *   class LlamaView extends window.WebtermAgentView {
+   *     adapterPaletteEntries() { return [{ name: "sessions", declared: true }]; }
+   *   }
+   *   window.WebtermAgentViews.register("llama", {
+   *     transport: "canonical",
+   *     create: (session, hooks) => LlamaView.create(session, hooks),
+   *   });
+   *
+   * The hooks are the whole subclass surface; the renderer, the reducer and the
+   * DOM are the base class's, so adding UI cannot drift from the shared view.
+   */
+  class AgentView {
+    constructor(session, hooks) {
+      this.session = session || {};
+      this.hooks = hooks || {};
+    }
+
+    /** Build the view handle for a session; subclasses inherit this. */
+    static create(session, hooks) {
+      // Called as ``AgentView.create`` from the registry, or as
+      // ``Subclass.create`` from a backend module: build the class it names.
+      const View =
+        typeof this === "function" && this.prototype instanceof AgentView
+          ? this
+          : AgentView;
+      return buildView(new View(session, hooks));
+    }
+
+    /** Extra slash-palette entries for this backend (default: none).
+     *
+     * Each entry uses the declared-command record shape
+     * (``{name, title, description, args, danger, declared}``); accepting one
+     * with ``declared: true`` sends a canonical ``command`` record, exactly
+     * like an adapter-declared command.  They are listed after the core
+     * built-ins and the adapter's declared commands, before ``/help``.
+     */
+    adapterPaletteEntries() {
+      return [];
+    }
+
+    /** Handle an ``agent_event`` the base does not know (default: ignore).
+     *
+     * Known canonical events, replay filtering and the schedule-render that
+     * follows every event stay the base class's job.
+     */
+    handleAdapterEvent(_name, _event) {}
+
+    /** Apply backend-specific state from an ``agent_resync`` message.
+     *
+     * Called after the base state, capabilities, commands and history cursor
+     * have been applied, immediately before the next render.
+     */
+    applySnapshotExtra(_payload) {}
+
+    /** Nodes appended to the chat header (default: none).
+     *
+     * Called once during construction; the nodes land after the title and meta
+     * and before the find button, so the search control stays at the far right.
+     */
+    headerExtras() {
+      return [];
+    }
+  }
+
+  /** Build the DOM, state and handle for one ``AgentView`` instance.
+   *
+   * The renderer stays one closure over the instance's DOM, which is why the
+   * class delegates here instead of being rewritten method by method: the
+   * reducer and the incremental renderer are untouched by the class shape.
+   */
+  function buildView(view) {
+    const session = view.session || {};
+    const options = view.hooks || {};
     const onPrompt =
       typeof options.onPrompt === "function"
         ? options.onPrompt
@@ -173,7 +263,11 @@
     const findButton = el("button", "pi-find-toggle", "find");
     findButton.type = "button";
     findButton.title = "Search this transcript (Ctrl+F)";
-    header.append(titleEl, metaEl, findButton);
+    header.append(titleEl, metaEl);
+    for (const extra of arrayOf(view.headerExtras())) {
+      if (extra) header.appendChild(extra);
+    }
+    header.appendChild(findButton);
 
     const controls = el("div", "agent-controls");
     const modelSelect = el("select", "agent-control agent-model");
@@ -647,6 +741,12 @@
             declared: true,
           });
         }
+      }
+      for (const command of arrayOf(view.adapterPaletteEntries())) {
+        if (!command || typeof command.name !== "string" || !command.name) continue;
+        items.push(command);
+      }
+      if (onCommand) {
         if (state.help.length && !items.some((item) => item.name === HELP_COMMAND.name)) {
           items.push(HELP_COMMAND);
         }
@@ -2186,6 +2286,9 @@
           break;
         }
         default:
+          // Anything the canonical stream does not define belongs to the
+          // adapter's own view module, if it has one.
+          view.handleAdapterEvent(name, event);
           break;
       }
       scheduleRender();
@@ -2241,6 +2344,9 @@
       state.queues = { steering: [], followUp: [] };
       closePalette();
       if (state.meta.name) titleEl.textContent = state.meta.name;
+      // Backend-specific state, applied after the base snapshot so a subclass
+      // never has to re-derive what the shared view already knows.
+      view.applySnapshotExtra(message);
       loadModels();
       render();
     }
@@ -2456,10 +2562,16 @@
     };
   }
 
-  window.WebtermAgent = { create };
+  window.WebtermAgentView = AgentView;
+  // Compatibility: app.js and older callers still use the factory entry point.
+  window.WebtermAgent = { create: AgentView.create.bind(AgentView) };
   // The generic view every adapter falls back to.  A backend with its own UI
-  // registers the same shape under its adapter name from its own module.
+  // extends AgentView and registers its subclass under its adapter name from
+  // its own module.
   if (window.WebtermAgentViews) {
-    window.WebtermAgentViews.register("", { transport: "canonical", create });
+    window.WebtermAgentViews.register("", {
+      transport: "canonical",
+      create: AgentView.create.bind(AgentView),
+    });
   }
 })();

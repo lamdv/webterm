@@ -121,6 +121,10 @@ class FakeNode {
     }
   }
 
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
   querySelectorAll(selector) {
     const value = String(selector || "");
     const className = value.startsWith(".") ? value.slice(1) : null;
@@ -148,6 +152,9 @@ global.window = global;
 global.WebtermHighlight = null;
 global.requestAnimationFrame = (callback) => callback();
 
+// The registry comes first, as in index.html, so agent.js registers its base
+// view on load and the test can assert on that entry.
+require(path.join(__dirname, "..", "webterm", "static", "views.js"));
 require(path.join(__dirname, "..", "webterm", "static", "agent.js"));
 
 function walk(node, visit) {
@@ -1149,6 +1156,129 @@ assert.strictEqual(
     noEdit.element.querySelectorAll(".agent-edit").length,
     1,
     "edit_message covers user messages only"
+  );
+
+  // The shared view is a class as well as the base of the adapter registry:
+  // a backend module subclasses it instead of forking the renderer.
+  assert.strictEqual(
+    typeof window.WebtermAgentView,
+    "function",
+    "the AgentView class is exported"
+  );
+  assert.strictEqual(
+    typeof window.WebtermAgent.create,
+    "function",
+    "the WebtermAgent factory compatibility shim still exists"
+  );
+  const baseEntry = window.WebtermAgentViews.base();
+  assert.ok(baseEntry, "the base view is registered");
+  assert.strictEqual(baseEntry.transport, "canonical", "the base view speaks canonically");
+  assert.strictEqual(
+    window.WebtermAgentViews.resolve("no-such-adapter"),
+    baseEntry,
+    "an unknown adapter falls back to the base view"
+  );
+
+  const hookCalls = [];
+  const extraCommands = [];
+
+  class ExtrasView extends window.WebtermAgentView {
+    adapterPaletteEntries() {
+      hookCalls.push("palette");
+      return [{ name: "extra-tool", description: "backend extra", declared: true }];
+    }
+
+    handleAdapterEvent(name, event) {
+      hookCalls.push("event:" + name);
+      hookCalls.push(event && event.value);
+    }
+
+    applySnapshotExtra(payload) {
+      hookCalls.push("snapshot:" + String(payload && payload.state && payload.state.name));
+    }
+
+    headerExtras() {
+      hookCalls.push("header");
+      const chip = document.createElement("span");
+      chip.className = "extra-chip";
+      chip.textContent = "extra";
+      return [chip];
+    }
+  }
+
+  const extras = ExtrasView.create(
+    { id: "x-1", title: "extras" },
+    {
+      onCommand: (command) => {
+        extraCommands.push(command);
+        return Promise.resolve({});
+      },
+    }
+  );
+
+  const headerChip = findByClass(extras.element, "extra-chip");
+  assert.ok(headerChip, "headerExtras() nodes land in the view");
+  assert.strictEqual(headerChip.textContent, "extra", "the chip is the subclass's node");
+  assert.ok(
+    headerChip.parent && headerChip.parent._classes.has("agent-header"),
+    "header extras are appended to the header"
+  );
+  assert.ok(hookCalls.includes("header"), "the base calls headerExtras()");
+
+  extras.handle({
+    type: "agent_resync",
+    entries: [{ id: "x1", role: "user", content: [{ type: "text", text: "hello" }] }],
+    state: { name: "snap", streaming: false, settled: true },
+    capabilities: { prompt: true },
+    dialogs: [],
+    cursor: { seq: 3 },
+  });
+  extras.handle({
+    type: "agent_resync",
+    entries: [],
+    state: { name: "snap2", streaming: false, settled: true },
+    capabilities: { prompt: true },
+    dialogs: [],
+    cursor: { seq: 4 },
+  });
+  assert.deepStrictEqual(
+    hookCalls.filter((call) => String(call).startsWith("snapshot:")),
+    ["snapshot:snap", "snapshot:snap2"],
+    "applySnapshotExtra() runs on every resync, after the base state is applied"
+  );
+
+  hookCalls.length = 0;
+  extras.handle({
+    type: "agent_event",
+    seq: 7,
+    event: { event: "backend.ready", value: 42 },
+  });
+  assert.deepStrictEqual(
+    hookCalls,
+    ["event:backend.ready", 42],
+    "unknown events reach the subclass with the raw event"
+  );
+
+  hookCalls.length = 0;
+  extras.handle({ type: "agent_event", seq: 8, event: { event: "run.started" } });
+  assert.deepStrictEqual(hookCalls, [], "events the base handles are not forwarded");
+
+  const extrasInput = findByClass(extras.element, "pi-input");
+  extrasInput.value = "/";
+  extrasInput.dispatch("input");
+  const paletteNames = extras.element
+    .querySelectorAll(".agent-palette-name")
+    .map((node) => node.textContent);
+  assert.ok(hookCalls.includes("palette"), "the base calls adapterPaletteEntries()");
+  assert.ok(
+    paletteNames.includes("/extra-tool"),
+    "adapterPaletteEntries() reaches the slash palette"
+  );
+  extrasInput.dispatch("keydown", { key: "Enter", preventDefault() {} });
+  assert.deepStrictEqual(
+    extraCommands,
+    [{ type: "command", name: "extra-tool" }],
+    "accepting an adapter entry sends its canonical command"
   );
 
   console.log("agent view smoke test passed");

@@ -18,7 +18,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/pathcomplete.js` | Literal `@path` completion popup shared by the chat composers, exposed as `window.WebtermPathComplete`. |
 | `webterm/static/attach.js` | Composer image input: paste, drag/drop, thumbnail strip, exposed as `window.WebtermAttach`. |
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
-| `webterm/static/agent.js` | The generic canonical agent chat view, exposed as `window.WebtermAgent`; also registers itself as the base of the adapter view registry. Enabled for pi with `?agentui=1`. |
+| `webterm/static/agent.js` | The generic canonical agent chat view, exposed as the `window.WebtermAgentView` class (with the `window.WebtermAgent.create` factory alias); also registers itself as the base of the adapter view registry. Enabled for pi with `?agentui=1`. |
 | `webterm/static/views.js` | Adapter view registry (self-registration + on-demand module loading), exposed as `window.WebtermAgentViews`. |
 | `webterm/static/find.js` | Client-side transcript search bar shared by both chat views, exposed as `window.WebtermFind`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
@@ -516,6 +516,45 @@ thinking block's open flag is keyed by entry id plus block index in
 the live entry into the transcript, and prepended history pages. Scroll
 position is re-anchored after an older page is prepended so the reader keeps
 their place.
+
+#### Extending the view
+
+`agent.js` exports the shared view as a class, `window.WebtermAgentView`, and
+registers it as the base view (the `""` entry) of the registry. A backend that
+needs UI the shared renderer does not have subclasses it instead of forking the
+file:
+
+```js
+class LlamaView extends window.WebtermAgentView {
+  headerExtras() {
+    return [statusChip(this.session)];
+  }
+}
+window.WebtermAgentViews.register("llama", {
+  transport: "canonical",
+  // The registry calls create() unbound, so name the subclass explicitly.
+  create: (session, hooks) => LlamaView.create(session, hooks),
+});
+```
+
+The subclass surface is four methods, each a no-op by default, so the base view
+behaves exactly as if it had no extension points:
+
+| Hook | Called |
+|---|---|
+| `adapterPaletteEntries()` | while the slash palette is built, after the core built-ins and the adapter's declared commands and before `/help`. Entries use the declared-command record shape, and an entry carrying `declared: true` sends its canonical `command` when accepted. |
+| `handleAdapterEvent(name, event)` | for every `agent_event` whose name the canonical reducer does not know. Known events, the replay/cursor filter and the render that follows stay the base class's job. |
+| `applySnapshotExtra(payload)` | on every `agent_resync`, after the base state, capabilities, declared commands and history cursor are applied, immediately before the render. |
+| `headerExtras()` | once during construction; returns nodes appended to the header between the title/meta text and the find button. |
+
+Everything else — the transcript renderer, editing, queue chips, dialogs and
+declared commands — belongs to the base class, so a subclass adds UI without
+drifting from the shared behaviour. An adapter with no registered view, or
+whose module fails to load, still falls back to the base view.
+
+`window.WebtermAgent.create` stays as a factory alias for the class, and
+`create(session, hooks)` builds the class it is invoked on, so a subclass
+inherits the factory.
 
 ### Composer images
 
