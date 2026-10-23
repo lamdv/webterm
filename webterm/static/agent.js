@@ -64,6 +64,60 @@
     { name: "system", description: "Edit the system prompt" },
   ];
 
+  /** Palette entry for the adapter's declared help list (features that cannot
+   * work over the protocol).  It exists only while the adapter declares at
+   * least one entry, so an adapter with no known gaps shows nothing here. */
+  const HELP_COMMAND = {
+    name: "help",
+    description: "What this chat cannot do here",
+    help: true,
+  };
+
+  /** Normalize one `hello.commands` entry.  The shape is the protocol's, not a
+   * backend's: the view lists these and passes their args straight back. */
+  function normalizeDeclaredCommand(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
+    if (!name) return null;
+    const args = [];
+    for (const arg of Array.isArray(raw.args) ? raw.args : []) {
+      if (!arg || typeof arg !== "object") continue;
+      const argName = typeof arg.name === "string" ? arg.name.trim() : "";
+      if (!argName) continue;
+      args.push({
+        name: argName,
+        // An unknown type stays a plain string input.
+        type: typeof arg.type === "string" && arg.type ? arg.type : "string",
+        title: typeof arg.title === "string" ? arg.title : "",
+        description: typeof arg.description === "string" ? arg.description : "",
+        required: Boolean(arg.required),
+        choices: Array.isArray(arg.choices) ? arg.choices : [],
+      });
+    }
+    return {
+      name,
+      title: typeof raw.title === "string" && raw.title ? raw.title : name,
+      description: typeof raw.description === "string" ? raw.description : "",
+      args,
+      danger: Boolean(raw.danger),
+    };
+  }
+
+  /** Normalize one `hello.help` entry (a feature the protocol cannot expose). */
+  function normalizeHelpEntries(raw) {
+    const entries = [];
+    for (const entry of Array.isArray(raw) ? raw : []) {
+      if (!entry || typeof entry !== "object") continue;
+      const name = typeof entry.name === "string" ? entry.name.trim() : "";
+      if (!name) continue;
+      entries.push({
+        name,
+        reason: typeof entry.reason === "string" ? entry.reason : "",
+      });
+    }
+    return entries;
+  }
+
   /** Characters of a queued message shown in a chip; the full text is the
    * chip's title (and the CSS ellipsis keeps the row one line). */
   const QUEUE_CHIP_TEXT_LIMIT = 120;
@@ -186,6 +240,11 @@
     const messagesEl = el("div", "pi-messages agent-messages");
     const dialogHost = el("div", "agent-dialog-host");
     dialogHost.hidden = true;
+    // One command dialog at a time: a declared command's arg form, the help
+    // list, or the result of a render hint.  It lives outside the transcript so
+    // a re-render never disturbs a form the human is filling in.
+    const modalHost = el("div", "agent-modal-host pi-modal-overlay");
+    modalHost.hidden = true;
     // Queued steering/follow-up text sits directly above the composer, with the
     // slash-command palette between them (mirroring the pi view).
     const queueEl = el("div", "pi-queue agent-queue");
@@ -239,6 +298,7 @@
       findHost,
       messagesEl,
       dialogHost,
+      modalHost,
       queueEl,
       paletteEl,
       ...(pathComplete ? [pathComplete.element] : []),
@@ -256,6 +316,10 @@
       connected: false,
       meta: {},
       capabilities: {},
+      // Declared commands and help entries from the last resync.  They are the
+      // adapter's own vocabulary; the view only renders what it is told.
+      commands: [],
+      help: [],
       // Pending input reported by ``queue.updated``: canonical steering and
       // follow-up text, both rendered as chips above the composer.
       queues: { steering: [], followUp: [] },
@@ -551,8 +615,9 @@
       );
     }
 
-    /** Palette entries the current capabilities allow.  Each maps onto a
-     * control that already exists, or onto one canonical command. */
+    /** Palette entries the current capabilities allow.  Each built-in maps onto
+     * a control that already exists, or onto one canonical command; the
+     * adapter's declared commands and its help list follow them unchanged. */
     function availableCommands() {
       const caps = state.capabilities || {};
       const models = modelsCapability();
@@ -568,6 +633,21 @@
           if (!(caps.system_prompt && onCommand)) continue;
         }
         items.push(command);
+      }
+      if (onCommand) {
+        for (const command of state.commands) {
+          items.push({
+            name: command.name,
+            title: command.title === command.name ? "" : command.title,
+            description: command.description,
+            args: command.args,
+            danger: command.danger,
+            declared: true,
+          });
+        }
+        if (state.help.length && !items.some((item) => item.name === HELP_COMMAND.name)) {
+          items.push(HELP_COMMAND);
+        }
       }
       return items;
     }
@@ -601,11 +681,21 @@
             (index === state.palette.index ? " active" : "")
         );
         item.appendChild(el("span", "pi-command-name agent-palette-name", "/" + command.name));
+        if (command.title) {
+          item.appendChild(el("span", "agent-palette-title", command.title));
+        }
         if (command.description) {
           item.appendChild(
             el("span", "pi-command-desc agent-palette-desc", command.description)
           );
         }
+        if (command.danger) {
+          // Destructive: the adapter says so in its manifest, so the palette
+          // can warn without knowing what the command does.
+          item.appendChild(el("span", "agent-palette-danger", "danger"));
+          item.classList.add("danger");
+        }
+        if (command.title) item.title = command.title;
         item.addEventListener("mousedown", (event) => {
           event.preventDefault();
           acceptCommand(index);
@@ -652,6 +742,16 @@
       if (!command) return;
       input.value = "";
       closePalette();
+      // A declared command is the adapter's own; the view only knows its shape.
+      if (command.help) {
+        openHelp();
+        return;
+      }
+      if (command.declared) {
+        if (command.args && command.args.length) openCommandForm(command);
+        else sendDeclaredCommand({ type: "command", name: command.name });
+        return;
+      }
       if (command.name === "compact") {
         runCompact();
         return;
@@ -677,6 +777,377 @@
         },
         (error) => {
           showNotice(error && error.message ? error.message : "could not compact", "error");
+        }
+      );
+    }
+
+    // ------------------------------------------------------ declared commands
+    // Everything below treats a declared command as data: the palette lists it,
+    // a generic form collects its typed args, and the response is routed through
+    // the protocol's render-hint vocabulary.  No backend name appears here.
+
+    function closeModal() {
+      const wasOpen = !modalHost.hidden;
+      modalHost.hidden = true;
+      modalHost.innerHTML = "";
+      // Only hand focus back when a dialog was actually on screen, so a resync
+      // does not steal it from the composer or the prompt library.
+      if (wasOpen && !state.exited && typeof input.focus === "function") input.focus();
+    }
+
+    /** Start a dialog: a titled panel with a body and an action row. */
+    function openModal(title, kind) {
+      modalHost.innerHTML = "";
+      modalHost.hidden = false;
+      // Reuse the legacy modal chrome so both views look alike.
+      const panel = el("div", "agent-modal pi-modal" + (kind ? " " + kind : ""));
+      panel.append(el("div", "agent-modal-title pi-modal-title", title));
+      const body = el("div", "agent-modal-body pi-modal-body");
+      const actionsEl = el("div", "agent-modal-actions");
+      panel.append(body, actionsEl);
+      modalHost.append(panel);
+      return { panel, body, actions: actionsEl };
+    }
+
+    function addCloseAction(modal) {
+      const close = el("button", "agent-modal-close", "Close");
+      close.type = "button";
+      close.addEventListener("click", closeModal);
+      modal.actions.append(close);
+      return close;
+    }
+
+    /** The choices a `choice` arg offers, as `{value,label}` pairs. */
+    function argChoices(arg) {
+      const choices = [];
+      for (const choice of Array.isArray(arg.choices) ? arg.choices : []) {
+        if (!choice || typeof choice !== "object") continue;
+        if (typeof choice.value !== "string" || !choice.value) continue;
+        choices.push({
+          value: choice.value,
+          label:
+            typeof choice.label === "string" && choice.label
+              ? choice.label
+              : choice.value,
+        });
+      }
+      return choices;
+    }
+
+    /** One control per declared arg type: text for `string`, a `<select>` of
+     * `choices`, a checkbox for `boolean`. */
+    function argControl(arg) {
+      if (arg.type === "choice") {
+        const control = el("select", "agent-arg-input agent-arg-choice");
+        const choices = argChoices(arg);
+        if (!arg.required) {
+          // An optional choice can stay unanswered.
+          const blank = el("option", "", "");
+          blank.value = "";
+          control.append(blank);
+        }
+        for (const choice of choices) {
+          const option = el("option", "", choice.label);
+          option.value = choice.value;
+          control.append(option);
+        }
+        if (arg.required && choices.length) control.value = choices[0].value;
+        return control;
+      }
+      if (arg.type === "boolean") {
+        const control = el("input", "agent-arg-input agent-arg-boolean");
+        control.type = "checkbox";
+        return control;
+      }
+      const control = el("input", "agent-arg-input agent-arg-string");
+      control.type = "text";
+      return control;
+    }
+
+    /** Collect the form's values; an empty value is omitted unless the arg is
+     * required, which blocks the submit instead. */
+    function readArgForm(fields) {
+      const args = {};
+      const missing = [];
+      for (const field of fields) {
+        if (field.arg.type === "boolean") {
+          args[field.arg.name] = Boolean(field.control.checked);
+          continue;
+        }
+        const value =
+          typeof field.control.value === "string" ? field.control.value : "";
+        if (!value.trim()) {
+          if (field.arg.required) missing.push(field.arg.title || field.arg.name);
+          continue;
+        }
+        args[field.arg.name] = value;
+      }
+      return { args, missing };
+    }
+
+    /** The generic form for a declared command that takes args. */
+    function openCommandForm(command) {
+      const modal = openModal(
+        command.title || command.name,
+        "agent-command-form" + (command.danger ? " danger" : "")
+      );
+      if (command.description) {
+        modal.body.append(el("div", "agent-modal-desc", command.description));
+      }
+      const fields = [];
+      for (const arg of command.args) {
+        const row = el("label", "agent-arg" + (arg.required ? " required" : ""));
+        row.append(el("span", "agent-arg-label", arg.title || arg.name));
+        const control = argControl(arg);
+        control.setAttribute("aria-label", arg.title || arg.name);
+        row.append(control);
+        if (arg.description) {
+          row.append(el("span", "agent-arg-desc", arg.description));
+        }
+        modal.body.append(row);
+        fields.push({ arg, control });
+      }
+      const errorEl = el("div", "agent-modal-error");
+      errorEl.hidden = true;
+      modal.body.append(errorEl);
+
+      const submit = el("button", "agent-modal-submit", "Run");
+      submit.type = "button";
+      const cancel = el("button", "agent-modal-cancel", "Cancel");
+      cancel.type = "button";
+      cancel.addEventListener("click", closeModal);
+      modal.actions.append(submit, cancel);
+
+      function submitForm() {
+        const { args, missing } = readArgForm(fields);
+        if (missing.length) {
+          // Validation is local: a partial form sends nothing.
+          errorEl.textContent = "Required: " + missing.join(", ");
+          errorEl.hidden = false;
+          return;
+        }
+        errorEl.hidden = true;
+        closeModal();
+        sendDeclaredCommand({ type: "command", name: command.name, args });
+      }
+
+      submit.addEventListener("click", submitForm);
+      for (const field of fields) {
+        field.control.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submitForm();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            closeModal();
+          }
+        });
+      }
+      if (fields.length && typeof fields[0].control.focus === "function") {
+        fields[0].control.focus();
+      }
+    }
+
+    /** The help dialog: the features the adapter says cannot work over the
+     * protocol, so a missing control reads as a documented gap. */
+    function openHelp() {
+      const modal = openModal("help", "agent-help");
+      const list = el("div", "agent-help-list");
+      for (const entry of state.help) {
+        const row = el("div", "agent-help-item");
+        row.append(el("span", "agent-help-name", entry.name));
+        row.append(
+          el("span", "agent-help-reason", entry.reason ? " — " + entry.reason : "")
+        );
+        list.append(row);
+      }
+      modal.body.append(list);
+      addCloseAction(modal);
+    }
+
+    /** `{"download":…}` — a link through the server's authenticated route. */
+    function showDownload(download) {
+      const url = typeof download.url === "string" ? download.url : "";
+      if (!url) {
+        showNotice("the adapter answered a download without a url", "error");
+        return;
+      }
+      const filename =
+        typeof download.filename === "string" ? download.filename : "";
+      const modal = openModal("download", "agent-download");
+      const link = el("a", "agent-download-link", filename || "download");
+      link.href = url;
+      if (filename) link.download = filename;
+      link.rel = "noopener";
+      modal.body.append(link);
+      const mime = typeof download.mime_type === "string" ? download.mime_type : "";
+      if (mime) modal.body.append(el("div", "agent-download-mime", mime));
+      addCloseAction(modal);
+    }
+
+    /** `{"text":…}` — a preformatted block, never parsed as markup. */
+    function showTextHint(text, label) {
+      const modal = openModal(label, "agent-text-result");
+      renderPre(modal.body, text, "agent-result-text");
+      addCloseAction(modal);
+    }
+
+    /** Anything the vocabulary does not name: a collapsible JSON card. */
+    function showJsonHint(data, label) {
+      const modal = openModal(label, "agent-json-result");
+      const details = el("details", "agent-result-json");
+      details.append(el("summary", "", "JSON"));
+      renderPre(details, JSON.stringify(data, null, 2), "agent-result-json-body");
+      details.open = true;
+      modal.body.append(details);
+      addCloseAction(modal);
+    }
+
+    /** One tree node: a collapsible branch whose actions are declared commands. */
+    function renderTreeNode(node, leafId, depth) {
+      const details = el("details", "agent-tree-node");
+      const id = node && typeof node.id === "string" ? node.id : "";
+      const current = Boolean(id && id === leafId);
+      if (current) details.classList.add("leaf");
+      const head = el("summary", "agent-tree-head");
+      head.append(el("span", "agent-tree-label", (node && node.label) || id || "node"));
+      if (node && node.detail) {
+        head.append(el("span", "agent-tree-detail", String(node.detail)));
+      }
+      if (current) head.append(el("span", "agent-tree-leaf", "current"));
+      details.append(head);
+
+      const actions = node && Array.isArray(node.actions) ? node.actions : [];
+      if (actions.length) {
+        const row = el("div", "agent-tree-actions");
+        for (const action of actions) {
+          if (!action || typeof action !== "object") continue;
+          const command =
+            action.command && typeof action.command === "object"
+              ? action.command
+              : {};
+          const button = el(
+            "button",
+            "agent-tree-action",
+            action.label || action.name || command.name || "run"
+          );
+          button.type = "button";
+          // A node action is another declared command, so it takes the same
+          // path as the palette and its hint renders the same way.
+          button.addEventListener("click", () => {
+            closeModal();
+            sendDeclaredCommand({
+              type: "command",
+              name: command.name,
+              args:
+                command.args && typeof command.args === "object"
+                  ? command.args
+                  : {},
+            });
+          });
+          row.append(button);
+        }
+        details.append(row);
+      }
+
+      const children = node && Array.isArray(node.children) ? node.children : [];
+      if (children.length) {
+        const list = el("div", "agent-tree-children");
+        for (const child of children) list.append(renderTreeNode(child, leafId, depth + 1));
+        details.append(list);
+        // Top-level branches start open so the tree reads as a list; deeper
+        // ones stay collapsed until the reader opens them.
+        details.open = depth < 1;
+      }
+      return details;
+    }
+
+    /** `{"tree":…}` — a collapsible node list in a dialog. */
+    function showTreeHint(tree, label) {
+      const modal = openModal(label, "agent-tree");
+      const nodes = tree && Array.isArray(tree.nodes) ? tree.nodes : [];
+      const leafId = tree && typeof tree.leaf_id === "string" ? tree.leaf_id : "";
+      const list = el("div", "agent-tree-nodes");
+      for (const node of nodes) list.append(renderTreeNode(node, leafId, 0));
+      if (!nodes.length) list.append(el("div", "agent-tree-empty", "empty tree"));
+      modal.body.append(list);
+      addCloseAction(modal);
+    }
+
+    /** `{"refresh":true}` — re-request a snapshot.  The answer carries the data
+     * and the server also broadcasts `agent_resync`, which is what actually
+     * rehydrates the view; this path only has to await it and report failure. */
+    function refreshSnapshot() {
+      if (!onCommand) {
+        showNotice("refresh is unavailable", "warning");
+        return Promise.resolve();
+      }
+      return Promise.resolve(onCommand({ type: "get_snapshot" })).then(
+        () => undefined,
+        (error) => {
+          showNotice(
+            error && error.message ? error.message : "could not refresh",
+            "error"
+          );
+        }
+      );
+    }
+
+    /** Route a declared command's `data` through the render-hint vocabulary.
+     * Anything the vocabulary does not name stays visible as a JSON card, so a
+     * newer adapter's answer is never silently dropped. */
+    function renderCommandData(data, label) {
+      if (data === null || data === undefined) return;
+      let handled = false;
+      if (typeof data === "object") {
+        if (data.notice && typeof data.notice === "object") {
+          showNotice(data.notice.text || data.notice.code || "notice", data.notice.level);
+          handled = true;
+        }
+        if (data.download && typeof data.download === "object") {
+          showDownload(data.download);
+          handled = true;
+        }
+        if (data.tree && typeof data.tree === "object") {
+          showTreeHint(data.tree, label);
+          handled = true;
+        }
+        if (typeof data.text === "string") {
+          showTextHint(data.text, label);
+          handled = true;
+        }
+        if (data.refresh === true) {
+          refreshSnapshot();
+          handled = true;
+        }
+      }
+      if (!handled) showJsonHint(data, label);
+    }
+
+    /** The dialog label for a declared command: its title, never its meaning. */
+    function declaredLabel(name) {
+      for (const command of state.commands) {
+        if (command.name === name) return command.title || command.name;
+      }
+      return name || "result";
+    }
+
+    /** Invoke a declared command and render its hint.  A `success:false` answer
+     * arrives as a rejection, so it surfaces through the notice path. */
+    function sendDeclaredCommand(record) {
+      const name = record && record.name ? String(record.name) : "";
+      if (!onCommand || state.exited) {
+        showNotice("this chat cannot run commands", "warning");
+        return Promise.resolve();
+      }
+      return Promise.resolve(onCommand(record)).then(
+        (data) => {
+          renderCommandData(data, declaredLabel(name));
+          scheduleRender();
+        },
+        (error) => {
+          showNotice(error && error.message ? error.message : "command failed", "error");
+          scheduleRender();
         }
       );
     }
@@ -1730,6 +2201,14 @@
         message.capabilities && typeof message.capabilities === "object"
           ? message.capabilities
           : {};
+      // The adapter's own vocabulary: declared commands and the help list of
+      // features it cannot expose.  Absent fields simply mean neither exists.
+      state.commands = (Array.isArray(message.commands) ? message.commands : [])
+        .map(normalizeDeclaredCommand)
+        .filter(Boolean);
+      state.help = normalizeHelpEntries(message.help);
+      // A dialog on screen refers to the previous manifest, so it cannot stay.
+      closeModal();
       state.busy = Boolean(state.meta.streaming);
       state.settled = message.state ? message.state.settled !== false : true;
       state.live = null;
@@ -1954,6 +2433,7 @@
         state.busy = false;
         state.queues = { steering: [], followUp: [] };
         closePalette();
+        closeModal();
         updateStatus();
         input.disabled = true;
         sendButton.disabled = true;

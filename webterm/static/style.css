@@ -2797,6 +2797,274 @@ h6.pi-md-heading {
   color: var(--warn);
 }
 
+/* ----------------------------------------------------------------- declared
+   commands: the palette marks an adapter's own entries, and one dialog renders
+   their arg form, the help list, and every render hint. */
+.agent-modal-host[hidden] {
+  /* The overlay sets `display: flex`, which would beat the UA's `[hidden]`. */
+  display: none;
+}
+
+.agent-palette-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-palette-danger {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--danger);
+  border-radius: 999px;
+  color: var(--danger);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.pi-command-item.danger .pi-command-name {
+  color: var(--danger);
+}
+
+.agent-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.agent-modal-actions button {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-modal-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.agent-modal-actions button.agent-modal-submit {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.agent-command-form.danger .agent-modal-submit {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.agent-modal-desc {
+  margin-bottom: 10px;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+.agent-modal-error {
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.agent-modal-error[hidden] {
+  display: none;
+}
+
+.agent-arg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 10px;
+}
+
+.agent-arg-label {
+  flex: 0 0 100%;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.agent-arg.required .agent-arg-label::after {
+  content: " *";
+  color: var(--danger);
+}
+
+.agent-arg-input {
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.agent-arg-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.agent-arg-choice {
+  min-width: 200px;
+}
+
+.agent-arg-boolean {
+  width: auto;
+}
+
+.agent-arg-desc {
+  flex: 0 0 100%;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.agent-help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-help-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.agent-help-name {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+
+.agent-help-reason {
+  color: var(--text-dim);
+}
+
+.agent-download-link {
+  display: inline-block;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.agent-download-link:hover {
+  background: var(--bg-elevated);
+}
+
+.agent-download-mime {
+  margin-top: 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.agent-result-text {
+  max-height: min(60vh, 520px);
+  overflow: auto;
+}
+
+.agent-result-json summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.agent-result-json-body {
+  margin-top: 6px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+}
+
+.agent-tree-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-tree-node {
+  padding: 2px 0 2px 8px;
+  border-left: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.agent-tree-node.leaf > .agent-tree-head .agent-tree-label {
+  color: var(--accent);
+}
+
+.agent-tree-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 8px;
+  cursor: pointer;
+}
+
+.agent-tree-detail {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.agent-tree-leaf {
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.agent-tree-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 4px 8px;
+}
+
+.agent-tree-action {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-tree-action:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.agent-tree-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 0 8px;
+}
+
+.agent-tree-empty {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
 .agent-stop {
   border-color: var(--danger) !important;
   color: var(--danger) !important;
