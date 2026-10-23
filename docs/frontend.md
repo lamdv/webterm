@@ -494,7 +494,16 @@ Touch-specific styling lives in one `@media (hover: none), (pointer: coarse)`
 block in `style.css`: the per-tab `×` close button is made permanently visible
 (it is hover-only on desktop), rows and buttons get finger-sized hit targets,
 and popover inputs are bumped to 16 px so iOS does not zoom the page when they
-focus. Interactive elements also get `touch-action: manipulation` to drop the
+focus.
+
+The chat surfaces extend the same rules in a `max-width: 700px` block: the
+transcript find bar wraps with its input on its own line and drops the snippet,
+so the query and the match count stay usable; modals (trust, resume, tree,
+`/limits`) span the width with `max-height: calc(100dvh - 16px)` and align to
+the top so the on-screen keyboard cannot push their buttons off-screen; the
+header and agent control row wrap instead of overflowing; and queue chips keep
+their kind label narrow. Thumbnails and find/queue buttons get touch-sized hit
+targets on coarse pointers. Interactive elements also get `touch-action: manipulation` to drop the
 double-tap-zoom delay. The viewport meta tag carries `viewport-fit=cover`, and
 `#app` pads by `env(safe-area-inset-*)` for notched displays.
 

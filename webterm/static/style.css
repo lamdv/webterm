@@ -2916,3 +2916,73 @@ h6.pi-md-heading {
     display: none;
   }
 }
+
+/* ------------------------------------------- mobile: chat surfaces */
+/* Narrow widths and touch devices share the same chat views as the desktop,
+   so the find bar, modals, queue chips, and controls need to survive a phone
+   without a separate layout. */
+
+@media (max-width: 700px) {
+  /* The snippet is the first thing to go: the input and count matter more. */
+  .find-bar {
+    flex-wrap: wrap;
+    gap: 4px 6px;
+    padding: 6px 10px;
+  }
+
+  .find-bar .find-snippet {
+    display: none;
+  }
+
+  .find-bar .find-input {
+    flex-basis: 100%;
+    order: -1;
+  }
+
+  /* Dialogs stay reachable when the on-screen keyboard shrinks the viewport. */
+  .pi-modal-overlay {
+    padding: 8px;
+    align-items: flex-start;
+  }
+
+  .pi-modal {
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+    padding: 12px;
+  }
+
+  .pi-modal-title {
+    font-size: 14px;
+  }
+
+  .pi-queue {
+    padding: 6px 10px;
+  }
+
+  .pi-queue-kind {
+    flex-basis: 52px;
+  }
+
+  .pi-header {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+
+  .agent-controls {
+    flex-wrap: wrap;
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  .find-bar button,
+  .find-input,
+  .pi-queue-clear,
+  .pi-find-toggle {
+    min-height: 36px;
+  }
+
+  .pi-attach-thumb {
+    max-width: 60px;
+    max-height: 60px;
+  }
+}
