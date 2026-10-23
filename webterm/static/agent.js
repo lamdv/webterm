@@ -170,10 +170,11 @@
     const header = el("div", "pi-header agent-header");
     const titleEl = el("span", "pi-title", session.title || "agent");
     const metaEl = el("span", "pi-status agent-header-meta", "");
+    const uiStatusEl = el("div", "agent-ui-statuses");
     const findButton = el("button", "pi-find-toggle", "find");
     findButton.type = "button";
     findButton.title = "Search this transcript (Ctrl+F)";
-    header.append(titleEl, metaEl, findButton);
+    header.append(titleEl, metaEl, uiStatusEl, findButton);
 
     const controls = el("div", "agent-controls");
     const modelSelect = el("select", "agent-control agent-model");
@@ -240,6 +241,13 @@
     banner.hidden = true;
     const findHost = el("div", "find-host");
     const messagesEl = el("div", "pi-messages agent-messages");
+    // Adapter-owned presentation: keyed status chips live in the header, and
+    // widgets sit above or below the composer.  Nothing here knows what a chip
+    // means; an empty value clears the key.
+    const widgetsAboveEl = el("div", "agent-ui-widgets above");
+    widgetsAboveEl.hidden = true;
+    const widgetsBelowEl = el("div", "agent-ui-widgets below");
+    widgetsBelowEl.hidden = true;
     const dialogHost = el("div", "agent-dialog-host");
     dialogHost.hidden = true;
     // One command dialog at a time: a declared command's arg form, the help
@@ -303,8 +311,10 @@
       modalHost,
       queueEl,
       paletteEl,
+      widgetsAboveEl,
       ...(pathComplete ? [pathComplete.element] : []),
       form,
+      widgetsBelowEl,
       footer
     );
 
@@ -318,6 +328,9 @@
       connected: false,
       meta: {},
       capabilities: {},
+      // Adapter-owned presentation from the last resync: keyed status chips, a
+      // composer widget, and a view title.  Shape-only, never backend names.
+      ui: { status: {}, widgets: {}, title: "" },
       // Declared commands and help entries from the last resync.  They are the
       // adapter's own vocabulary; the view only renders what it is told.
       commands: [],
@@ -1974,6 +1987,60 @@
         });
     }
 
+    /** Snapshot the adapter-owned presentation state (shape-only). */
+    function normalizeUi(ui) {
+      const source = ui && typeof ui === "object" ? ui : {};
+      const status = {};
+      const rawStatus =
+        source.status && typeof source.status === "object" ? source.status : {};
+      for (const key of Object.keys(rawStatus)) {
+        const value = rawStatus[key];
+        if (typeof value === "string" && value) status[key] = value;
+      }
+      const widgets = {};
+      const rawWidgets =
+        source.widgets && typeof source.widgets === "object" ? source.widgets : {};
+      for (const key of Object.keys(rawWidgets)) {
+        const value = rawWidgets[key];
+        if (!value || typeof value !== "object") continue;
+        const text = typeof value.text === "string" ? value.text : "";
+        if (!text) continue;
+        widgets[key] = {
+          text,
+          placement: value.placement === "below" ? "below" : "above",
+        };
+      }
+      return {
+        status,
+        widgets,
+        title: typeof source.title === "string" ? source.title : "",
+      };
+    }
+
+    function renderUi() {
+      titleEl.textContent = state.ui.title || state.meta.name || session.title || "agent";
+      uiStatusEl.innerHTML = "";
+      for (const key of Object.keys(state.ui.status)) {
+        const chip = el("span", "agent-ui-chip", state.ui.status[key]);
+        chip.dataset.key = key;
+        chip.title = key;
+        uiStatusEl.appendChild(chip);
+      }
+      uiStatusEl.hidden = !uiStatusEl.children.length;
+      widgetsAboveEl.innerHTML = "";
+      widgetsBelowEl.innerHTML = "";
+      for (const key of Object.keys(state.ui.widgets)) {
+        const widget = state.ui.widgets[key];
+        const host = widget.placement === "below" ? widgetsBelowEl : widgetsAboveEl;
+        const panel = el("pre", "agent-ui-widget", widget.text);
+        panel.dataset.key = key;
+        panel.title = key;
+        host.appendChild(panel);
+      }
+      widgetsAboveEl.hidden = !widgetsAboveEl.children.length;
+      widgetsBelowEl.hidden = !widgetsBelowEl.children.length;
+    }
+
     function render() {
       const atBottom = stickToBottom;
       const anchor = scrollAnchor;
@@ -2003,6 +2070,7 @@
       reconcileChildren(messagesEl, nodes);
       renderDialogs();
       renderQueue();
+      renderUi();
       syncControls();
       updateStatus();
       if (atBottom) {
@@ -2175,6 +2243,41 @@
         case "notice":
           showNotice(event.text || event.code || "notice", event.level);
           break;
+        case "status.updated": {
+          const key = String(event.key || "");
+          if (!key) break;
+          if (typeof event.text === "string" && event.text) {
+            state.ui.status[key] = event.text;
+          } else {
+            delete state.ui.status[key];
+          }
+          break;
+        }
+        case "widget.updated": {
+          const key = String(event.key || "");
+          if (!key) break;
+          if (typeof event.text === "string" && event.text) {
+            state.ui.widgets[key] = {
+              text: event.text,
+              placement: event.placement === "below" ? "below" : "above",
+            };
+          } else {
+            delete state.ui.widgets[key];
+          }
+          break;
+        }
+        case "title.updated":
+          state.ui.title = typeof event.title === "string" ? event.title : "";
+          break;
+        case "editor.prefill":
+          // A prefill never overwrites what the reader is writing.
+          if (typeof event.text === "string" && event.text && !input.value.trim()) {
+            input.value = event.text;
+            if (typeof input.setSelectionRange === "function") {
+              input.setSelectionRange(input.value.length, input.value.length);
+            }
+          }
+          break;
         case "queue.updated": {
           const steering = Array.isArray(event.steering) ? event.steering : [];
           const followUp = Array.isArray(event.follow_up)
@@ -2199,6 +2302,7 @@
           ? message.cursor.seq
           : -1;
       state.meta = message.state && typeof message.state === "object" ? message.state : {};
+      state.ui = normalizeUi(message.ui);
       state.capabilities =
         message.capabilities && typeof message.capabilities === "object"
           ? message.capabilities

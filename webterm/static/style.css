@@ -3254,3 +3254,59 @@ h6.pi-md-heading {
     max-height: 60px;
   }
 }
+
+/* --------------------------------------------- adapter-owned UI state */
+/* Keyed status chips, composer widgets, and the view title are shapes any
+   backend can emit; nothing here encodes one adapter's meaning. */
+
+.agent-ui-statuses {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.agent-ui-statuses[hidden] {
+  display: none;
+}
+
+.agent-ui-chip {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.agent-ui-widgets {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+}
+
+.agent-ui-widgets[hidden] {
+  display: none;
+}
+
+.agent-ui-widgets.below {
+  padding-top: 0;
+}
+
+.agent-ui-widget {
+  margin: 0;
+  padding: 6px 10px;
+  max-height: 120px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+}

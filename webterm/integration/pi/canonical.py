@@ -56,6 +56,10 @@ PI_CAPABILITIES = Capabilities(
     tool_updates=True,
     compaction=True,
     attachments_images=True,
+    ui_status=True,
+    ui_widgets=True,
+    ui_title=True,
+    ui_editor=True,
     raw=True,
 )
 
@@ -797,7 +801,7 @@ def pi_snapshot_to_canonical(
             settled=bool(data.get("settled", True)),
         ),
         "dialogs": dialogs,
-        "ui": ui,
+        "ui": pi_ui_to_canonical(ui),
         "capabilities": PI_CAPABILITIES.to_dict(),
         "cursor": {"seq": data.get("seq", 0)},
     }
@@ -906,8 +910,24 @@ def pi_dialog_to_canonical(record: object) -> dict | None:
     return dialog
 
 
+def _widget_text(lines: object) -> str:
+    """Join pi's widget lines into the canonical text block."""
+    if not isinstance(lines, list):
+        return ""
+    return "\n".join(str(line) for line in lines)
+
+
+def _widget_placement(placement: object) -> str:
+    return "below" if placement == "belowEditor" else "above"
+
+
 def pi_ui_request_to_events(record: object) -> list[dict]:
-    """Map fire-and-forget pi extension UI records to canonical events."""
+    """Map fire-and-forget pi extension UI records to canonical events.
+
+    These are presentation primitives, not pi vocabulary: a keyed status
+    chip, a composer widget, a title, or an editor prefill.  Any adapter may
+    emit the same events, and an empty value clears the key.
+    """
     if not isinstance(record, dict):
         return []
     method = record.get("method")
@@ -925,15 +945,66 @@ def pi_ui_request_to_events(record: object) -> list[dict]:
         ]
     if method == "setTitle":
         title = record.get("title")
+        return [{"event": "title.updated", "title": title if isinstance(title, str) else ""}]
+    if method == "setStatus":
+        key = record.get("statusKey")
+        if not isinstance(key, str) or not key:
+            return []
+        text = record.get("statusText")
         return [
             {
-                "event": "session.info",
-                "title": title if isinstance(title, str) else None,
+                "event": "status.updated",
+                "key": key,
+                "text": text if isinstance(text, str) else "",
             }
         ]
-    if method in ("setStatus", "setWidget", "set_editor_text"):
-        return [{"event": "raw", "protocol": "pi", "record": record}]
+    if method == "setWidget":
+        key = record.get("widgetKey")
+        if not isinstance(key, str) or not key:
+            return []
+        return [
+            {
+                "event": "widget.updated",
+                "key": key,
+                "text": _widget_text(record.get("widgetLines")),
+                "placement": _widget_placement(record.get("widgetPlacement")),
+            }
+        ]
+    if method == "set_editor_text":
+        text = record.get("text")
+        if not isinstance(text, str):
+            return []
+        return [{"event": "editor.prefill", "text": text}]
     return []
+
+
+def pi_ui_to_canonical(ui: object) -> dict[str, Any]:
+    """Convert pi's replayable UI state into the canonical snapshot shape."""
+    data = ui if isinstance(ui, dict) else {}
+    raw_status = data.get("status")
+    status = {
+        str(key): str(value)
+        for key, value in (raw_status.items() if isinstance(raw_status, dict) else [])
+        if isinstance(key, str) and isinstance(value, str) and value
+    }
+    raw_widgets = data.get("widgets")
+    widgets: dict[str, dict[str, str]] = {}
+    if isinstance(raw_widgets, dict):
+        for key, widget in raw_widgets.items():
+            if not isinstance(key, str) or not isinstance(widget, dict):
+                continue
+            text = _widget_text(widget.get("lines"))
+            if text:
+                widgets[key] = {
+                    "text": text,
+                    "placement": _widget_placement(widget.get("placement")),
+                }
+    title = data.get("title")
+    return {
+        "status": status,
+        "widgets": widgets,
+        "title": title if isinstance(title, str) else "",
+    }
 
 
 def pi_ui_resolved_to_canonical(record: object) -> dict | None:

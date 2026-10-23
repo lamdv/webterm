@@ -224,6 +224,14 @@ class Capabilities:
     compaction: bool = False
     attachments_images: bool = False
     raw: bool = False
+    #: The adapter emits keyed status chips (``status.updated``).
+    ui_status: bool = False
+    #: The adapter emits composer widgets (``widget.updated``).
+    ui_widgets: bool = False
+    #: The adapter emits a view title (``title.updated``).
+    ui_title: bool = False
+    #: The adapter may prefill the composer (``editor.prefill``).
+    ui_editor: bool = False
     #: The adapter serves a plain-text system-prompt library
     #: (``list_prompts`` / ``save_prompt`` / ``delete_prompt``).
     prompt_library: bool = False
@@ -244,6 +252,7 @@ class Capabilities:
         export = _section(source, "export")
         usage = _section(source, "usage")
         tools = _section(source, "tools")
+        ui = _section(source, "ui")
         attachments = _section(source, "attachments")
 
         levels: tuple[str, ...] = ()
@@ -285,6 +294,10 @@ class Capabilities:
             tool_streaming=_flag_from(source, "tool_streaming", tools, "streaming", True),
             tool_updates=_flag_from(source, "tool_updates", tools, "updates", True),
             compaction=_flag(source, "compaction"),
+            ui_status=_flag_from(source, "ui_status", ui, "status"),
+            ui_widgets=_flag_from(source, "ui_widgets", ui, "widgets"),
+            ui_title=_flag_from(source, "ui_title", ui, "title"),
+            ui_editor=_flag_from(source, "ui_editor", ui, "editor"),
             attachments_images=_flag_from(source, "attachments_images", attachments, "images"),
             raw=_flag(source, "raw"),
             prompt_library=_flag(source, "prompt_library"),
@@ -316,6 +329,12 @@ class Capabilities:
             "tools": {"streaming": self.tool_streaming, "updates": self.tool_updates},
             "compaction": self.compaction,
             "attachments": {"images": self.attachments_images},
+            "ui": {
+                "status": self.ui_status,
+                "widgets": self.ui_widgets,
+                "title": self.ui_title,
+                "editor": self.ui_editor,
+            },
             "raw": self.raw,
             "prompt_library": self.prompt_library,
             "edit_message": self.edit_message,

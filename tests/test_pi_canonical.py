@@ -735,7 +735,60 @@ class PiDialogTests(unittest.TestCase):
                 "title": "new title",
             }
         )
-        self.assertEqual(events[0], {"event": "session.info", "title": "new title"})
+        self.assertEqual(events[0], {"event": "title.updated", "title": "new title"})
+
+        status = pi_ui_request_to_events(
+            {
+                "type": "extension_ui_request",
+                "id": "s",
+                "method": "setStatus",
+                "statusKey": "build",
+                "statusText": "running",
+            }
+        )
+        self.assertEqual(
+            status[0], {"event": "status.updated", "key": "build", "text": "running"}
+        )
+        self.assertEqual(
+            pi_ui_request_to_events(
+                {
+                    "type": "extension_ui_request",
+                    "id": "s2",
+                    "method": "setStatus",
+                    "statusKey": "build",
+                    "statusText": "",
+                }
+            )[0],
+            {"event": "status.updated", "key": "build", "text": ""},
+        )
+        widget = pi_ui_request_to_events(
+            {
+                "type": "extension_ui_request",
+                "id": "w",
+                "method": "setWidget",
+                "widgetKey": "todo",
+                "widgetLines": ["one", "two"],
+                "widgetPlacement": "belowEditor",
+            }
+        )
+        self.assertEqual(
+            widget[0],
+            {
+                "event": "widget.updated",
+                "key": "todo",
+                "text": "one\ntwo",
+                "placement": "below",
+            },
+        )
+        prefill = pi_ui_request_to_events(
+            {
+                "type": "extension_ui_request",
+                "id": "e",
+                "method": "set_editor_text",
+                "text": "draft",
+            }
+        )
+        self.assertEqual(prefill[0], {"event": "editor.prefill", "text": "draft"})
 
     def test_responses_map_to_pi_shape(self) -> None:
         self.assertEqual(
@@ -848,12 +901,17 @@ class PiCanonicalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notices[0]["level"], "warning")
         self.assertEqual(notices[0]["text"], "fake notification")
         titles = [
-            event
-            for event in collector2.events
-            if event["event"] == "session.info" and event.get("title")
+            event for event in collector2.events if event["event"] == "title.updated"
         ]
         self.assertEqual(titles[0]["title"], "fake title")
-        self.assertTrue(any(event["event"] == "raw" for event in collector2.events))
+        status = [
+            event for event in collector2.events if event["event"] == "status.updated"
+        ]
+        self.assertEqual(status[0]["key"], "fake")
+        widgets = [
+            event for event in collector2.events if event["event"] == "widget.updated"
+        ]
+        self.assertEqual(widgets[0]["text"], "widget line")
 
 
 class PiShadowServerTests(unittest.IsolatedAsyncioTestCase):
@@ -1040,7 +1098,7 @@ class PiShadowServerTests(unittest.IsolatedAsyncioTestCase):
         )
         messages = await self._collect_until(
             lambda message: message.get("type") == "agent_event"
-            and message["event"].get("event") == "session.info"
+            and message["event"].get("event") == "title.updated"
             and message["event"].get("title") == "fake title"
         )
         # The legacy UI requests are still delivered unchanged.
@@ -1053,16 +1111,14 @@ class PiShadowServerTests(unittest.IsolatedAsyncioTestCase):
         notices = [event for event in events if event["event"] == "notice"]
         self.assertEqual(notices[0]["level"], "warning")
         self.assertEqual(notices[0]["text"], "fake notification")
-        titles = [
-            event
-            for event in events
-            if event["event"] == "session.info" and event.get("title")
-        ]
+        titles = [event for event in events if event["event"] == "title.updated"]
         self.assertEqual(titles[0]["title"], "fake title")
-        # setStatus and setWidget have no canonical equivalent yet.
-        raw = [event for event in events if event["event"] == "raw"]
-        self.assertEqual(len(raw), 2)
-        self.assertTrue(all(event["protocol"] == "pi" for event in raw))
+        status = [event for event in events if event["event"] == "status.updated"]
+        self.assertEqual(status[0]["key"], "fake")
+        self.assertEqual(status[0]["text"], "working")
+        widgets = [event for event in events if event["event"] == "widget.updated"]
+        self.assertEqual(widgets[0]["text"], "widget line")
+        self.assertEqual(widgets[0]["placement"], "above")
 
     async def test_agent_api_enabled_after_subscribe_sends_resync(self) -> None:
         session = await self._create_pi()
