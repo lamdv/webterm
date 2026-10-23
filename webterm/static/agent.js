@@ -53,6 +53,21 @@
     "max",
   ];
 
+  /** Slash commands the canonical command set can run.  Each is gated on the
+   * capability that makes its control exist, so the palette never offers a
+   * command the adapter would refuse or the view has no target for.  `/limits`,
+   * tree/fork/clone, and export stay in the legacy pi view for later phases. */
+  const PALETTE_COMMANDS = [
+    { name: "compact", description: "Compact the conversation" },
+    { name: "model", description: "Switch model" },
+    { name: "thinking", description: "Set the thinking level" },
+    { name: "system", description: "Edit the system prompt" },
+  ];
+
+  /** Characters of a queued message shown in a chip; the full text is the
+   * chip's title (and the CSS ellipsis keeps the row one line). */
+  const QUEUE_CHIP_TEXT_LIMIT = 120;
+
   function renderPlain(parent, text) {
     parent.appendChild(el("div", "pi-text", String(text || "")));
   }
@@ -171,6 +186,12 @@
     const messagesEl = el("div", "pi-messages agent-messages");
     const dialogHost = el("div", "agent-dialog-host");
     dialogHost.hidden = true;
+    // Queued steering/follow-up text sits directly above the composer, with the
+    // slash-command palette between them (mirroring the pi view).
+    const queueEl = el("div", "pi-queue agent-queue");
+    queueEl.hidden = true;
+    const paletteEl = el("div", "pi-command-palette agent-palette");
+    paletteEl.hidden = true;
 
     const footer = el("div", "pi-footer agent-footer");
     const statusEl = el("span", "pi-status", "starting…");
@@ -218,6 +239,8 @@
       findHost,
       messagesEl,
       dialogHost,
+      queueEl,
+      paletteEl,
       ...(pathComplete ? [pathComplete.element] : []),
       form,
       footer
@@ -233,6 +256,11 @@
       connected: false,
       meta: {},
       capabilities: {},
+      // Pending input reported by ``queue.updated``: canonical steering and
+      // follow-up text, both rendered as chips above the composer.
+      queues: { steering: [], followUp: [] },
+      // Open slash-command palette: the filtered entries and the active row.
+      palette: { items: [], index: 0 },
       systemOpen: false,
       prompts: {
         list: [],
@@ -400,6 +428,274 @@
       systemButton.disabled = state.exited;
       systemSave.disabled = state.exited;
       systemClear.disabled = state.exited;
+    }
+
+    /** Whether a queued-input command can be sent at all; the canonical set
+     * advertises it as ``queue``/``steering``/``follow_up``. */
+    function queueEnabled() {
+      return Boolean(onCommand);
+    }
+
+    /** Append one queued-message chip: kind label plus truncated text, with the
+     * full text kept in ``title``.  Everything is built with textContent. */
+    function appendQueueChip(parent, kind, text) {
+      const full = typeof text === "string" ? text : String(text || "");
+      const shown =
+        full.length > QUEUE_CHIP_TEXT_LIMIT
+          ? full.slice(0, QUEUE_CHIP_TEXT_LIMIT - 1) + "…"
+          : full;
+      const chip = el("div", "pi-queue-chip agent-queue-chip " + kind);
+      chip.appendChild(
+        el("span", "pi-queue-kind agent-queue-kind", kind === "steer" ? "steer" : "follow-up")
+      );
+      chip.appendChild(el("span", "pi-queue-text agent-queue-text", shown));
+      chip.title = full;
+      parent.appendChild(chip);
+    }
+
+    let queueSignature = "";
+
+    /** Rebuild the chip row only when the queue itself changed, so unrelated
+     * renders keep the Clear button (and any focus on it) untouched. */
+    function renderQueue() {
+      const steering = state.queues.steering || [];
+      const followUp = state.queues.followUp || [];
+      const total = steering.length + followUp.length;
+      const signature = JSON.stringify([steering, followUp]);
+      if (signature === queueSignature) return;
+      queueSignature = signature;
+      queueEl.innerHTML = "";
+      queueEl.hidden = total === 0;
+      if (!total) return;
+      const head = el("div", "pi-queue-head agent-queue-head");
+      head.appendChild(el("span", "pi-queue-title agent-queue-title", total + " queued"));
+      if (queueEnabled()) {
+        const clearButton = el("button", "pi-queue-clear agent-queue-clear", "Clear");
+        clearButton.type = "button";
+        clearButton.title = "Clear queued messages and put them back in the composer";
+        clearButton.addEventListener("click", clearQueue);
+        head.appendChild(clearButton);
+      }
+      queueEl.appendChild(head);
+      const list = el("div", "pi-queue-list agent-queue-list");
+      for (const text of steering) appendQueueChip(list, "steer", text);
+      for (const text of followUp) appendQueueChip(list, "follow-up", text);
+      queueEl.appendChild(list);
+    }
+
+    /** Put the adapter's returned queued text back into the composer.  pi
+     * answers ``{steering, followUp}``; a native adapter may use the canonical
+     * ``follow_up`` spelling, so both are read. */
+    function restoreQueuedText(data) {
+      if (!data || typeof data !== "object") return;
+      const steering = Array.isArray(data.steering) ? data.steering : [];
+      const followUp = Array.isArray(data.followUp)
+        ? data.followUp
+        : Array.isArray(data.follow_up)
+          ? data.follow_up
+          : [];
+      const parts = [];
+      for (const item of steering.concat(followUp)) {
+        if (typeof item === "string" && item) parts.push(item);
+      }
+      if (!parts.length) return;
+      const current = input.value.replace(/\s+$/, "");
+      input.value = current ? current + "\n" + parts.join("\n") : parts.join("\n");
+      if (!state.exited && typeof input.focus === "function") input.focus();
+    }
+
+    function clearQueue() {
+      if (!queueEnabled()) return;
+      Promise.resolve(onCommand({ type: "clear_queue" })).then(
+        (data) => {
+          restoreQueuedText(data);
+          state.queues = { steering: [], followUp: [] };
+          scheduleRender();
+        },
+        (error) => {
+          showNotice(
+            error && error.message ? error.message : "could not clear the queue",
+            "error"
+          );
+        }
+      );
+    }
+
+    /** Esc and Stop clear first, so queued text is not lost when the run that
+     * would have carried it is aborted.  A refused clear keeps the run alive,
+     * matching the pi view. */
+    function abort() {
+      if (state.exited || !state.busy) return;
+      const cleared = queueEnabled()
+        ? Promise.resolve(onCommand({ type: "clear_queue" })).then((data) => {
+            restoreQueuedText(data);
+            state.queues = { steering: [], followUp: [] };
+            scheduleRender();
+          })
+        : Promise.resolve();
+      cleared.then(
+        () => {
+          const promise = onAbort();
+          if (promise && promise.catch) {
+            promise.catch((error) =>
+              showNotice(error && error.message ? error.message : "abort failed", "error")
+            );
+          }
+        },
+        (error) => {
+          showNotice(
+            error && error.message ? error.message : "could not clear the queue",
+            "error"
+          );
+        }
+      );
+    }
+
+    /** Palette entries the current capabilities allow.  Each maps onto a
+     * control that already exists, or onto one canonical command. */
+    function availableCommands() {
+      const caps = state.capabilities || {};
+      const models = modelsCapability();
+      const items = [];
+      for (const command of PALETTE_COMMANDS) {
+        if (command.name === "compact") {
+          if (!(caps.compaction && onCommand)) continue;
+        } else if (command.name === "model") {
+          if (!(models.set && onCommand)) continue;
+        } else if (command.name === "thinking") {
+          if (!(models.thinking && onCommand)) continue;
+        } else if (command.name === "system") {
+          if (!(caps.system_prompt && onCommand)) continue;
+        }
+        items.push(command);
+      }
+      return items;
+    }
+
+    /** The palette is open only for a draft that is exactly `/` plus a word. */
+    function commandQuery() {
+      if (state.exited) return null;
+      const value = input.value;
+      if (!/^\/\S*$/.test(value)) return null;
+      return value.slice(1).toLowerCase();
+    }
+
+    function closePalette() {
+      state.palette.items = [];
+      state.palette.index = 0;
+      paletteEl.hidden = true;
+      paletteEl.innerHTML = "";
+    }
+
+    function renderPalette() {
+      paletteEl.innerHTML = "";
+      if (!state.palette.items.length) {
+        paletteEl.hidden = true;
+        return;
+      }
+      paletteEl.hidden = false;
+      state.palette.items.forEach((command, index) => {
+        const item = el(
+          "div",
+          "pi-command-item agent-palette-item" +
+            (index === state.palette.index ? " active" : "")
+        );
+        item.appendChild(el("span", "pi-command-name agent-palette-name", "/" + command.name));
+        if (command.description) {
+          item.appendChild(
+            el("span", "pi-command-desc agent-palette-desc", command.description)
+          );
+        }
+        item.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+          acceptCommand(index);
+        });
+        paletteEl.appendChild(item);
+      });
+      requestAnimationFrame(() => {
+        const active = paletteEl.querySelector(".pi-command-item.active");
+        if (active && typeof active.scrollIntoView === "function") {
+          active.scrollIntoView({ block: "nearest" });
+        }
+      });
+    }
+
+    function updatePalette() {
+      const query = commandQuery();
+      if (query === null) {
+        closePalette();
+        return;
+      }
+      const items = availableCommands().filter((command) =>
+        String(command.name).toLowerCase().startsWith(query)
+      );
+      if (!items.length) {
+        closePalette();
+        return;
+      }
+      state.palette.items = items;
+      if (state.palette.index >= items.length) state.palette.index = 0;
+      renderPalette();
+    }
+
+    function movePalette(delta) {
+      if (!state.palette.items.length) return;
+      const count = state.palette.items.length;
+      state.palette.index = (state.palette.index + delta + count) % count;
+      renderPalette();
+    }
+
+    /** Accepting clears the draft and moves focus to the control the command
+     * names; it never sends the draft itself as a prompt. */
+    function acceptCommand(index) {
+      const command = state.palette.items[index];
+      if (!command) return;
+      input.value = "";
+      closePalette();
+      if (command.name === "compact") {
+        runCompact();
+        return;
+      }
+      if (command.name === "model") {
+        if (typeof modelSelect.focus === "function") modelSelect.focus();
+      } else if (command.name === "thinking") {
+        if (typeof thinkingSelect.focus === "function") thinkingSelect.focus();
+      } else if (command.name === "system") {
+        setSystemOpen(!state.systemOpen);
+        const target = state.systemOpen ? systemInput : systemButton;
+        if (typeof target.focus === "function") target.focus();
+      }
+      scheduleRender();
+    }
+
+    function runCompact() {
+      if (!onCommand) return;
+      Promise.resolve(onCommand({ type: "compact" })).then(
+        () => {
+          showNotice("compaction requested");
+          scheduleRender();
+        },
+        (error) => {
+          showNotice(error && error.message ? error.message : "could not compact", "error");
+        }
+      );
+    }
+
+    /** Open or close the system-prompt panel; the palette and the button share
+     * this so the panel is filled and refreshed the same way both times. */
+    function setSystemOpen(open) {
+      const allowed = Boolean(state.capabilities.system_prompt && onCommand);
+      state.systemOpen = Boolean(open) && allowed;
+      if (state.systemOpen) {
+        systemInput.value =
+          typeof state.meta.system_prompt === "string" ? state.meta.system_prompt : "";
+        // Lazy: the library is listed when the panel is first opened, never at
+        // session start, and refreshed on every later open.
+        refreshPrompts();
+      } else {
+        closePromptUi();
+      }
+      scheduleRender();
     }
 
     function submitSystemPrompt(text) {
@@ -613,19 +909,7 @@
       );
     });
 
-    systemButton.addEventListener("click", () => {
-      state.systemOpen = !state.systemOpen;
-      if (state.systemOpen) {
-        systemInput.value =
-          typeof state.meta.system_prompt === "string" ? state.meta.system_prompt : "";
-        // Lazy: the library is listed when the panel is first opened, never at
-        // session start, and refreshed on every later open.
-        refreshPrompts();
-      } else {
-        closePromptUi();
-      }
-      scheduleRender();
-    });
+    systemButton.addEventListener("click", () => setSystemOpen(!state.systemOpen));
 
     promptSaveButton.addEventListener("click", () => {
       if (!promptsEnabled()) return;
@@ -706,6 +990,8 @@
       }
       if (state.usage.tokens) bits.push(state.usage.tokens + " tok");
       if (state.usage.cost > 0) bits.push("$" + Number(state.usage.cost).toFixed(4));
+      const queued = state.queues.steering.length + state.queues.followUp.length;
+      if (queued) bits.push(queued + " queued");
       statusEl.textContent = bits.join(" · ");
       statusEl.classList.toggle("busy", state.busy);
       statusEl.classList.toggle("exited", state.exited);
@@ -1243,6 +1529,7 @@
       }
       reconcileChildren(messagesEl, nodes);
       renderDialogs();
+      renderQueue();
       syncControls();
       updateStatus();
       if (atBottom) {
@@ -1415,8 +1702,16 @@
         case "notice":
           showNotice(event.text || event.code || "notice", event.level);
           break;
-        case "queue.updated":
+        case "queue.updated": {
+          const steering = Array.isArray(event.steering) ? event.steering : [];
+          const followUp = Array.isArray(event.follow_up)
+            ? event.follow_up
+            : Array.isArray(event.followUp)
+              ? event.followUp
+              : [];
+          state.queues = { steering: steering.slice(), followUp: followUp.slice() };
           break;
+        }
         default:
           break;
       }
@@ -1461,6 +1756,9 @@
       state.prompts.loading = false;
       state.prompts.saving = false;
       closePromptUi();
+      // A snapshot does not carry the queued texts; the next queue.updated does.
+      state.queues = { steering: [], followUp: [] };
+      closePalette();
       if (state.meta.name) titleEl.textContent = state.meta.name;
       loadModels();
       render();
@@ -1496,6 +1794,7 @@
     function sendPrompt(behavior) {
       const text = input.value.trim();
       if (!text || state.exited) return;
+      closePalette();
       if (pathComplete) pathComplete.close();
       const images = attach ? attach.images() : [];
       input.value = "";
@@ -1531,20 +1830,52 @@
       event.preventDefault();
       sendPrompt();
     });
+    input.addEventListener("input", updatePalette);
+    input.addEventListener("click", updatePalette);
+    input.addEventListener("blur", () => {
+      const timer = setTimeout(closePalette, 0);
+      if (timer && typeof timer.unref === "function") timer.unref();
+    });
     input.addEventListener("keydown", (event) => {
       if (pathComplete && pathComplete.keydown(event)) return;
+      if (!paletteEl.hidden) {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          movePalette(1);
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          movePalette(-1);
+          return;
+        }
+        if (event.key === "Tab") {
+          event.preventDefault();
+          acceptCommand(state.palette.index);
+          return;
+        }
+        // Enter with the palette open accepts and never sends the draft.
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          acceptCommand(state.palette.index);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closePalette();
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        abort();
+        return;
+      }
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       sendPrompt(event.ctrlKey || event.metaKey ? "steer" : undefined);
     });
-    stopButton.addEventListener("click", () => {
-      const promise = onAbort();
-      if (promise && promise.catch) {
-        promise.catch((error) =>
-          showNotice(error && error.message ? error.message : "abort failed", "error")
-        );
-      }
-    });
+    stopButton.addEventListener("click", abort);
 
     /** Open every collapsed block under a node so a match inside a thinking
      * block or a tool card is visible.  The view's own open flags follow the
@@ -1621,6 +1952,8 @@
       setExited: () => {
         state.exited = true;
         state.busy = false;
+        state.queues = { steering: [], followUp: [] };
+        closePalette();
         updateStatus();
         input.disabled = true;
         sendButton.disabled = true;
