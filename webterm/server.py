@@ -944,6 +944,12 @@ class ClientConnection:
             resume_path = self.manager.resolve_pi_path(resume)
             if resume_path is None or not os.path.isfile(resume_path):
                 raise RequestError("bad_request", "resume path is not a pi session file")
+            owner = self.manager.pi_session_file_owner(resume_path)
+            if owner is not None:
+                raise RequestError(
+                    "conflict",
+                    f"this session is already open as {owner.id} ({owner.title})",
+                )
         argv = list(self.manager.pi_command)
         argv.extend(["--mode", "rpc"])
         root = self.manager.pi_session_dir
@@ -990,6 +996,7 @@ class ClientConnection:
                 task=message.get("task"),
                 visibility=str(message.get("visibility", "public")),
                 trusted=trusted,
+                session_file=resume_path,
             )
         except SessionError as exc:
             raise _request_error(exc) from exc

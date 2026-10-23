@@ -2367,7 +2367,10 @@
         message.provider = model.provider;
         message.model = model.id;
       }
-      send(message);
+      request(message).catch((error) => {
+        activateNext = false;
+        window.alert(error && error.message ? error.message : "could not open that pi session");
+      });
     });
   }
 
@@ -2385,13 +2388,18 @@
         (trust) => {
           if (!trust) return;
           activateNext = true;
-          send({
+          request({
             type: "create",
             mode: "pi",
             cwd,
             title: entry.id || "pi",
             trust,
             resume: entry.path,
+          }).catch((error) => {
+            activateNext = false;
+            window.alert(
+              error && error.message ? error.message : "could not open that pi session"
+            );
           });
         },
         { resume: true }

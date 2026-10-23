@@ -721,6 +721,24 @@ class SessionManager:
         """List persisted pi sessions under the managed root, newest first."""
         return pi_storage.list_sessions(self.pi_session_dir, limit)
 
+    def pi_session_file_owner(self, session_file: str) -> PiSession | None:
+        """Return the live pi session that already owns *session_file*.
+
+        pi does not lock session files: two live sessions over one file append
+        turns against stale leaves, so the transcript forks in two and neither
+        side sees the other's turns.  A single webterm server is single-user,
+        so an in-process check keeps that from happening inside webterm at all;
+        a hand-started ``pi`` outside it is the human's business.
+        """
+        target = os.path.realpath(session_file)
+        for session in self.sessions.values():
+            if not isinstance(session, PiSession) or session.dead or session.closing:
+                continue
+            known = session.session_file
+            if known and os.path.realpath(known) == target:
+                return session
+        return None
+
     def children_of(self, session_id: str) -> list[Session | PiSession | AgentSession]:
         """Sessions whose ``parent_id`` is *session_id* (one level)."""
         return [s for s in self.sessions.values() if s.parent_id == session_id]
@@ -936,6 +954,7 @@ class SessionManager:
         visibility: str = "public",
         trusted: bool | None = None,
         ephemeral: bool = False,
+        session_file: str | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> PiSession:
         """Start a pi RPC session from a fully resolved argv.
@@ -982,6 +1001,7 @@ class SessionManager:
             task=task,
             visibility=visibility,
             trusted=trusted,
+            session_file=session_file,
         )
         if not ephemeral:
             self.sessions[session_id] = session

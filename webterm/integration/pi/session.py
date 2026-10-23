@@ -156,6 +156,7 @@ class PiSession:
         task: str | None = None,
         visibility: str = "public",
         trusted: bool | None = None,
+        session_file: str | None = None,
     ) -> None:
         self.id = session_id
         self.pid = pid
@@ -178,6 +179,11 @@ class PiSession:
         self.task = task
         self.visibility = visibility
         self.trusted = trusted
+        #: The JSONL file this conversation lives in, once known.  A resumed
+        #: session knows it at spawn; a fresh one learns it from its first
+        #: ``get_state``, which every attach performs.  The server uses it to
+        #: refuse a second session over the same file.
+        self.session_file = session_file
         self.created_at = time.time()
 
         self.seq = 0
@@ -340,9 +346,12 @@ class PiSession:
                     self.id,
                     commands.get("error"),
                 )
+            info = state.get("data") or {}
+            if isinstance(info.get("sessionFile"), str) and info["sessionFile"]:
+                self.session_file = info["sessionFile"]
             data = entries.get("data") or {}
             return {
-                "state": state.get("data") or {},
+                "state": info,
                 "entries": _entry_tail(data, entry_limit),
                 "commands": commands.get("data") or {},
                 "ui": self.ui_snapshot(),

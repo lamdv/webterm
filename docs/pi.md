@@ -320,7 +320,8 @@ Pi keeps its grouping under the root
 parses only the first `session` header line per file, sorting newest first.
 Paths from the browser are resolved with `realpath` and rejected unless they
 are under the root. `create(mode:"pi", resume:<path>)` reopens one with
-`--session <path>`; the browser's **pi chat** button opens the resume picker on
+`--session <path>`, and is refused with a `conflict` error while another live
+session in this server already owns that file; the browser's **pi chat** button opens the resume picker on
 long-press or right-click, then asks the same explicit project-trust question as
 a fresh launch. The raw RPC channel is still equivalent to shell access, so
 root validation is accident prevention rather than a security boundary.
@@ -500,13 +501,20 @@ Consequences:
 - Fork and clone write a new file with `wx`, so a fork target that already
   exists fails rather than overwriting — the safe failure.
 
-**Decision: webterm adds no locking.** This is a single-user, single-server
-tool, and a lock would only ever cover webterm-versus-webterm (pi itself never
-checks one, so a hand-started `pi` cannot be excluded). The rule is
-operational, not enforced: one writer per session file, which means close a
-structured session before resuming the same file — from another tab, another
-server, or a PTY launcher. The known ways to break it are accepted as user
-error, and `docs/pi.md` plus the `/limits` modal are where that rule lives.
+**Decision: one live session per file inside one server, no file locking
+beyond that.** webterm is a single-user, single-server tool. It keeps a plain
+in-process registry of which live `PiSession` owns which file
+(`SessionManager.pi_session_file_owner`), and `create(mode:"pi", resume:…)`
+answers `conflict` — "this session is already open as `<id>` (`<title>`)" —
+instead of starting a second session. A resumed session knows its file at
+spawn; a fresh one learns it from the first `get_state`, which every attach
+performs.
+
+That covers webterm-versus-webterm, which is the reachable case (a second tab,
+or the resume picker on a file a tab already has). It does not extend to a
+`pi` the human starts by hand, because pi checks no lock of ours; that stays an
+operational rule, documented here and in the `/limits` modal: close the
+structured session before resuming its file in a TUI or another server.
 
 ## Deferred decisions
 

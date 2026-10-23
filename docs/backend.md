@@ -212,7 +212,7 @@ ignored.
 | `exit` | `session_id` | The child process exited. |
 | `restarting` | | The server is about to re-exec; reconnect once the socket drops. |
 | `result` | `id`, `result` | Correlated reply to a request that carried an `id`. |
-| `error` | `id`, `error.{code,message}` | Correlated failure (`bad_request`, `not_found`, `timeout`, `depth_exceeded`, `too_many_sessions`, `internal`). |
+| `error` | `id`, `error.{code,message}` | Correlated failure (`bad_request`, `not_found`, `timeout`, `depth_exceeded`, `too_many_sessions`, `conflict`, `internal`). |
 
 Binary frames carry terminal output as described in
 [architecture.md](architecture.md#wire-protocol).

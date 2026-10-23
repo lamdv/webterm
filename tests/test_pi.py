@@ -405,6 +405,73 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-e", argv)
         self.assertEqual(argv[argv.index("-e") + 1], self.manager.pi_extension)
 
+    async def test_resume_refuses_a_file_that_is_already_open(self) -> None:
+        """One server, one tab per session file: pi itself does not lock files,
+        so two live sessions over one JSONL would fork the transcript in two."""
+        session_path = self._write_session("open.jsonl", "session-open")
+        request = {
+            "type": "create",
+            "mode": "pi",
+            "cwd": self.cwd,
+            "trust": "deny",
+            "resume": str(session_path),
+        }
+        first = (await self._request({**request, "id": "resume-1"}))["session"]
+
+        await self.client.send_json({**request, "id": "resume-2"})
+        error = await self.client.recv_json_until(
+            lambda message: message.get("type") == "error"
+            and message.get("id") == "resume-2"
+        )
+        self.assertEqual(error["error"]["code"], "conflict")
+        self.assertIn(first["id"], error["error"]["message"])
+        self.assertEqual(len(self.manager.sessions), 1)
+
+        await self._request(
+            {"type": "kill", "id": "kill-open", "session_id": first["id"]}
+        )
+        second = (await self._request({**request, "id": "resume-3"}))["session"]
+        self.assertNotEqual(second["id"], first["id"])
+
+    async def test_resume_refuses_the_file_of_a_live_session(self) -> None:
+        """A fresh session learns its file from ``get_state``; resuming that
+        file while the session is live is refused the same way."""
+        session_path = self._write_session("live.jsonl", "session-live")
+        created = await self._request(
+            {
+                "type": "create",
+                "id": "live-1",
+                "mode": "pi",
+                "cwd": self.cwd,
+                "trust": "deny",
+                "env": {"FAKE_PI_SESSION_FILE": str(session_path)},
+            }
+        )
+        session_id = created["session"]["id"]
+        await self._request(
+            {"type": "pi_snapshot", "id": "live-snap", "session_id": session_id}
+        )
+        self.assertEqual(
+            self.manager.sessions[session_id].session_file, str(session_path)
+        )
+
+        await self.client.send_json(
+            {
+                "type": "create",
+                "id": "live-2",
+                "mode": "pi",
+                "cwd": self.cwd,
+                "trust": "deny",
+                "resume": str(session_path),
+            }
+        )
+        error = await self.client.recv_json_until(
+            lambda message: message.get("type") == "error"
+            and message.get("id") == "live-2"
+        )
+        self.assertEqual(error["error"]["code"], "conflict")
+        self.assertIn(session_id, error["error"]["message"])
+
     async def test_create_rejects_resume_outside_the_managed_root(self) -> None:
         outside = Path(self.cwd) / "outside.jsonl"
         outside.write_text('{"type":"session"}\n', encoding="utf-8")
