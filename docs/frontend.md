@@ -384,6 +384,27 @@ notices `deleted prompt: <name>`. Without `prompt_library` the whole row is
 hidden, no prompt command is ever sent, and the panel is exactly its
 prompt-only self.
 
+Queued input is visible, not hidden state. A canonical `queue.updated` event
+(`{steering, follow_up}`) renders one chip per pending message above the
+composer, labelled `steer` or `follow-up`, showing a truncated copy of the text
+with the full message in the chip's `title`; the footer adds `N queued`. A
+**Clear** action sends `clear_queue`, drops the chips, and appends the text the
+adapter returns (`steering`/`followUp`, with the canonical `follow_up` spelling
+also accepted) to the composer, so queued work is never silently lost. While a
+run is busy, Esc and the **Stop** button take the same path: `clear_queue`
+first, restore the returned text, then `abort`. When idle, Esc aborts nothing;
+with the slash palette open it only closes the palette.
+
+Typing `/` at the start of the composer opens a filterable slash-command
+palette (ArrowUp/ArrowDown move, Enter or Tab accepts, Escape closes). Enter
+with the palette open accepts the active entry and never sends the draft as a
+prompt. The entries are capability-gated and map onto controls the view already
+has: `/compact` (adapter `compaction`) sends `{"type":"compact"}`, `/model`
+(`models.set`) focuses the model picker, `/thinking` (`models.thinking`) focuses
+the thinking picker, and `/system` (`system_prompt`) toggles and focuses the
+system-prompt panel. `/limits`, tree/fork/clone, and export remain in `pi.js`;
+they move here in later phases of #13.
+
 #### Transcript rendering
 
 Live entries are patched in place rather than re-rendered. `render()` keeps one
