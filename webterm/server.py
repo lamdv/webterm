@@ -1124,9 +1124,13 @@ class ClientConnection:
         session = self._require(message)
         if not _is_pi(session):
             raise _legacy_pi_error()
-        fmt = str(message.get("format", "html")).lower()
-        if fmt not in ("html", "jsonl"):
+        fmt = _export_format(message.get("format", "html"))
+        if fmt is None:
             raise RequestError("bad_request", "format must be 'html' or 'jsonl'")
+        return await self._export_pi(session, fmt)
+
+    async def _export_pi(self, session: PiSession, fmt: str) -> dict:
+        """Write or resolve a downloadable file for *session* and describe it."""
         root = self.manager.pi_session_dir
         if not root:
             raise RequestError("bad_request", "pi session storage is not configured")
@@ -1299,6 +1303,19 @@ class ClientConnection:
                 session, self.manager, refresh=bool(command.get("refresh"))
             )
             return response_record(name, command_id, data=models)
+        if name == "export":
+            fmt = _export_format(command.get("format", "html"))
+            if fmt is None:
+                raise CanonicalCommandError(
+                    "export format must be 'html' or 'jsonl'"
+                )
+            if not _is_pi(session):
+                raise CanonicalCommandError(
+                    f"adapter {session.adapter!r} does not export"
+                )
+            return response_record(
+                name, command_id, data=await self._export_pi(session, fmt)
+            )
         if name == "dialog_response":
             dialog_id = command.get("dialog_id")
             response = command.get("response")
@@ -1709,6 +1726,12 @@ class ClientConnection:
             raise RequestError("not_found", f"unknown session {session_id!r}")
         killed = self.manager.kill(session_id, tree=False)
         return {"ok": bool(killed), "killed": killed}
+
+
+def _export_format(raw: object) -> str | None:
+    """Normalize an export format, or None when it is not one we serve."""
+    fmt = str(raw if raw is not None else "html").lower()
+    return fmt if fmt in ("html", "jsonl") else None
 
 
 def _pi_resume_title(path: str | None) -> str | None:

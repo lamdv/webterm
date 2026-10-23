@@ -982,13 +982,17 @@ PI_DIRECT_COMMANDS = frozenset(
         "set_session_name",
         "compact",
         "clear_queue",
+        "fork",
+        "clone",
         "raw",
     }
 )
 
 #: Canonical commands that need :class:`PiSession` state, not one RPC call.
+#: ``export`` is here because the server owns the download route and the
+#: managed export directory, even though pi does the HTML rendering.
 PI_SESSION_COMMANDS = frozenset(
-    {"get_snapshot", "get_history", "list_models", "dialog_response", "shutdown"}
+    {"get_snapshot", "get_history", "list_models", "dialog_response", "export", "shutdown"}
 )
 
 #: Every canonical command this adapter understands.
@@ -1100,6 +1104,13 @@ def pi_command_from_canonical(command: dict) -> dict:
         return {"type": "compact"}
     if name == "clear_queue":
         return {"type": "clear_queue"}
+    if name == "fork":
+        entry_id = command.get("entry_id")
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            raise CanonicalCommandError("fork needs the entry_id to branch from")
+        return {"type": "fork", "entryId": entry_id}
+    if name == "clone":
+        return {"type": "clone"}
     # raw
     native = command.get("command")
     if not isinstance(native, dict):

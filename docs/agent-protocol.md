@@ -145,8 +145,14 @@ an `assistant` entry it starts nothing and answers
 `{"disposition":"updated","entry_id":<new entry id>,"removed":<count>}`, so
 the corrected answer is history for the next prompt. A run in flight refuses
 the edit with `success:false` rather than interleaving two transcripts.
-Saving a library prompt never changes the active system prompt; applying one
-is an explicit `set_system_prompt`.
+`fork` carries `entry_id` — the user entry to branch from — and answers with
+the adapter's own data (pi returns the forked prompt as `text`, and may report
+`cancelled` when an extension vetoed it). `clone` duplicates the active branch
+and carries nothing. `export` carries `format` (`html` or `jsonl`) and answers
+`{format, path, url}`, where `url` is the authenticated download route the
+browser can follow; the file is written under the managed agent directory, not
+invented by the client. Saving a library prompt never changes the active
+system prompt; applying one is an explicit `set_system_prompt`.
 
 `webterm-<pid>-<n>` is the default command id. Agents must echo it in the
 response. A success response means *accepted*, not finished; completion is
@@ -234,6 +240,8 @@ The current pi adapter answers:
 |---|---|
 | `prompt`, `steer`, `follow_up` | one pi prompt; the mid-run forms set `streamingBehavior`, and `images` become pi `ImageContent` |
 | `abort`, `get_state`, `set_model`, `set_thinking`, `set_session_name`, `compact`, `clear_queue` | one pi RPC call, with the response data normalized |
+| `fork`, `clone` | pi `fork` (`entryId`) and `clone`; a fork may answer `cancelled` when an extension vetoed it |
+| `export` | pi `export_html` for `html`, the live session file for `jsonl`; answered with the managed path and download URL |
 | `get_snapshot` | newest transcript page plus `cursor.seq`; also emits `agent_resync` (always for native agents, for pi only when the connection opted in) |
 | `get_history` | one backwards page before `before` |
 | `list_models` | the cached model probe for the session's cwd |

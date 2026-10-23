@@ -582,9 +582,26 @@ class PiCommandTests(unittest.TestCase):
             pi_command_from_canonical({"type": "set_session_name", "name": "chat"}),
             {"type": "set_session_name", "name": "chat"},
         )
+        self.assertEqual(
+            pi_command_from_canonical({"type": "fork", "entry_id": "entry-2"}),
+            {"type": "fork", "entryId": "entry-2"},
+        )
+        self.assertEqual(
+            pi_command_from_canonical({"type": "clone"}),
+            {"type": "clone"},
+        )
+        with self.assertRaises(CanonicalCommandError):
+            pi_command_from_canonical({"type": "fork"})
 
     def test_session_level_and_unknown_commands_are_refused(self) -> None:
-        for name in ("get_snapshot", "get_history", "list_models", "dialog_response", "fork"):
+        for name in (
+            "get_snapshot",
+            "get_history",
+            "list_models",
+            "dialog_response",
+            "export",
+            "nonsense",
+        ):
             with self.subTest(name=name), self.assertRaises(CanonicalCommandError):
                 pi_command_from_canonical({"type": name})
 
@@ -1219,6 +1236,35 @@ class PiAgentCommandServerTests(unittest.IsolatedAsyncioTestCase):
             ) == name
 
         return _match
+
+    async def test_fork_and_clone_answer_canonically(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+
+        await self._send(
+            session["id"],
+            {"type": "fork", "entry_id": "entry-2"},
+            request_id="fork-1",
+        )
+        fork = await self._collect(self._result("fork-1"))
+        fork_response = fork[-1]["result"]["agent_response"]
+        self.assertTrue(fork_response["success"])
+        self.assertEqual(fork_response["data"]["text"], "follow up")
+
+        await self._send(session["id"], {"type": "clone"}, request_id="clone-1")
+        clone = await self._collect(self._result("clone-1"))
+        self.assertTrue(clone[-1]["result"]["agent_response"]["success"])
+
+
+    async def test_fork_without_an_entry_id_is_a_validation_error(self) -> None:
+        session = await self._create_pi()
+        await self._attach(session["id"])
+        await self._send(session["id"], {"type": "fork"}, request_id="fork-bad")
+        messages = await self._collect(self._reply("fork-bad"))
+        error = messages[-1]
+        self.assertEqual(error["type"], "error")
+        self.assertEqual(error["error"]["code"], "bad_request")
+        self.assertIn("entry_id", error["error"]["message"])
 
     async def test_prompt_envelope_answers_canonically(self) -> None:
         session = await self._create_pi()

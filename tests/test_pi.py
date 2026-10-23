@@ -491,6 +491,37 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["error"]["code"], "bad_request")
 
+    async def test_canonical_export_returns_the_same_download(self) -> None:
+        session = await self._create_pi()
+        result = await self._request(
+            {
+                "type": "agent",
+                "id": "canonical-export",
+                "session_id": session["id"],
+                "command": {"type": "export", "format": "html"},
+            }
+        )
+        response = result["agent_response"]
+        self.assertTrue(response["success"])
+        self.assertEqual(response["data"]["format"], "html")
+        self.assertTrue(response["data"]["url"].startswith("/pi/download?path="))
+        self.assertTrue(Path(response["data"]["path"]).is_file())
+
+        await self.client.send_json(
+            {
+                "type": "agent",
+                "id": "canonical-export-bad",
+                "session_id": session["id"],
+                "command": {"type": "export", "format": "pdf"},
+            }
+        )
+        error = await self.client.recv_json_until(
+            lambda message: message.get("type") == "error"
+            and message.get("id") == "canonical-export-bad"
+        )
+        self.assertEqual(error["error"]["code"], "bad_request")
+        self.assertIn("format", error["error"]["message"])
+
     async def test_export_html_returns_a_download_url(self) -> None:
         session = await self._create_pi()
         result = await self._request(
