@@ -18,8 +18,9 @@ composers complete `@` file paths as literal path text (RPC mode has no
 wired end to end (the composer takes pasted or dropped images on prompts,
 steering messages, and follow-ups, and the server validates them before they
 reach pi), and the TUI-only surfaces below are disclosed in the UI through
-`/limits`. A mobile pass remains. Tracking issue: #10. For the existing PTY-based pi launcher, nothing
-changes: it stays as the escape hatch for TUI-only features.
+`/limits`. A mobile pass and the advisory session-file lock remain. Tracking
+issue: #10. For the existing PTY-based pi launcher, nothing changes: it stays
+as the escape hatch for TUI-only features.
 
 ## Goals
 
@@ -466,8 +467,44 @@ Everything else in the TUI's command set has a webterm equivalent: `/model`,
 
 The escape hatch is the PTY launcher: close the structured session, then start
 `pi agent` from the sidebar (or run `pi --session-dir <root> --resume <file>`
-in a shell tab). Closing first matters because two processes sharing one session
-file is the contention risk in "Deferred decisions".
+in a shell tab). Closing first matters because pi does not lock session files;
+see [Session file contention](#session-file-contention).
+
+## Session file contention
+
+pi does **not** lock session files. `SessionManager` appends one JSON line per
+record with `appendFileSync` and creates a brand-new file with
+`openSync(path, "wx")`; there is no `flock`, no lock file, and no "already
+open" check anywhere in the code path. Two processes can therefore write the
+same `<session>.jsonl` without either noticing.
+
+Probed against pi 1.3.0 with two `pi --mode rpc` children (the TUI uses the
+same manager, so it behaves the same):
+
+| Scenario | Observed |
+|---|---|
+| Both open an **existing** file, one prompt each | Both report `success: true` and settle. Both turns land in the file, but each user message hangs off the *same* pre-existing leaf, so the file becomes a forked tree: neither process sees the other's turn, and a reload follows whichever branch was written last. No torn lines, no errors, no warning. |
+| Both open the **same brand-new** path, one prompt each | Both report `success: true` and settle with empty stderr, but the loser's entire conversation is **absent from the file**: its first write loses the `wx` create race and the exception is swallowed. Only the winner's messages persist. |
+
+Consequences:
+
+- Transcripts diverge silently. There is no error to show the user, and the
+  losing branch stays in the file but drops out of the linear transcript on the
+  next load.
+- The escape hatch (`pi --session-dir <root> --resume <file>` in a PTY tab) is
+  safe only when the structured session is **closed first**. That is why the
+  `/limits` modal and this document both say so, and why no "open in TUI"
+  button exists yet.
+- Two webterm instances sharing one state directory are the same hazard: both
+  could resume the same file and append to it as separate RPC sessions.
+- Fork and clone write a new file with `wx`, so a fork target that already
+  exists fails rather than overwriting — the safe failure.
+
+The guard webterm can add without changing pi is an advisory lock of its own:
+`fcntl.flock` on `<session file>.lock` while a `PiSession` is attached to that
+file, released on teardown, plus the "open in TUI" action refusing while the
+structured session is alive. That covers webterm-versus-webterm; a TUI the
+human starts by hand cannot be covered, so the rule stays "close first".
 
 ## Deferred decisions
 
@@ -478,9 +515,8 @@ file is the contention risk in "Deferred decisions".
   writing a persistent webterm decision.
 - **Server restart.** Pi sessions die with the server today; decide whether a
   persisted session file enables resume after restart.
-- **TUI interop.** "Open in TUI" via `pi --session-dir <root> --resume <file>`
-  in a PTY tab, only when the RPC session is closed, and only after verifying
-  pi's file locking.
+- **TUI interop.** "Open in TUI" is decided (closed session only, documented
+  above) but not built; the advisory session-file lock comes first.
 
 ## P0 scope
 
