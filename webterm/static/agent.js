@@ -53,10 +53,12 @@
     "max",
   ];
 
-  /** Slash commands the canonical command set can run.  Each is gated on the
+  /** Slash commands the view itself implements.  Each is gated on the
    * capability that makes its control exist, so the palette never offers a
-   * command the adapter would refuse or the view has no target for.  `/limits`,
-   * tree/fork/clone, and export stay in the legacy pi view for later phases. */
+   * command the adapter would refuse or the view has no target for.  Backend
+   * features are not listed here: they arrive in the resync's `commands`
+   * manifest and are invoked through the generic `command` record, which keeps
+   * this list free of any adapter's vocabulary. */
   const PALETTE_COMMANDS = [
     { name: "compact", description: "Compact the conversation" },
     { name: "model", description: "Switch model" },
