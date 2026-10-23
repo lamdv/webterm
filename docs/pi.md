@@ -10,8 +10,9 @@ browser chat view, queue/steer controls, slash commands, managed session
 storage, resume picker, export, tree/fork/clone, extension UI, and pi subagent
 orchestration plus safe markdown rendering for assistant output (headings,
 lists, tables, links, fenced code) with unified-diff highlighting (#11) are in
-place. Thinking blocks stay plain text. Transcript search, image paste, and
-further mobile polish remain. Tracking issue: #10. For the existing PTY-based
+place. Thinking blocks stay plain text. Transcript search, image paste, a note
+disclosing the TUI-only commands below, and a mobile pass remain. Tracking
+issue: #10. For the existing PTY-based
 pi launcher, nothing changes: it stays as the escape hatch for TUI-only
 features.
 
