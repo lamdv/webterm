@@ -13,6 +13,7 @@ import ssl
 import sys
 
 from . import __version__
+from .agent.registry import agent_adapters
 from .integration.llama import config as llama_config
 from .integration.pi import config as pi_config
 from .server import serve
@@ -419,6 +420,10 @@ def main(argv: list[str] | None = None) -> int:
             {"name": name, **{key: value for key, value in profile.items() if value}}
             for name, profile in profiles.items()
         ]
+    # Advertise every backend the browser may offer so the static shell keeps no
+    # hardcoded adapter list.  Additive: the `pi` block and `agents` profiles
+    # above stay exactly as they are.
+    config["agentAdapters"] = agent_adapters(manager, profiles)
 
     # Re-exec the same interpreter and package so a restart picks up edited
     # source without needing a supervisor.  `python -m webterm` is used rather
