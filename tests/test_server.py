@@ -14,6 +14,7 @@ import ssl
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 from webterm.__main__ import build_ssl_context
 from webterm.server import (
@@ -380,6 +381,57 @@ class SessionProtocolTests(ServerFixture):
         raw = await reader.read()
         writer.close()
         self.assertNotIn(b"101", raw.split(b"\r\n")[0])
+
+    async def test_list_entries_lists_directories_then_files(self) -> None:
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        Path(root, "sub").mkdir()
+        Path(root, "note.txt").write_text("x", encoding="utf-8")
+
+        await self.client.send_json(
+            {"type": "list_entries", "id": "list-entries", "path": root}
+        )
+        result = await self.client.recv_json_until(
+            lambda m: m.get("type") == "result" and m.get("id") == "list-entries"
+        )
+        listing = result["result"]
+        self.assertEqual(listing["path"], os.path.abspath(root))
+        self.assertEqual(
+            [(entry["name"], entry["type"]) for entry in listing["entries"]],
+            [("sub", "dir"), ("note.txt", "file")],
+        )
+        self.assertEqual(listing["entries"][1]["path"], os.path.join(root, "note.txt"))
+        self.assertFalse(listing["truncated"])
+
+    async def test_list_entries_caps_the_listing(self) -> None:
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        for index in range(510):
+            Path(root, f"file-{index:03d}.txt").write_text("x", encoding="utf-8")
+
+        await self.client.send_json(
+            {"type": "list_entries", "id": "list-capped", "path": root}
+        )
+        result = await self.client.recv_json_until(
+            lambda m: m.get("type") == "result" and m.get("id") == "list-capped"
+        )
+        listing = result["result"]
+        self.assertEqual(len(listing["entries"]), 500)
+        self.assertTrue(listing["truncated"])
+
+    async def test_list_entries_rejects_a_file_path(self) -> None:
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        target = Path(root, "note.txt")
+        target.write_text("x", encoding="utf-8")
+
+        await self.client.send_json(
+            {"type": "list_entries", "id": "list-bad", "path": str(target)}
+        )
+        error = await self.client.recv_json_until(
+            lambda m: m.get("type") == "error" and m.get("id") == "list-bad"
+        )
+        self.assertEqual(error["error"]["code"], "bad_request")
 
 
 class ScrollbackOffsetTests(unittest.IsolatedAsyncioTestCase):
