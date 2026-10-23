@@ -18,7 +18,7 @@ composers complete `@` file paths as literal path text (RPC mode has no
 wired end to end (the composer takes pasted or dropped images on prompts,
 steering messages, and follow-ups, and the server validates them before they
 reach pi), and the TUI-only surfaces below are disclosed in the UI through
-`/limits`. A mobile pass and the advisory session-file lock remain. Tracking
+`/limits`. A mobile pass remains. Tracking
 issue: #10. For the existing PTY-based pi launcher, nothing changes: it stays
 as the escape hatch for TUI-only features.
 
@@ -495,16 +495,18 @@ Consequences:
   safe only when the structured session is **closed first**. That is why the
   `/limits` modal and this document both say so, and why no "open in TUI"
   button exists yet.
-- Two webterm instances sharing one state directory are the same hazard: both
-  could resume the same file and append to it as separate RPC sessions.
+- Resuming the same file twice from the browser is the same hazard, with no
+  guard today: two tabs can hold two live sessions over one file.
 - Fork and clone write a new file with `wx`, so a fork target that already
   exists fails rather than overwriting — the safe failure.
 
-The guard webterm can add without changing pi is an advisory lock of its own:
-`fcntl.flock` on `<session file>.lock` while a `PiSession` is attached to that
-file, released on teardown, plus the "open in TUI" action refusing while the
-structured session is alive. That covers webterm-versus-webterm; a TUI the
-human starts by hand cannot be covered, so the rule stays "close first".
+**Decision: webterm adds no locking.** This is a single-user, single-server
+tool, and a lock would only ever cover webterm-versus-webterm (pi itself never
+checks one, so a hand-started `pi` cannot be excluded). The rule is
+operational, not enforced: one writer per session file, which means close a
+structured session before resuming the same file — from another tab, another
+server, or a PTY launcher. The known ways to break it are accepted as user
+error, and `docs/pi.md` plus the `/limits` modal are where that rule lives.
 
 ## Deferred decisions
 
@@ -516,7 +518,8 @@ human starts by hand cannot be covered, so the rule stays "close first".
 - **Server restart.** Pi sessions die with the server today; decide whether a
   persisted session file enables resume after restart.
 - **TUI interop.** "Open in TUI" is decided (closed session only, documented
-  above) but not built; the advisory session-file lock comes first.
+  above) but not built; there is no lock to wait for, only the single-writer
+  rule.
 
 ## P0 scope
 
