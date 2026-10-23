@@ -370,8 +370,27 @@ class LlamaAgent:
             daemon=True,
         ).start()
 
+    def _reject_images(self, command: dict[str, Any], name: str) -> bool:
+        """Refuse a command carrying images: llama-server takes text only.
+
+        The capability ``attachments.images`` is false for this adapter, so a
+        client should never send one; answering an error keeps a stray image
+        from being dropped while the prompt looks like it was delivered.
+        """
+        if command.get("images") is None:
+            return False
+        self.respond(
+            command.get("id"),
+            name,
+            success=False,
+            error="this adapter does not accept images",
+        )
+        return True
+
     def prompt(self, command: dict[str, Any]) -> None:
         command_id = command.get("id")
+        if self._reject_images(command, "prompt"):
+            return
         message = command.get("message")
         if not isinstance(message, str) or not message.strip():
             self.respond(command_id, "prompt", success=False, error="prompt message is empty")
@@ -401,6 +420,8 @@ class LlamaAgent:
         transcript now ends.
         """
         command_id = command.get("id")
+        if self._reject_images(command, "edit_message"):
+            return
         entry_id = command.get("entry_id")
         message = command.get("message")
         if not isinstance(entry_id, str) or not entry_id:

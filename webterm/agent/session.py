@@ -385,13 +385,22 @@ class AgentSession:
         data = response.get("data")
         return data if isinstance(data, dict) else {}
 
-    async def prompt(self, message: str, *, timeout: float = DEFAULT_COMMAND_TIMEOUT) -> dict:
-        """Send a prompt and return the agent's acceptance disposition."""
+    async def prompt(
+        self,
+        message: str,
+        *,
+        images: list[dict[str, str]] | None = None,
+        timeout: float = DEFAULT_COMMAND_TIMEOUT,
+    ) -> dict:
+        """Send a prompt with optional validated images and return its disposition."""
         if not isinstance(message, str) or not message.strip():
             raise ValueError("prompt message must not be empty")
         self._settled_event.clear()
+        request: dict[str, object] = {"message": message}
+        if images:
+            request["images"] = images
         try:
-            data = await self.command("prompt", timeout=timeout, message=message)
+            data = await self.command("prompt", timeout=timeout, **request)
         except Exception:
             self._settled_event.set()
             raise

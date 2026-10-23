@@ -745,7 +745,7 @@
     let view = null;
     if (window.WebtermAgent) {
       view = window.WebtermAgent.create(session, {
-        onPrompt: (text, streamingBehavior) =>
+        onPrompt: (text, streamingBehavior, images) =>
           sendAgentCommand(session.id, {
             // A prompt during a run becomes the canonical mid-run command; the
             // adapter decides how the agent queues it.
@@ -756,6 +756,7 @@
                   ? "follow_up"
                   : "prompt",
             message: text,
+            ...(images && images.length ? { images } : {}),
           }),
         onAbort: () => sendAgentCommand(session.id, { type: "abort" }),
         onCommand: (command) =>

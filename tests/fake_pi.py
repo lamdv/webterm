@@ -7,6 +7,9 @@ and lifecycle handling.  Behaviour can be adjusted with environment variables:
 - ``FAKE_PI_IGNORE_EOF``: keep running after stdin closes.
 - ``FAKE_PI_IGNORE_TERM``: ignore SIGTERM.
 - ``FAKE_PI_CHILD_PID_FILE``: spawn a sleeping child and write its pid there.
+- ``FAKE_PI_PROMPT_FILE``: append every ``prompt`` command received, one JSON
+  object per line, so a test can assert on the exact wire record (images
+  included).
 """
 
 from __future__ import annotations
@@ -210,6 +213,10 @@ def main() -> int:
                 {"entries": ENTRIES, "leafId": "entry-2"},
             )
         elif kind == "prompt":
+            prompt_file = os.environ.get("FAKE_PI_PROMPT_FILE")
+            if prompt_file:
+                with open(prompt_file, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(command, separators=(",", ":")) + "\n")
             respond(request_id, "prompt", {"disposition": "started"})
             message = str(command.get("message", "hello"))
             if "ask" in message.lower():

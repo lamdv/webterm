@@ -109,7 +109,7 @@ Capability groups:
 | `usage.tokens`, `usage.cost` | usage reporting |
 | `tools.streaming`, `tools.updates` | live tool args / output |
 | `fork`, `clone`, `compaction` | agent-specific session operations |
-| `attachments.images` | image input |
+| `attachments.images` | image input on `prompt`, `steer`, and `follow_up` (see [Images](#images)) |
 | `raw` | native command escape hatch |
 
 ### Commands
@@ -164,6 +164,40 @@ A failed command returns `success:false` and a human-readable `error`:
  "error":"unknown model"}
 ```
 
+### Images
+
+`prompt`, `steer`, and `follow_up` accept an optional `images` field when the
+adapter advertises `attachments.images`:
+
+```json
+{"type":"prompt","id":"c2","message":"what is this?",
+ "images":[{"mime_type":"image/png","data":"iVBORw0KGgo..."}]}
+```
+
+`data` is raw base64 with no `data:` URL prefix. `mime_type` is one of
+`image/png`, `image/jpeg`, `image/webp`, or `image/gif`. The core checks the
+field before the command reaches an adapter, and every failure is a transport
+error (`bad_request`), never a dropped image:
+
+| Limit | Value | Message |
+|---|---|---|
+| one image, decoded | 3 MiB (about 4 MiB encoded) | `image 1 is too large: at most 3 MiB` |
+| images per command | 4 | `too many images: at most 4 per message` |
+| decoded payload per command | 4 MiB (about 5.6 MiB encoded) | `images are too large: at most 4 MiB in total` |
+| media types | png, jpeg, webp, gif | `unsupported image type 'image/tiff' (allowed: ...)` |
+
+A wrong shape, invalid base64, a data URL, or a payload whose magic bytes do
+not match the declared type is refused the same way, so a client always learns
+why. The per-command total keeps the encoded JSON envelope well under the 8 MiB
+WebSocket frame cap (`websocket.DEFAULT_MAX_MESSAGE`). The browser repeats these
+checks only to answer locally and instantly; the server is the authority.
+
+An adapter that does not advertise `attachments.images` answers `this adapter
+does not accept images` instead of recording a prompt that lost its image.
+Images are defined only for the three prompt commands: sending the field on any
+other command (except `raw`, which is a deliberate pass-through) is a
+validation error, not an ignored key.
+
 ### Browser envelope
 
 The protocol describes agent pipes. A browser wraps the same flat record in an
@@ -198,7 +232,7 @@ The current pi adapter answers:
 
 | Command | Adapter behavior |
 |---|---|
-| `prompt`, `steer`, `follow_up` | one pi prompt; the mid-run forms set `streamingBehavior` |
+| `prompt`, `steer`, `follow_up` | one pi prompt; the mid-run forms set `streamingBehavior`, and `images` become pi `ImageContent` |
 | `abort`, `get_state`, `set_model`, `set_thinking`, `set_session_name`, `compact`, `clear_queue` | one pi RPC call, with the response data normalized |
 | `get_snapshot` | newest transcript page plus `cursor.seq`; also emits `agent_resync` (always for native agents, for pi only when the connection opted in) |
 | `get_history` | one backwards page before `before` |

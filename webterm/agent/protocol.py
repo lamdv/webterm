@@ -23,6 +23,8 @@ Commands are flat records whose ``type`` is the command name, e.g.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -126,6 +128,27 @@ PROMPT_LIBRARY_COMMANDS = frozenset(
 
 #: Every command a canonical agent may receive.
 CANONICAL_COMMANDS = CORE_COMMANDS | OPTIONAL_COMMANDS | PROMPT_LIBRARY_COMMANDS
+
+#: Commands that may carry an ``images`` field.
+IMAGE_COMMANDS = frozenset({"prompt", "steer", "follow_up"})
+
+#: Image media types a canonical command may carry, matching what pi accepts.
+IMAGE_MIME_TYPES = frozenset({"image/gif", "image/jpeg", "image/png", "image/webp"})
+
+#: Most images one command may carry.
+MAX_IMAGE_COUNT = 4
+
+#: Largest decoded image accepted, in bytes.  Base64 inflates by ~4/3, so this
+#: is about 4 MiB once encoded.
+MAX_IMAGE_BYTES = 3 * 1024 * 1024
+
+#: Largest decoded image payload accepted per command.  Encoded, that is about
+#: 5.6 MiB, which leaves room under the 8 MiB WebSocket frame cap
+#: (``websocket.DEFAULT_MAX_MESSAGE``) for the JSON envelope.
+MAX_IMAGES_BYTES = 4 * 1024 * 1024
+
+#: Base64 characters one image of :data:`MAX_IMAGE_BYTES` occupies.
+_MAX_IMAGE_BASE64_CHARS = 4 * ((MAX_IMAGE_BYTES + 2) // 3)
 
 
 class CanonicalCommandError(ValueError):
@@ -393,6 +416,90 @@ def response_record(
     else:
         record["error"] = error
     return record
+
+
+#: Magic bytes a declared image type must start with.
+_IMAGE_MAGIC = {
+    "image/gif": (b"GIF87a", b"GIF89a"),
+    "image/jpeg": (b"\xff\xd8\xff",),
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+}
+
+
+def _looks_like_image(mime_type: str, blob: bytes) -> bool:
+    """Return True when *blob* carries *mime_type*'s signature."""
+    if mime_type == "image/webp":
+        return len(blob) >= 12 and blob[:4] == b"RIFF" and blob[8:12] == b"WEBP"
+    return blob.startswith(_IMAGE_MAGIC[mime_type])
+
+
+def _reject_image_size(index: int) -> None:
+    limit = MAX_IMAGE_BYTES // (1024 * 1024)
+    raise CanonicalCommandError(f"image {index} is too large: at most {limit} MiB")
+
+
+def validate_images(command: dict[str, Any]) -> list[dict[str, str]]:
+    """Validate a command's optional ``images`` field and return it normalized.
+
+    The canonical shape is ``[{"mime_type": "image/png", "data": "<base64>"}]``
+    with raw base64, no data-URL prefix.  A missing or empty field means no
+    images.  Every problem raises :class:`CanonicalCommandError`, because an
+    image is either delivered whole or the command is refused: dropping one
+    would let a prompt claim to show the agent something it never saw.
+    """
+    raw = command.get("images")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise CanonicalCommandError(
+            "images must be a list of {mime_type, data} objects"
+        )
+    if len(raw) > MAX_IMAGE_COUNT:
+        raise CanonicalCommandError(
+            f"too many images: at most {MAX_IMAGE_COUNT} per message"
+        )
+    images: list[dict[str, str]] = []
+    total = 0
+    for position, entry in enumerate(raw, start=1):
+        if not isinstance(entry, dict):
+            raise CanonicalCommandError(f"image {position} must be an object")
+        mime_type = entry.get("mime_type")
+        if not isinstance(mime_type, str) or not mime_type:
+            raise CanonicalCommandError(f"image {position} needs a mime_type")
+        if mime_type not in IMAGE_MIME_TYPES:
+            allowed = ", ".join(sorted(IMAGE_MIME_TYPES))
+            raise CanonicalCommandError(
+                f"unsupported image type {mime_type!r} (allowed: {allowed})"
+            )
+        data = entry.get("data")
+        if not isinstance(data, str) or not data:
+            raise CanonicalCommandError(f"image {position} needs base64 data")
+        if data.startswith("data:"):
+            raise CanonicalCommandError(
+                f"image {position} must carry raw base64, not a data URL"
+            )
+        if len(data) > _MAX_IMAGE_BASE64_CHARS:
+            _reject_image_size(position)
+        try:
+            blob = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise CanonicalCommandError(
+                f"image {position} is not valid base64"
+            ) from exc
+        if len(blob) > MAX_IMAGE_BYTES:
+            _reject_image_size(position)
+        total += len(blob)
+        if total > MAX_IMAGES_BYTES:
+            limit = MAX_IMAGES_BYTES // (1024 * 1024)
+            raise CanonicalCommandError(
+                f"images are too large: at most {limit} MiB in total"
+            )
+        if not _looks_like_image(mime_type, blob):
+            raise CanonicalCommandError(
+                f"image {position} is not a {mime_type} image"
+            )
+        images.append({"mime_type": mime_type, "data": data})
+    return images
 
 
 def validate_event(event: object) -> dict[str, Any]:
