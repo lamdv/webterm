@@ -13,20 +13,28 @@ import shlex
 import signal
 import ssl
 import struct
-import time
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlencode
+from urllib.parse import parse_qs, urlencode
 
 from . import __version__
 from .agent import (
     AgentClosed,
+    AgentCommandError,
     AgentError,
     AgentSession,
     AgentTimeout,
 )
 from .agent.codec import NATIVE_CODEC, AgentCodec, CodecError, UnknownDialog
-from .agent.protocol import CanonicalCommandError, response_record
+from .agent.protocol import (
+    CanonicalCommandError,
+    find_declared_command,
+    parse_command_invocation,
+    response_record,
+    serialize_commands,
+    serialize_help,
+    validate_declared_args,
+)
 from .control import ControlServer, default_control_socket, looks_like_tcp
 from .integration.pi import (
     HISTORY_ENTRY_LIMIT,
@@ -37,6 +45,7 @@ from .integration.pi import (
     PiSessionClosed,
     pi_command_images,
     pi_dialog_to_canonical,
+    pi_export,
     pi_ui_request_to_events,
     pi_ui_resolved_to_canonical,
 )
@@ -850,6 +859,10 @@ class ClientConnection:
             return None
         canonical = dict(snapshot)
         canonical.setdefault("capabilities", codec.capabilities(session))
+        canonical.setdefault(
+            "commands", serialize_commands(codec.declared_commands(session))
+        )
+        canonical.setdefault("help", serialize_help(codec.help_entries(session)))
         self._offer_json(
             {
                 "type": "agent_resync",
@@ -1131,40 +1144,12 @@ class ClientConnection:
 
     async def _export_pi(self, session: PiSession, fmt: str) -> dict:
         """Write or resolve a downloadable file for *session* and describe it."""
-        root = self.manager.pi_session_dir
-        if not root:
-            raise RequestError("bad_request", "pi session storage is not configured")
-        if fmt == "html":
-            export_dir = os.path.join(root, "exports")
-            os.makedirs(export_dir, mode=0o700, exist_ok=True)
-            output_path = os.path.join(
-                export_dir, f"{session.id}-{time.time_ns()}.html"
-            )
-            try:
-                response = await session.rpc(
-                    {"type": "export_html", "outputPath": output_path}
-                )
-            except (PiError, PiSessionClosed, TimeoutError) as exc:
-                raise RequestError("pi_error", str(exc)) from exc
-            if not response.get("success"):
-                raise RequestError("pi_error", str(response.get("error", "export failed")))
-            data = response.get("data") or {}
-            path = self.manager.resolve_pi_path(data.get("path") or output_path)
-        else:
-            try:
-                response = await session.rpc({"type": "get_state"})
-            except (PiError, PiSessionClosed, TimeoutError) as exc:
-                raise RequestError("pi_error", str(exc)) from exc
-            if not response.get("success"):
-                raise RequestError("pi_error", str(response.get("error", "get_state failed")))
-            path = self.manager.resolve_pi_path((response.get("data") or {}).get("sessionFile"))
-        if path is None or not os.path.isfile(path):
-            raise RequestError("pi_error", "pi produced no downloadable file")
-        return {
-            "format": fmt,
-            "path": path,
-            "url": "/pi/download?path=" + quote(path, safe=""),
-        }
+        try:
+            return await pi_export(session, self.manager, fmt)
+        except CanonicalCommandError as exc:
+            raise RequestError("bad_request", str(exc)) from exc
+        except (PiError, PiSessionClosed, TimeoutError) as exc:
+            raise RequestError("pi_error", str(exc)) from exc
 
     async def _pi_snapshot(self, message: dict) -> dict:
         session = self._require(message)
@@ -1303,19 +1288,26 @@ class ClientConnection:
                 session, self.manager, refresh=bool(command.get("refresh"))
             )
             return response_record(name, command_id, data=models)
-        if name == "export":
-            fmt = _export_format(command.get("format", "html"))
-            if fmt is None:
-                raise CanonicalCommandError(
-                    "export format must be 'html' or 'jsonl'"
-                )
-            if not _is_pi(session):
-                raise CanonicalCommandError(
-                    f"adapter {session.adapter!r} does not export"
-                )
-            return response_record(
-                name, command_id, data=await self._export_pi(session, fmt)
+        if name == "command":
+            declared_name, raw_args = parse_command_invocation(command)
+            declaration = find_declared_command(
+                codec.declared_commands(session), declared_name
             )
+            if declaration is None:
+                raise CanonicalCommandError(
+                    f"adapter {session.adapter!r} has no command {declared_name!r}"
+                )
+            args = validate_declared_args(declaration, raw_args)
+            try:
+                data = await codec.declared_command(
+                    session, declared_name, args, manager=self.manager
+                )
+            except AgentCommandError as exc:
+                # The backend declared the command but refused this call: an
+                # agent refusal is a canonical success:false, not a transport
+                # error, so the view can show the backend's own wording.
+                return response_record("command", command_id, error=str(exc))
+            return response_record("command", command_id, data=data)
         if name == "dialog_response":
             dialog_id = command.get("dialog_id")
             response = command.get("response")

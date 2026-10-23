@@ -242,6 +242,16 @@ off, so the UI hides those controls. The native codec's spawn result also reads
 `get_last_assistant_text`, so a parent can collect the child's answer with
 `agent_result` or a waiting `webtermctl spawn`.
 
+The `hello` record declares empty `commands` and `help` lists. That is
+deliberate: a llama chat has no backend-specific actions and no gaps to
+disclose, so the shared view shows no palette entries beyond the core
+controls. Adding one later is a local change in `webterm/integration/llama/adapter.py`
+— append to `commands`, handle the `command` record in `handle()`, and answer
+with a render hint (`notice`, `download`, `tree`, `text`) — with no webterm or
+browser change. `declared_command()` already answers `success:false` for an
+undeclared invocation, so the contract is explicit from day one. An MVA or
+other remote backend follows exactly the same recipe.
+
 There is no session file: the transcript lives in the adapter process for the
 lifetime of the session. Restarting the session starts a new conversation.
 

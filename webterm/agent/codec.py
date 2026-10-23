@@ -23,6 +23,8 @@ from .protocol import (
     CANONICAL_COMMANDS,
     IMAGE_COMMANDS,
     CanonicalCommandError,
+    DeclaredCommand,
+    HelpEntry,
     response_record,
     validate_images,
 )
@@ -56,6 +58,32 @@ class AgentCodec:
     def capabilities(self, session: Any) -> dict:
         """Return the canonical capability declaration for *session*."""
         raise NotImplementedError
+
+    def declared_commands(self, session: Any) -> tuple[DeclaredCommand, ...]:
+        """Return the backend's declared-command manifest.
+
+        A backend brings its own features as data: the view renders whatever
+        is returned here and invokes it through the core ``command`` record,
+        so no adapter name reaches the shared UI.
+        """
+        return ()
+
+    def help_entries(self, session: Any) -> tuple[HelpEntry, ...]:
+        """Return backend features that cannot work over the protocol."""
+        return ()
+
+    async def declared_command(
+        self,
+        session: Any,
+        name: str,
+        args: dict[str, Any],
+        *,
+        manager: Any = None,
+    ) -> dict:
+        """Run one declared command and return its render-hint ``data``."""
+        raise CanonicalCommandError(
+            f"adapter {self.adapter!r} has no declared command {name!r}"
+        )
 
     async def snapshot(self, session: Any, *, limit: int | None = None) -> dict:
         """Return the canonical snapshot, including its ``cursor``."""
@@ -99,6 +127,30 @@ class NativeCodec(AgentCodec):
 
     def capabilities(self, session: AgentSession) -> dict:
         return session.capabilities.to_dict()
+
+    def declared_commands(self, session: AgentSession) -> tuple[DeclaredCommand, ...]:
+        return session.hello.commands if session.hello is not None else ()
+
+    def help_entries(self, session: AgentSession) -> tuple[HelpEntry, ...]:
+        return session.hello.help if session.hello is not None else ()
+
+    async def declared_command(
+        self,
+        session: AgentSession,
+        name: str,
+        args: dict[str, Any],
+        *,
+        manager: Any = None,
+    ) -> dict:
+        """Forward a declared command to the agent, which interprets it.
+
+        The child declared the command in ``hello`` and answers with the same
+        render-hint vocabulary as any other canonical command, so a native
+        backend (llama, MVA, a remote agent) adds features without a webterm
+        release.
+        """
+        data = await session.command("command", name=name, args=args)
+        return dict(data) if isinstance(data, dict) else {}
 
     async def snapshot(self, session: AgentSession, *, limit: int | None = None) -> dict:
         return await session.snapshot(limit=limit)

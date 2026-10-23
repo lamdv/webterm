@@ -18,12 +18,18 @@ The canonical names and capability shape are defined in
 
 from __future__ import annotations
 
+import os
+import time
 from typing import Any
+from urllib.parse import quote
 
 from ...agent.protocol import (
     IMAGE_COMMANDS,
     CanonicalCommandError,
     Capabilities,
+    CommandArg,
+    DeclaredCommand,
+    HelpEntry,
     response_record,
     validate_images,
 )
@@ -48,8 +54,6 @@ PI_CAPABILITIES = Capabilities(
     usage_cost=True,
     tool_streaming=True,
     tool_updates=True,
-    fork=True,
-    clone=True,
     compaction=True,
     attachments_images=True,
     raw=True,
@@ -794,7 +798,6 @@ def pi_snapshot_to_canonical(
         ),
         "dialogs": dialogs,
         "ui": ui,
-        "commands": data.get("commands") if isinstance(data.get("commands"), dict) else {},
         "capabilities": PI_CAPABILITIES.to_dict(),
         "cursor": {"seq": data.get("seq", 0)},
     }
@@ -982,8 +985,6 @@ PI_DIRECT_COMMANDS = frozenset(
         "set_session_name",
         "compact",
         "clear_queue",
-        "fork",
-        "clone",
         "raw",
     }
 )
@@ -992,11 +993,68 @@ PI_DIRECT_COMMANDS = frozenset(
 #: ``export`` is here because the server owns the download route and the
 #: managed export directory, even though pi does the HTML rendering.
 PI_SESSION_COMMANDS = frozenset(
-    {"get_snapshot", "get_history", "list_models", "dialog_response", "export", "shutdown"}
+    {"get_snapshot", "get_history", "list_models", "dialog_response", "shutdown"}
 )
 
-#: Every canonical command this adapter understands.
-PI_COMMANDS = PI_DIRECT_COMMANDS | PI_SESSION_COMMANDS
+#: Every canonical command this adapter understands.  ``command`` is resolved
+#: by the server against :data:`PI_DECLARED_COMMANDS`, so it belongs to neither
+#: translation set.
+PI_COMMANDS = PI_DIRECT_COMMANDS | PI_SESSION_COMMANDS | frozenset({"command"})
+
+#: pi operations the browser can invoke through the core ``command`` record.
+#: They are declared in the resync manifest, so the shared view renders them
+#: without knowing what a "fork" or a session tree is.
+PI_DECLARED_COMMANDS = (
+    DeclaredCommand(
+        name="fork",
+        title="Fork from a message",
+        description="Branch the session from an earlier user message",
+        args=(
+            CommandArg(
+                name="entry_id",
+                title="Entry",
+                description="Entry id of the user message to branch from",
+                required=True,
+            ),
+        ),
+    ),
+    DeclaredCommand(
+        name="clone",
+        title="Clone branch",
+        description="Duplicate the active branch into a new session",
+    ),
+    DeclaredCommand(
+        name="export",
+        title="Export session",
+        description="Download the conversation",
+        args=(
+            CommandArg(
+                name="format",
+                type="choice",
+                title="Format",
+                required=True,
+                choices=(("html", "HTML"), ("jsonl", "JSONL")),
+            ),
+        ),
+    ),
+    DeclaredCommand(
+        name="tree",
+        title="Session tree",
+        description="Show the branch structure",
+    ),
+)
+
+#: pi features with no RPC equivalent; the view lists them in its help dialog.
+PI_HELP = (
+    HelpEntry("/login, /logout", "provider sign-in is a TUI-only screen"),
+    HelpEntry("/settings", "settings are edited through pi's own UI"),
+    HelpEntry("/trust", "project trust is chosen before the process starts"),
+    HelpEntry("/scoped-models", "per-scope model allowlists live in settings"),
+    HelpEntry("/share", "publishing a session has no RPC command"),
+    HelpEntry("/bug", "bug-report collection is interactive"),
+    HelpEntry("/changelog", "release notes are a TUI viewer"),
+    HelpEntry("extension screens", "ctx.ui.custom() has no RPC representation"),
+)
 
 #: pi RPC records a browser may never smuggle through ``raw``.  Dialog
 #: responses are correlated and validated by the server instead.
@@ -1104,13 +1162,6 @@ def pi_command_from_canonical(command: dict) -> dict:
         return {"type": "compact"}
     if name == "clear_queue":
         return {"type": "clear_queue"}
-    if name == "fork":
-        entry_id = command.get("entry_id")
-        if not isinstance(entry_id, str) or not entry_id.strip():
-            raise CanonicalCommandError("fork needs the entry_id to branch from")
-        return {"type": "fork", "entryId": entry_id}
-    if name == "clone":
-        return {"type": "clone"}
     # raw
     native = command.get("command")
     if not isinstance(native, dict):
@@ -1142,6 +1193,163 @@ def canonical_command_data(name: str, data: object) -> dict:
             result["provider"] = provider
         return result
     return dict(payload)
+
+
+def _preview(text: str, limit: int = 120) -> str:
+    """Collapse whitespace and clip text for a one-line label."""
+    collapsed = " ".join(str(text or "").split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1] + "…"
+
+
+def pi_declared_rpc(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Translate a declared pi command into the one pi RPC record it needs."""
+    if name == "fork":
+        entry_id = args.get("entry_id")
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            raise CanonicalCommandError("fork needs the entry_id of a user message")
+        return {"type": "fork", "entryId": entry_id}
+    if name == "clone":
+        return {"type": "clone"}
+    if name == "tree":
+        return {"type": "get_tree"}
+    raise CanonicalCommandError(f"no pi rpc for declared command {name!r}")
+
+
+def _tree_label(entry: object) -> str:
+    data = entry if isinstance(entry, dict) else {}
+    message = data.get("message")
+    if isinstance(message, dict):
+        role = message.get("role") or "message"
+        text = _preview(_text_of(message.get("content")))
+        return f"{role}: {text}" if text else str(role)
+    kind = data.get("type")
+    name = data.get("name") or data.get("id") or "entry"
+    return f"{kind} {name}" if kind else str(name)
+
+
+def pi_tree_to_canonical(data: object) -> dict[str, Any]:
+    """Convert pi's ``get_tree`` payload into the generic tree render hint."""
+    payload = data if isinstance(data, dict) else {}
+
+    def node(item: object) -> dict[str, Any] | None:
+        branch = item if isinstance(item, dict) else {}
+        entry = branch.get("entry")
+        record: dict[str, Any] = {}
+        entry_id = entry.get("id") if isinstance(entry, dict) else None
+        if isinstance(entry_id, str) and entry_id:
+            record["id"] = entry_id
+            record["actions"] = [
+                {
+                    "name": "fork",
+                    "label": "Fork here",
+                    "command": {"name": "fork", "args": {"entry_id": entry_id}},
+                }
+            ]
+        record["label"] = _tree_label(entry)
+        children = [
+            child
+            for raw in (branch.get("children") or [])
+            if (child := node(raw)) is not None
+        ]
+        if children:
+            record["children"] = children
+        return record if record.get("label") else None
+
+    nodes = [
+        item
+        for raw in (payload.get("tree") or [])
+        if (item := node(raw)) is not None
+    ]
+    leaf_id = payload.get("leafId")
+    tree: dict[str, Any] = {"nodes": nodes}
+    if isinstance(leaf_id, str) and leaf_id:
+        tree["leaf_id"] = leaf_id
+    return tree
+
+
+def pi_declared_result(name: str, response: object) -> dict[str, Any]:
+    """Build the render-hint ``data`` for a declared pi command's answer."""
+    payload = response if isinstance(response, dict) else {}
+    if payload.get("success") is False:
+        raise CanonicalCommandError(
+            str(payload.get("error") or f"{name} failed")
+        )
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    if name == "fork":
+        if data.get("cancelled"):
+            return {
+                "notice": {
+                    "level": "warning",
+                    "text": "the fork was cancelled by an extension",
+                }
+            }
+        text = _text_of(data.get("text"))
+        result: dict[str, Any] = {"refresh": True}
+        if text:
+            result["notice"] = {
+                "level": "info",
+                "text": f"forked from: {_preview(text)}",
+            }
+        return result
+    if name == "clone":
+        if data.get("cancelled"):
+            return {
+                "notice": {
+                    "level": "warning",
+                    "text": "the clone was cancelled by an extension",
+                }
+            }
+        return {
+            "refresh": True,
+            "notice": {"level": "info", "text": "cloned into a new session"},
+        }
+    if name == "tree":
+        return {"tree": pi_tree_to_canonical(data)}
+    raise CanonicalCommandError(f"no result rendering for declared command {name!r}")
+
+
+async def pi_export(
+    session: Any, manager: Any, fmt: str
+) -> dict[str, Any]:
+    """Write or resolve a downloadable file and describe it.
+
+    Shared by the legacy ``pi_export`` request and the canonical ``export``
+    declared command, so both answer the same path and download URL.
+    """
+    if fmt not in ("html", "jsonl"):
+        raise CanonicalCommandError("export format must be 'html' or 'jsonl'")
+    root = getattr(manager, "pi_session_dir", None)
+    if not root:
+        raise CanonicalCommandError("pi session storage is not configured")
+    if fmt == "html":
+        export_dir = os.path.join(root, "exports")
+        os.makedirs(export_dir, mode=0o700, exist_ok=True)
+        output_path = os.path.join(export_dir, f"{session.id}-{time.time_ns()}.html")
+        try:
+            response = await session.rpc(
+                {"type": "export_html", "outputPath": output_path}
+            )
+        except Exception as exc:  # noqa: BLE001 - reported as a refusal
+            raise CanonicalCommandError(str(exc)) from exc
+        if not response.get("success"):
+            raise CanonicalCommandError(str(response.get("error", "export failed")))
+        data = response.get("data") or {}
+        path = manager.resolve_pi_path(data.get("path") or output_path)
+    else:
+        try:
+            response = await session.rpc({"type": "get_state"})
+        except Exception as exc:  # noqa: BLE001 - reported as a refusal
+            raise CanonicalCommandError(str(exc)) from exc
+        if not response.get("success"):
+            raise CanonicalCommandError(str(response.get("error", "get_state failed")))
+        path = manager.resolve_pi_path((response.get("data") or {}).get("sessionFile"))
+    if path is None or not os.path.isfile(path):
+        raise CanonicalCommandError("pi produced no downloadable file")
+    return {
+        "format": fmt,
+        "path": path,
+        "url": "/pi/download?path=" + quote(path, safe=""),
+    }
 
 
 def canonical_response(

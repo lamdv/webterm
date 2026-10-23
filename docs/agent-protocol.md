@@ -531,10 +531,20 @@ behind a structured session. The server reaches every adapter through one seam,
 
 A codec answers `capabilities`, `snapshot`, `history`, `models`,
 `resolve_dialog`, `command`, and `result` (the structured result of a spawn),
-and owns the set of commands its adapter accepts. `server.py` looks the codec up
-from `session.adapter` once and never branches on pi again; adding an adapter
-means adding a codec, plus a translator module when its child speaks another
-dialect.
+and owns the set of commands its adapter accepts. It also supplies
+`declared_commands` and `help_entries` — the manifest the view renders and the
+gaps it lists — and runs a declared command in `declared_command`. `server.py`
+looks the codec up from `session.adapter` once and never branches on pi again;
+adding an adapter means adding a codec, plus a translator module when its child
+speaks another dialect.
+
+Backends that speak canonical JSONL need no codec work at all: they declare
+their features in `hello.commands`/`hello.help` and handle the `command` record
+themselves. That is the intended path for llama-server (which declares none
+today), an MVA backend, or a remote agent — the view renders the manifest and
+the render hints, and webterm never learns their vocabulary. A backend that
+speaks another dialect (pi) implements the same three codec methods instead,
+translating its native records.
 
 ## Next steps
 

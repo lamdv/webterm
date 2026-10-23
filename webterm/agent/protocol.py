@@ -348,6 +348,21 @@ class CommandArg:
     #: ``(value, label)`` pairs for ``type="choice"``.
     choices: tuple[tuple[str, str], ...] = ()
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize for the browser's generic arg form."""
+        record: dict[str, Any] = {"name": self.name, "type": self.type}
+        if self.title:
+            record["title"] = self.title
+        if self.description:
+            record["description"] = self.description
+        if self.required:
+            record["required"] = True
+        if self.choices:
+            record["choices"] = [
+                {"value": value, "label": label} for value, label in self.choices
+            ]
+        return record
+
 
 @dataclass(frozen=True)
 class DeclaredCommand:
@@ -364,6 +379,19 @@ class DeclaredCommand:
     args: tuple[CommandArg, ...] = ()
     danger: bool = False
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the manifest entry carried in an ``agent_resync``."""
+        record: dict[str, Any] = {
+            "name": self.name,
+            "title": self.title or self.name,
+            "description": self.description,
+        }
+        if self.args:
+            record["args"] = [arg.to_dict() for arg in self.args]
+        if self.danger:
+            record["danger"] = True
+        return record
+
 
 @dataclass(frozen=True)
 class HelpEntry:
@@ -375,6 +403,10 @@ class HelpEntry:
 
     name: str
     reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize one gap for the view's help dialog."""
+        return {"name": self.name, "reason": self.reason}
 
 
 def _parse_command_args(raw: object, command: str) -> tuple[CommandArg, ...]:
@@ -475,6 +507,20 @@ def parse_help_entries(raw: object) -> tuple[HelpEntry, ...]:
     return tuple(entries)
 
 
+def serialize_commands(
+    commands: tuple[DeclaredCommand, ...] | list[DeclaredCommand],
+) -> list[dict[str, Any]]:
+    """Serialize a declared-command manifest for the wire."""
+    return [command.to_dict() for command in commands]
+
+
+def serialize_help(
+    entries: tuple[HelpEntry, ...] | list[HelpEntry],
+) -> list[dict[str, Any]]:
+    """Serialize a help/gap list for the wire."""
+    return [entry.to_dict() for entry in entries]
+
+
 def find_declared_command(
     commands: tuple[DeclaredCommand, ...] | list[DeclaredCommand] | object, name: str
 ) -> DeclaredCommand | None:
@@ -483,6 +529,42 @@ def find_declared_command(
         if command.name == name:
             return command
     return None
+
+
+def validate_declared_args(
+    declaration: DeclaredCommand, args: dict[str, Any]
+) -> dict[str, Any]:
+    """Check *args* against a declaration and return them normalized.
+
+    Only the declared arguments are forwarded, so a client cannot smuggle an
+    undeclared field into an adapter.
+    """
+    missing = [arg.name for arg in declaration.args if arg.required and arg.name not in args]
+    if missing:
+        raise CanonicalCommandError(
+            f"{declaration.name} needs {', '.join(missing)}"
+        )
+    cleaned: dict[str, Any] = {}
+    for arg in declaration.args:
+        if arg.name not in args:
+            continue
+        value = args[arg.name]
+        if arg.type == "boolean":
+            if not isinstance(value, bool):
+                raise CanonicalCommandError(f"{declaration.name}.{arg.name} must be a boolean")
+        elif arg.type == "choice":
+            allowed = [choice for choice, _ in arg.choices]
+            if arg.choices and value not in allowed:
+                raise CanonicalCommandError(
+                    f"{declaration.name}.{arg.name} must be one of: {', '.join(allowed)}"
+                )
+            if not isinstance(value, str):
+                raise CanonicalCommandError(f"{declaration.name}.{arg.name} must be a string")
+        else:
+            if not isinstance(value, str):
+                raise CanonicalCommandError(f"{declaration.name}.{arg.name} must be a string")
+        cleaned[arg.name] = value
+    return cleaned
 
 
 def declared_command_record(name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:

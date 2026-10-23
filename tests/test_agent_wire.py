@@ -197,11 +197,52 @@ class NativeAgentWireTests(unittest.IsolatedAsyncioTestCase):
     async def test_adapter_refusals_are_success_false_responses(self) -> None:
         session = await self._create()
         await self._attach(session["id"])
-        reply = await self._agent(session["id"], {"type": "fork"}, request_id="f1")
+        reply = await self._agent(
+            session["id"], {"type": "command", "name": "boom"}, request_id="f1"
+        )
         response = reply["result"]["agent_response"]
         self.assertFalse(response["success"])
-        self.assertIn("unknown command", response["error"])
-        self.assertEqual(response["command"], "fork")
+        self.assertIn("boom refused", response["error"])
+        self.assertEqual(response["command"], "command")
+
+    async def test_declared_commands_are_forwarded_to_the_agent(self) -> None:
+        """A native backend declares its own features; webterm only routes."""
+        session = await self._create()
+        resync = await self._attach(session["id"])
+        self.assertEqual(
+            [command["name"] for command in resync["commands"]], ["echo", "boom"]
+        )
+        self.assertEqual(resync["commands"][0]["args"][0]["name"], "text")
+        self.assertEqual(
+            [entry["name"] for entry in resync["help"]], ["/login"]
+        )
+
+        reply = await self._agent(
+            session["id"],
+            {"type": "command", "name": "echo", "args": {"text": "hi"}},
+            request_id="e1",
+        )
+        response = reply["result"]["agent_response"]
+        self.assertTrue(response["success"])
+        self.assertEqual(response["data"], {"text": "hi"})
+
+    
+    async def test_undeclared_commands_are_refused_locally(self) -> None:
+        session = await self._create()
+        await self._attach(session["id"])
+        await self.client.send_json(
+            {
+                "type": "agent",
+                "id": "n1",
+                "session_id": session["id"],
+                "command": {"type": "command", "name": "nope"},
+            }
+        )
+        error = await self.client.recv_json_until(
+            lambda message: message.get("type") == "error" and message.get("id") == "n1"
+        )
+        self.assertEqual(error["error"]["code"], "bad_request")
+        self.assertIn("nope", error["error"]["message"])
 
     async def test_dialog_round_trip_uses_the_envelope(self) -> None:
         session = await self._create()

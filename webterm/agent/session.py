@@ -29,6 +29,8 @@ from .protocol import (
     Hello,
     ProtocolError,
     parse_hello,
+    serialize_commands,
+    serialize_help,
     validate_dialog_request,
     validate_event,
     validate_models,
@@ -435,6 +437,14 @@ class AgentSession:
             snapshot["cursor"] = {"seq": cursor}
             snapshot["dialogs"] = list(self._dialogs.values())
             snapshot["capabilities"] = self.capabilities.to_dict()
+            # Adapter features travel as data so the shared view never learns a
+            # backend's vocabulary: the manifest it renders, the gaps it lists.
+            snapshot["commands"] = serialize_commands(
+                self.hello.commands if self.hello is not None else ()
+            )
+            snapshot["help"] = serialize_help(
+                self.hello.help if self.hello is not None else ()
+            )
             agent_state = (
                 dict(snapshot["state"])
                 if isinstance(snapshot.get("state"), dict)

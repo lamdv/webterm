@@ -223,6 +223,20 @@ def handle(command: dict) -> None:
     elif name == "abort":
         ABORT_EVENT.set()
         respond(request_id, "abort", {"ok": True})
+    elif name == "command":
+        declared = command.get("name")
+        args = command.get("args") if isinstance(command.get("args"), dict) else {}
+        if declared == "echo":
+            respond(request_id, "command", {"text": str(args.get("text", ""))})
+        elif declared == "boom":
+            respond(request_id, "command", success=False, error="boom refused")
+        else:
+            respond(
+                request_id,
+                "command",
+                success=False,
+                error=f"unknown declared command {declared!r}",
+            )
     elif name == "get_state":
         respond(
             request_id,
@@ -311,6 +325,18 @@ def main() -> None:
                     "usage": {"tokens": True, "cost": True},
                     "tools": {"streaming": True, "updates": True},
                 },
+                # Declared commands: backend features the shared view renders
+                # without knowing what they mean.
+                "commands": [
+                    {
+                        "name": "echo",
+                        "title": "Echo",
+                        "description": "Echo text back",
+                        "args": [{"name": "text", "type": "string", "required": True}],
+                    },
+                    {"name": "boom", "title": "Boom", "danger": True},
+                ],
+                "help": [{"name": "/login", "reason": "no authentication here"}],
             }
         )
     while True:

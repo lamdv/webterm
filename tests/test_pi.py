@@ -498,21 +498,22 @@ class PiServerTests(unittest.IsolatedAsyncioTestCase):
                 "type": "agent",
                 "id": "canonical-export",
                 "session_id": session["id"],
-                "command": {"type": "export", "format": "html"},
+                "command": {"type": "command", "name": "export", "args": {"format": "html"}},
             }
         )
         response = result["agent_response"]
         self.assertTrue(response["success"])
         self.assertEqual(response["data"]["format"], "html")
-        self.assertTrue(response["data"]["url"].startswith("/pi/download?path="))
-        self.assertTrue(Path(response["data"]["path"]).is_file())
+        download = response["data"]["download"]
+        self.assertTrue(download["url"].startswith("/pi/download?path="))
+        self.assertTrue(download["filename"].endswith(".html"))
 
         await self.client.send_json(
             {
                 "type": "agent",
                 "id": "canonical-export-bad",
                 "session_id": session["id"],
-                "command": {"type": "export", "format": "pdf"},
+                "command": {"type": "command", "name": "export", "args": {"format": "pdf"}},
             }
         )
         error = await self.client.recv_json_until(

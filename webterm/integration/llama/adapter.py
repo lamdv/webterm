@@ -176,6 +176,11 @@ class LlamaAgent:
                 "agent": "llama",
                 "version": "0.1.0",
                 "capabilities": CAPABILITIES,
+                # This adapter has no backend-specific actions or gaps; a
+                # richer backend (MVA, a remote agent) fills these in and the
+                # shared view renders them without any webterm change.
+                "commands": [],
+                "help": [],
             }
         )
         if self.model:
@@ -798,6 +803,21 @@ class LlamaAgent:
             command.get("id"), "delete_prompt", {"name": name, "deleted": deleted}
         )
 
+    def declared_command(self, command: dict[str, Any]) -> None:
+        """Answer a declared-command invocation.
+
+        This adapter declares none today.  A backend that does handle
+        ``command`` here and answers with render-hint data (``notice``,
+        ``download``, ``tree``, ``text``); the shared view renders it without
+        knowing anything about llama, MVA, or whatever comes next.
+        """
+        self.respond(
+            command.get("id"),
+            "command",
+            success=False,
+            error="this adapter declares no commands",
+        )
+
     def raw(self, command: dict[str, Any]) -> None:
         inner = command.get("command")
         if not isinstance(inner, dict):
@@ -857,6 +877,7 @@ class LlamaAgent:
             "save_prompt": self.save_prompt,
             "delete_prompt": self.delete_prompt,
             "raw": self.raw,
+            "command": self.declared_command,
             "shutdown": self.shutdown,
         }
         handler = handlers.get(str(name))

@@ -9,6 +9,7 @@ needs a pi branch.  The record-level translation stays in
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from ...agent.codec import (
@@ -16,12 +17,18 @@ from ...agent.codec import (
     AgentCodec,
     UnknownDialog,
 )
+from ...agent.protocol import DeclaredCommand, HelpEntry
 from .canonical import (
     PI_CAPABILITIES,
     PI_COMMANDS,
+    PI_DECLARED_COMMANDS,
+    PI_HELP,
     canonical_response,
     pi_command_from_canonical,
+    pi_declared_result,
+    pi_declared_rpc,
     pi_dialog_response_to_pi,
+    pi_export,
     pi_history_to_canonical,
     pi_models_to_canonical,
     pi_snapshot_to_canonical,
@@ -46,6 +53,40 @@ class PiCodec(AgentCodec):
 
     def capabilities(self, session: PiSession) -> dict:
         return PI_CAPABILITIES.to_dict()
+
+    def declared_commands(self, session: PiSession) -> tuple[DeclaredCommand, ...]:
+        return PI_DECLARED_COMMANDS
+
+    def help_entries(self, session: PiSession) -> tuple[HelpEntry, ...]:
+        return PI_HELP
+
+    async def declared_command(
+        self,
+        session: PiSession,
+        name: str,
+        args: dict[str, Any],
+        *,
+        manager: Any = None,
+    ) -> dict:
+        """Run a pi-declared command and answer with render-hint data."""
+        if name == "export":
+            fmt = args.get("format", "html")
+            payload = await pi_export(session, manager, str(fmt))
+            filename = os.path.basename(str(payload["path"]))
+            mime_type = "text/html" if fmt == "html" else "application/jsonl"
+            return {
+                "download": {
+                    "url": payload["url"],
+                    "filename": filename,
+                    "mime_type": mime_type,
+                },
+                "format": fmt,
+            }
+        response = await session.rpc(
+            pi_declared_rpc(name, args),
+            timeout=DEFAULT_AGENT_COMMAND_TIMEOUT,
+        )
+        return pi_declared_result(name, response)
 
     async def snapshot(self, session: PiSession, *, limit: int | None = None) -> dict:
         snapshot = await session.snapshot(entry_limit=limit)
