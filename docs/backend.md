@@ -15,6 +15,7 @@ for the client see [frontend.md](frontend.md).
 | `webterm/session.py` | `Session` (PTY + scrollback + subscribers + lineage) and `SessionManager` (spawn, reap, list, kill, limits, GC). |
 | `webterm/agent/session.py` | `AgentSession`: the canonical JSONL dialect over the shared agent process — hello handshake, command correlation, record validation, dialogs, run/usage state. |
 | `webterm/agent/codec.py` | The adapter seam: `AgentCodec` plus `NativeCodec`, which serves an `AgentSession` whose child already speaks canonical JSONL. |
+| `webterm/agent/registry.py` | Discovered agent backends: the `agentAdapters` list served in `/config.js`. |
 | `webterm/agent/protocol.py` | Canonical agent protocol: capabilities, command names, hello validation, event names, response records, and payload validation. |
 | `webterm/agent/process.py` | `AgentProcess`, the process/transport lifecycle every structured agent session shares, plus `fork_agent`: fork/exec into stdin/stdout/stderr pipes with the shared `WEBTERM_*` child environment. |
 | `webterm/integration/pi/session.py` | `PiSession`: the pi RPC dialect over the shared agent process — raw record ring, snapshot/resync, server-owned extension dialogs/UI state, activity, and usage. |
@@ -82,15 +83,56 @@ the `llama` profile starts the canonical adapter described in
 [llama.md](llama.md), forwarding the configured model, system prompt, and
 thinking level as adapter flags.
 
-The config dict currently supports `fontFamily`, `launchers`, `agents`, and
-`pi` (`available`, `cwd`, `sessionDir`, `version`, `testedVersion`); it is
-served as
-`window.WEBTERM_CONFIG` by `/config.js`. At startup `main()` creates and
+The config dict supports `fontFamily`, `launchers`, `agents`, `pi`
+(`available`, `cwd`, `sessionDir`, `defaultModel`, `version`, `testedVersion`),
+and `agentAdapters`; it is served as `window.WEBTERM_CONFIG` by `/config.js`,
+and `start_server`/`serve_config` pass it through untouched (the server only
+adds `agentApi`). At startup `main()` creates and
 resolves the pi session root (`0700`) only when pi is installed or
 `--pi-session-dir` was given explicitly. Without pi, `pi_available` is false,
 `sessionDir` is `null`, pi launchers/profiles are omitted, and a `create`
 request for a pi session is rejected with an `unavailable` error instead of
 spawning a doomed child.
+
+### `agentAdapters`
+
+The browser keeps no hardcoded list of agent backends. `main()` fills
+`agentAdapters` from
+`webterm.agent.registry.agent_adapters(manager, profiles)`, one entry per
+adapter:
+
+| Field | Meaning |
+|---|---|
+| `name` | Adapter id a session can carry (`adapter` on `create`/`spawn`). |
+| `label` | Human name for menus and launchers. |
+| `available` | Discovered, not declared: whether a structured child can be started now. |
+| `view` | Same-origin path to a classic script that registers an adapter view, or `null`. |
+| `launcher` | Whether the profile also has an interactive command, so a terminal session can be launched. |
+
+Availability comes from real state and never from a fixed list. An entry
+exists because a codec names the adapter (`PiCodec.adapter`) or because an
+agent profile (`--agent` / `--agent-rpc`) configures it, and it is available
+when that profile carries an `rpc` command — plus
+`SessionManager.pi_available` for pi. So `--agent-rpc "mva=mva --mode rpc"` adds
+an available `mva` entry without a webterm change, while an adapter nothing
+configures is listed with `"available": false` (`llama` without
+`--llama-url`, `mva` by default). The `generic` fallback codec is a dialect
+marker, not a backend, and is never listed. Nothing probes a network service
+or runs a binary to decide availability; a wrong URL is reported by the
+adapter when the session starts.
+
+The order is stable: adapters webterm knows by name first (`pi`, `llama`,
+`mva`), then adapters that only a configuration names, in profile order. A
+profile's `adapter` key wins over the profile name, so one backend can be
+configured under several profile names. `view` is `null` when webterm ships no
+view for the adapter: the browser then renders it with the generic canonical
+view, which every native (canonical JSONL) backend uses.
+
+```json
+[{"name":"pi","label":"pi","available":true,"view":"/pi.js","launcher":true},
+ {"name":"llama","label":"llama-server","available":true,"view":null,"launcher":false},
+ {"name":"mva","label":"mva","available":false,"view":null,"launcher":false}]
+```
 
 `build_ssl_context(certfile, keyfile)` constructs the server `SSLContext`
 (TLS 1.2 minimum) from the `--tls-cert`/`--tls-key` files and passes it to
