@@ -20,6 +20,7 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
 | `webterm/static/agent.js` | The generic canonical agent chat view, exposed as the `window.WebtermAgentView` class (with the `window.WebtermAgent.create` factory alias); also registers itself as the base of the adapter view registry. Enabled for pi with `?agentui=1`. |
 | `webterm/static/views.js` | Adapter view registry (self-registration + on-demand module loading), exposed as `window.WebtermAgentViews`. |
+| `webterm/static/pi-view.js` | Opt-in pi view built on the shared class (`?piui=canonical`), exposed as `window.WebtermPiAgentView`. |
 | `webterm/static/find.js` | Client-side transcript search bar shared by both chat views, exposed as `window.WebtermFind`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
 
@@ -38,7 +39,8 @@ layout and the structure of `app.js`. For the server side see
 9. `/attach.js`.
 10. `/pi.js`.
 11. `/agent.js`.
-12. `/app.js`.
+12. `/pi-view.js`.
+13. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -222,6 +224,14 @@ The server advertises adapters in `/config.js` (`agentAdapters`, see
 a module and a registry/config entry, not editing `app.js` or `index.html`**.
 An adapter with no module, or whose module fails to load, uses the base view,
 and the declared commands in its resync keep its features reachable.
+
+The pi view is being rebuilt on that base (`static/pi-view.js`, `window.WebtermPiAgentView`):
+it registers `pi` with the canonical transport when the URL carries
+`?piui=canonical`, and otherwise does nothing, so `pi.js` stays the default
+until the port has been clicked through in a browser. Enabling it exercises the
+same base view pi gets after #13 — transcript, queue, palette with pi's declared
+`fork`/`clone`/`export`/`tree` commands, `/help`, and extension chips/widgets —
+with no pi-specific code in the shared file.
 
 `reconcileSessions` resolves `session.adapter` through the registry; `?agentui=1`
 forces the base canonical view for every adapter, which is how pi is previewed

@@ -21,7 +21,9 @@ reach pi), and the TUI-only surfaces below are disclosed in the UI through
 `/limits`. A mobile pass remains. Tracking
 issue: #10. The canonical view (`static/agent.js`) is the single long-term
 renderer for pi as well: `static/pi.js` is legacy and is retired feature by
-feature (#13), with the default switched only once parity is reached. For the
+feature (#13), with the default switched only once parity is reached. The port
+is already loadable with `?piui=canonical` (`static/pi-view.js`, a subclass of
+the shared view class) for a side-by-side check before `pi.js` is deleted. For the
 existing PTY-based pi launcher, nothing changes: it stays as the escape hatch
 for TUI-only features.
 
