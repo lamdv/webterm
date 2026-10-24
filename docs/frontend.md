@@ -310,7 +310,10 @@ page can start mid-turn) keeps its own entry. A tool card is a disclosure: its
 summary line carries the tool name, a clipped hint at the arguments and a
 status chip, its body the full arguments and output, and a folded card stays
 folded while the call streams (the reader's choice is remembered per block, and
-find reopens it). Thinking blocks expand by default too, so a reply is readable
+find reopens it). A streamed `tool.updated` appends its `delta` or replaces the
+output with its `output`, which is how an agent reports a window that stopped
+extending; the card follows the tail unless the reader scrolled up inside it.
+Thinking blocks expand by default too, so a reply is readable
 without clicking. When the snapshot reports `has_more`, a **Load earlier
 messages** button fetches one backwards page with `agent.get_history` and
 prepends it without moving the reader; it disappears once the history is

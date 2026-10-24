@@ -2446,7 +2446,12 @@
         }
         case "tool.updated": {
           const tool = state.toolState.get(event.call_id);
-          if (tool) tool.output += event.delta || event.output || "";
+          if (!tool) break;
+          // A `delta` appends to what the card already shows; an `output` is
+          // the whole output so far and replaces it, which is how an agent
+          // reports a window that no longer extends the last one.
+          if (typeof event.output === "string") tool.output = event.output;
+          else tool.output += event.delta || "";
           break;
         }
         case "tool.finished": {

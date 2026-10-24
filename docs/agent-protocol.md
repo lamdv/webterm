@@ -320,7 +320,7 @@ Canonical events:
 | `message.block` | `message_id`, `block_index`, `block` | a complete block, e.g. a tool call |
 | `message.finished` | `message` | the authoritative message |
 | `tool.started` | `call_id`, `name`, `args` | tool execution began |
-| `tool.updated` | `call_id`, `delta` or `output` | live tool output |
+| `tool.updated` | `call_id`, then `delta` or `output` | live tool output |
 | `tool.finished` | `call_id`, `output`, `is_error` | tool execution ended |
 | `queue.updated` | `steering`, `follow_up` | pending input |
 | `status.updated` | `key`, `text` | a keyed header chip; an empty `text` clears the key |
@@ -339,6 +339,13 @@ state for the same `call_id`. A persisted snapshot may fold the result into the
 block or keep a separate `tool_result` entry, but the `call_id` join is stable.
 A client renders one result, in the card: a separate result entry folds into the
 card of its `tool_call_id` instead of appearing as a second message.
+
+`tool.updated` carries the new text *either* as `delta`, appended to what the
+client already has, *or* as `output`, the whole output so far, which replaces
+it. An agent whose progress report is a growing snapshot (pi reports tool
+output that way) must send the difference as `delta` and switch to `output`
+when its window no longer extends the last one, so a client never shows
+duplicated text. `tool.finished` always carries the final `output`.
 
 The `event` field, not `name`, holds the canonical event name. This leaves
 `name` free for a tool name in `tool.started`.

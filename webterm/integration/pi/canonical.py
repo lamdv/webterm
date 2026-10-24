@@ -312,6 +312,10 @@ class PiCanonicalTranslator:
         self._last_block: tuple[int, str] | None = None
         self._last_usage: dict | None = None
         self._usage_emitted = False
+        # The last partial result seen per tool call id.  pi reports tool
+        # progress as a growing snapshot, so a delta has to be derived from
+        # the previous one before it can be sent as ``tool.updated``.
+        self._tool_output: dict[str, str] = {}
 
     # -- run / message state ------------------------------------------------
 
@@ -486,20 +490,28 @@ class PiCanonicalTranslator:
 
         elif kind == "tool_execution_update":
             self._begin_run(events)
-            events.append(
-                {
-                    "event": "tool.updated",
-                    "call_id": str(record.get("toolCallId", "")),
-                    "delta": _text_of(record.get("partialResult")),
-                }
-            )
+            call_id = str(record.get("toolCallId", ""))
+            text = _text_of(record.get("partialResult"))
+            previous = self._tool_output.get(call_id, "")
+            self._tool_output[call_id] = text
+            update: dict = {"event": "tool.updated", "call_id": call_id}
+            if text.startswith(previous):
+                update["delta"] = text[len(previous) :]
+            else:
+                # The snapshot no longer extends what we sent (pi truncates a
+                # long result to a moving window), so replace it instead of
+                # pretending the whole text is new.
+                update["output"] = text
+            events.append(update)
 
         elif kind == "tool_execution_end":
             self._begin_run(events)
+            call_id = str(record.get("toolCallId", ""))
+            self._tool_output.pop(call_id, None)
             events.append(
                 {
                     "event": "tool.finished",
-                    "call_id": str(record.get("toolCallId", "")),
+                    "call_id": call_id,
                     "name": str(record.get("toolName", "")),
                     "output": _text_of(record.get("result")),
                     "is_error": bool(record.get("isError", False)),

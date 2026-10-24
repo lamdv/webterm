@@ -235,6 +235,75 @@ class PiTranslatorTests(unittest.TestCase):
         self.assertEqual(finished["content"][0], {"type": "text", "text": "hello"})
         self.assertEqual(finished["content"][1]["type"], "tool_call")
 
+    def test_tool_updates_carry_deltas_not_growing_snapshots(self) -> None:
+        """pi reports tool progress as a snapshot; the canonical event is a delta."""
+        translator = PiCanonicalTranslator()
+        records = [
+            {"type": "agent_start"},
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+                "args": {"command": "ls"},
+            },
+        ]
+        for text in ("", "a\n", "a\nb\n"):
+            records.append(
+                {
+                    "type": "tool_execution_update",
+                    "toolCallId": "call-1",
+                    "toolName": "bash",
+                    "partialResult": {"content": [{"type": "text", "text": text}]},
+                }
+            )
+        records.extend(
+            [
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "call-1",
+                    "toolName": "bash",
+                    "result": {"content": [{"type": "text", "text": "a\nb\n"}]},
+                },
+                {"type": "agent_settled"},
+            ]
+        )
+        updates = [
+            event
+            for record in records
+            for event in translator.feed(record)
+            if event["event"] == "tool.updated"
+        ]
+        self.assertEqual([update["delta"] for update in updates], ["", "a\n", "b\n"])
+        self.assertTrue(
+            all("output" not in update for update in updates),
+            "an extending snapshot is sent as a plain delta",
+        )
+
+    def test_tool_update_that_rewinds_the_window_replaces_the_output(self) -> None:
+        """A truncated snapshot no longer extends the previous one."""
+        translator = PiCanonicalTranslator()
+        records = [
+            {
+                "type": "tool_execution_update",
+                "toolCallId": "call-2",
+                "partialResult": {"content": [{"type": "text", "text": "head"}]},
+            },
+            {
+                "type": "tool_execution_update",
+                "toolCallId": "call-2",
+                "partialResult": {"content": [{"type": "text", "text": "tail"}]},
+            },
+        ]
+        updates = [
+            event
+            for record in records
+            for event in translator.feed(record)
+            if event["event"] == "tool.updated"
+        ]
+        self.assertEqual(updates[0]["delta"], "head")
+        self.assertNotIn("delta", updates[1])
+        self.assertEqual(updates[1]["output"], "tail")
+
     def test_missing_content_index_still_separates_block_types(self) -> None:
         translator = PiCanonicalTranslator()
         records = [
