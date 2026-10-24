@@ -755,7 +755,8 @@ served and that the xterm.js CDN tag is present (`tests/test_server.py`). The
 frontend is otherwise exercised manually, except for fake-DOM smoke tests run
 with Node through unittest (`tests/agent_view_test.js`,
 `tests/agent_queue_test.js`, `tests/agent_declared_test.js`,
-`tests/app_view_test.js`, `tests/attach_test.js`, `tests/find_test.js`,
-`tests/limits_test.js`, `tests/path_complete_test.js`). Keep `app.js`
+`tests/agent_ui_test.js`, `tests/agent_help_test.js`, `tests/app_view_test.js`,
+`tests/attach_test.js`, `tests/find_test.js`, `tests/path_complete_test.js`,
+`tests/pi_view_test.js`, `tests/views_test.js`). Keep `app.js`
 dependency-free and avoid introducing a build step; anything added must run
 from the served static files.
