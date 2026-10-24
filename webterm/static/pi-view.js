@@ -1,8 +1,6 @@
-/* The pi view, rebuilt on the shared agent base class.
+/* The pi view, built on the shared agent base class.
  *
- * Opt-in for now (`?piui=canonical`): the legacy `pi.js` view stays the
- * default until this one has been clicked through in a browser.  Enabling it
- * registers `pi` in the adapter registry with the canonical transport, so
+ * It registers `pi` in the adapter registry with the canonical transport, so
  * `app.js` builds canonical `agent`-envelope hooks and the base view renders
  * pi's transcript, queue, palette, declared commands (fork/clone/export/tree),
  * help, chips and widgets.
@@ -17,20 +15,12 @@
  *   applySnapshotExtra()     extra state from the resync payload
  *   headerExtras()           extra header nodes
  *
- * Once this view reaches parity, `pi.js` is deleted, this module registers
- * unconditionally, and the `piui` switch goes away (#13).
+ * This replaced the legacy `pi.js` view (#13); the shared base renders
+ * everything, and pi-specific additions would arrive through the hooks below.
  */
 "use strict";
 
 (function () {
-  let enabled = false;
-  try {
-    enabled = new URLSearchParams(window.location.search).get("piui") === "canonical";
-  } catch (_error) {
-    enabled = false;
-  }
-  if (!enabled) return;
-
   const Base = window.WebtermAgentView;
   const registry = window.WebtermAgentViews;
   if (typeof Base !== "function" || !registry) return;

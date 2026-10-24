@@ -56,20 +56,6 @@
   let requestCounter = 0;
 
   const CONFIG = window.WEBTERM_CONFIG || {};
-  // Opt-in canonical chat view for pi-backed sessions.  The legacy pi view
-  // stays the default until the canonical renderer reaches parity.
-  const USE_AGENT_UI =
-    (() => {
-      try {
-        return (
-          new URLSearchParams(window.location.search).get("agentui") === "1" &&
-          CONFIG.agentApi === true &&
-          Boolean(window.WebtermAgent)
-        );
-      } catch (_error) {
-        return false;
-      }
-    })();
   const DEFAULT_FONT_FAMILY =
     '"MesloLGS Nerd Font Mono", "MesloLGL Nerd Font Mono", "MesloLGM Nerd Font Mono",' +
     ' "FantasqueSansM Nerd Font Mono", "JetBrainsMono Nerd Font Mono",' +
@@ -406,17 +392,13 @@
   /** Pick the view for an agent session from the adapter registry.
    *
    * No backend name appears here: modules register themselves under their
-   * adapter id, the server advertises which adapters exist, and anything
-   * without a registered view falls back to the generic canonical view.  The
-   * `?agentui=1` switch forces the generic view for every adapter, which is
-   * how pi is previewed on the shared renderer.
+   * adapter id, the server advertises which adapters exist, and an adapter
+   * without a registered view falls back to the generic canonical view.
    */
   function viewFactory(session) {
     const registry = window.WebtermAgentViews;
     if (!registry || !session || session.kind !== "agent") return null;
-    const base = registry.base();
-    if (USE_AGENT_UI && base) return base;
-    return registry.resolve(session.adapter) || base;
+    return registry.resolve(session.adapter) || registry.base();
   }
 
   function reconcileSessions(sessions) {
@@ -729,7 +711,7 @@
     terminalArea.appendChild(wrapper);
 
     let view = null;
-    const create = (factory && factory.create) || (window.WebtermPi && window.WebtermPi.create);
+    const create = factory && factory.create;
     if (create) {
       view = create(session, {
         onCommand: (command) => sendPiCommand(session.id, command),

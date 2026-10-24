@@ -424,7 +424,7 @@ class AttachJSTests(unittest.TestCase):
         self.assertIn('/attach.js', html)
         self.assertLess(
             html.index("/attach.js"),
-            html.index("/pi.js"),
+            html.index("/agent.js"),
             "the controller must exist before the views use it",
         )
         self.assertIsNotNone(resolve_static("/attach.js"))

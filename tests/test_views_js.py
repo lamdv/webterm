@@ -19,7 +19,7 @@ class AgentViewsJSTests(unittest.TestCase):
         html = index.read_text(encoding="utf-8")
         self.assertIsNotNone(resolve_static("/views.js"))
         self.assertIn("/views.js", html)
-        self.assertLess(html.index("/views.js"), html.index("/pi.js"))
+        self.assertLess(html.index("/views.js"), html.index("/agent.js"))
         self.assertLess(html.index("/views.js"), html.index("/agent.js"))
         self.assertLess(html.index("/views.js"), html.index("/app.js"))
 

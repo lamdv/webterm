@@ -298,7 +298,6 @@ function activeName() {
 
   // --- Composer wiring -----------------------------------------------------
 
-  require(path.join(__dirname, "..", "webterm", "static", "pi.js"));
   require(path.join(__dirname, "..", "webterm", "static", "agent.js"));
 
   function findByClass(root, className) {
@@ -319,35 +318,6 @@ function activeName() {
   };
   const listHook = (target) =>
     Promise.resolve(listing[target] || { path: target, entries: [] });
-
-  const commands = [];
-  const piView = window.WebtermPi.create(
-    { id: "1-1", title: "pi smoke", cwd: "/work" },
-    {
-      onCommand: (command) => {
-        commands.push(command);
-        return Promise.resolve({ success: true });
-      },
-      onListEntries: listHook,
-    }
-  );
-  const piInput = findByClass(piView.element, "pi-input");
-  assert.ok(piInput, "pi composer input found");
-  const piPicker = findByClass(piView.element, "path-complete");
-  assert.ok(piPicker, "pi composer mounts the picker");
-  piInput.value = "@";
-  piInput.selectionStart = 1;
-  piInput.dispatch("input");
-  await tick();
-  assert.strictEqual(piPicker.hidden, false, "pi picker opened");
-  key("Enter", null, piInput);
-  assert.strictEqual(piInput.value, "/work/a.txt", "pi accept inserts the path");
-  assert.strictEqual(commands.length, 0, "pi Enter with the picker open does not send");
-  key("Enter", null, piInput);
-  assert.strictEqual(commands.length, 1, "pi Enter with the picker closed sends");
-  assert.strictEqual(commands[0].type, "prompt");
-  assert.strictEqual(commands[0].message, "/work/a.txt");
-  piView.destroy();
 
   const prompts = [];
   const agentView = window.WebtermAgent.create(

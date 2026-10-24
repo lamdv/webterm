@@ -20,10 +20,9 @@ steering messages, and follow-ups, and the server validates them before they
 reach pi), and the TUI-only surfaces below are disclosed in the UI through
 `/limits`. A mobile pass remains. Tracking
 issue: #10. The canonical view (`static/agent.js`) is the single long-term
-renderer for pi as well: `static/pi.js` is legacy and is retired feature by
-feature (#13), with the default switched only once parity is reached. The port
-is already loadable with `?piui=canonical` (`static/pi-view.js`, a subclass of
-the shared view class) for a side-by-side check before `pi.js` is deleted. For the
+renderer for pi as well: `static/pi-view.js` is a thin subclass of the shared
+view class, and the legacy `pi.js` renderer was deleted once the port reached
+parity (#13). For the
 existing PTY-based pi launcher, nothing changes: it stays as the escape hatch
 for TUI-only features.
 
@@ -344,7 +343,7 @@ age or count, never a file backing a live session.
 
 ## Extension dialogs
 
-Implemented in `PiSession` and `webterm/static/pi.js`. Dialog state is
+Implemented in `PiSession` and rendered by the canonical view (`pi-view.js`). Dialog state is
 server-owned, not client-local:
 
 - Queue `extension_ui_request` items per session with the pi request id,
@@ -564,8 +563,8 @@ In scope:
   `pi_response`, and entry-based resync.
 - `prompt`, streamed text, `tool_execution_*` cards, `agent_settled`, `abort`.
 - The frontend trust choice and the `--approve` / `--no-approve` mapping.
-- A minimal chat view and event reducer in `webterm/static/pi.js` (a classic
-  script exposing `window.WebtermPi`).
+- A minimal chat view and event reducer (then `webterm/static/pi.js`, since
+  replaced by `pi-view.js` on the shared view class).
 - A fake pi test script covering normal flow, a large record, process death,
   reconnect/resync, and group kill.
 

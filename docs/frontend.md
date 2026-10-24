@@ -17,10 +17,9 @@ layout and the structure of `app.js`. For the server side see
 | `webterm/static/highlight.js` | Safe fenced-code and diff highlighter, exposed as `window.WebtermHighlight`. |
 | `webterm/static/pathcomplete.js` | Literal `@path` completion popup shared by the chat composers, exposed as `window.WebtermPathComplete`. |
 | `webterm/static/attach.js` | Composer image input: paste, drag/drop, thumbnail strip, exposed as `window.WebtermAttach`. |
-| `webterm/static/pi.js` | Structured pi chat view and event reducer, exposed as `window.WebtermPi`. |
-| `webterm/static/agent.js` | The generic canonical agent chat view, exposed as the `window.WebtermAgentView` class (with the `window.WebtermAgent.create` factory alias); also registers itself as the base of the adapter view registry. Enabled for pi with `?agentui=1`. |
+| `webterm/static/agent.js` | The shared agent chat view, exposed as the `window.WebtermAgentView` class (with the `window.WebtermAgent.create` factory alias); also registers itself as the base of the adapter view registry. |
 | `webterm/static/views.js` | Adapter view registry (self-registration + on-demand module loading), exposed as `window.WebtermAgentViews`. |
-| `webterm/static/pi-view.js` | Opt-in pi view built on the shared class (`?piui=canonical`), exposed as `window.WebtermPiAgentView`. |
+| `webterm/static/pi-view.js` | The pi view: a subclass of `AgentView` registered as `pi`, exposed as `window.WebtermPiAgentView`. |
 | `webterm/static/find.js` | Client-side transcript search bar shared by both chat views, exposed as `window.WebtermFind`. |
 | `/config.js` (generated) | Runtime config, served by the server, assigns `window.WEBTERM_CONFIG`. |
 
@@ -37,10 +36,9 @@ layout and the structure of `app.js`. For the server side see
 7. `/find.js`.
 8. `/pathcomplete.js`.
 9. `/attach.js`.
-10. `/pi.js`.
-11. `/agent.js`.
-12. `/pi-view.js`.
-13. `/app.js`.
+10. `/agent.js`.
+11. `/pi-view.js`.
+12. `/app.js`.
 
 Because `app.js` runs after the CDN script and config, it can assume
 `window.Terminal` and `window.WEBTERM_CONFIG` exist. The pinned CDN URLs carry
@@ -225,19 +223,15 @@ a module and a registry/config entry, not editing `app.js` or `index.html`**.
 An adapter with no module, or whose module fails to load, uses the base view,
 and the declared commands in its resync keep its features reachable.
 
-The pi view is being rebuilt on that base (`static/pi-view.js`, `window.WebtermPiAgentView`):
-it registers `pi` with the canonical transport when the URL carries
-`?piui=canonical`, and otherwise does nothing, so `pi.js` stays the default
-until the port has been clicked through in a browser. Enabling it exercises the
-same base view pi gets after #13 — transcript, queue, palette with pi's declared
-`fork`/`clone`/`export`/`tree` commands, `/help`, and extension chips/widgets —
-with no pi-specific code in the shared file.
+The pi view is `static/pi-view.js` (`window.WebtermPiAgentView`): a subclass of
+`AgentView` that registers `pi` with the canonical transport and adds nothing
+of its own yet, because the shared base already renders pi's transcript,
+queue, palette (with the declared `fork`/`clone`/`export`/`tree` commands),
+`/help`, and extension chips/widgets. Its own additions would arrive through
+the subclass hooks described below.
 
-`reconcileSessions` resolves `session.adapter` through the registry; `?agentui=1`
-forces the base canonical view for every adapter, which is how pi is previewed
-on the shared renderer. Both kinds are routed away from xterm by their `kind`.
-`agent.js` is the long-term renderer and receives new chat features; the pi
-module below is legacy until its UI is ported onto the base class (#13).
+`reconcileSessions` resolves `session.adapter` through the registry. Both kinds
+are routed away from xterm by their `kind`.
 
 Both chat views mount the same **transcript search** (`static/find.js`) above
 their message list: Ctrl/Cmd+F inside the view, or the `find` button in the
@@ -254,60 +248,6 @@ finished message is searchable only after the adapter appends it as an entry,
 so the count never points at a node that has no stable id. The bar stops
 keyboard events it handles (Enter, Shift+Enter, Esc) so a search never sends a
 prompt or aborts a run.
-
-### Pi view
-
-`ensurePiView` creates `window.WebtermPi.create(session, hooks)` for pi-backed
-sessions (`session.adapter === "pi"`), which keep this view unless `?agentui=1`
-asks for the canonical one. The view is hydrated by server `pi_resync` snapshots
-and then consumes `pi_event` records; it owns no persistence. Hooks map to the
-generic RPC envelope (`onCommand`), an explicit snapshot refresh (`onRefresh`),
-backwards transcript paging (`onHistory`), and `pi_export` (`onExport`). A
-snapshot carries only the newest entries plus `hasMore`/`firstEntryId`; the
-view renders a **Load earlier messages** control when older entries exist and
-prepends each `pi_history` page while holding the current scroll position. A
-resync invalidates in-flight page requests. The layout is a title bar
-(`.pi-header`: title plus extension status chips), the transcript, the composer
-and a bottom status bar (`.pi-footer`: idle/working, model, thinking level,
-message and queue counts). The composer stretches its textarea to the full
-height of the action column (Send above Stop), and the Send button keeps one
-fixed height whether it reads `Send` or `Follow up`; the hold-to-steer gesture
-is described by its tooltip and the busy placeholder. Toasts float above the
-composer from a zero-height host, not from a hardcoded offset. The composer
-recognizes webterm built-ins
-(`/new`, `/compact`, `/model`, `/provider`, `/reload`, `/fork`, `/clone`,
-`/tree`, `/export`, `/limits`) and merges pi's `get_commands` results for
-extension/template/skill commands. `/model` and `/provider` are webterm-side
-pickers over `get_available_models`; selecting an entry sends `set_model` and
-updates the bottom status bar's model label from the response without a full
-resync. `/limits` opens a modal naming the TUI-only surfaces RPC cannot
-reach, and a draft that starts with one of those commands (`/login`,
-`/settings`, `/trust`, and friends) is refused with a banner pointing at the
-same modal instead of being sent to the model as a prompt; the draft stays in
-the composer so it can be edited or copied.
-
-Model text is rendered through `WebtermHighlight.renderText()`, which splits
-fenced code blocks into DOM-only highlighted `<pre>` nodes. Tool arguments are
-highlighted as JSON, and tool output is classified as a unified diff when
-possible (`@@`, `+++`/`---`, `+`/`-` lines) with line-level colors. Unknown
-languages fall back to plain preformatted text. The highlighter never uses
-`innerHTML`; token spans are built with `textContent`. Token arrays are cached
-by language+content to keep streaming re-renders cheap, and the transcript
-keeps its scroll position unless the viewer is already near the bottom.
-
-Before a pi process starts, the trust dialog always asks whether project
-settings/extensions may load. The resume dialog lists persisted sessions via
-`list_pi_sessions`, then asks the same trust question for the selected cwd
-before sending `create` with `resume`. Both are reachable from the `pi chat`
-launcher (long-press/right-click for resume), from the `pi chat` session type in
-the new-session popover, and from the empty-state buttons.
-
-Extension UI is server-owned: `pi_ui_request` dialogs are shown one at a time
-and answered with `pi_ui_response`; `pi_ui_resolved` dismisses them for every
-viewer. Fire-and-forget requests render as toasts (`notify`), keyed header
-chips (`setStatus`), pre-composer widgets (`setWidget`), the chat header title
-(`setTitle`), and composer prefill (`set_editor_text`). A pending dialog adds a
-`!` badge to the session tab and `needs_input` to session metadata.
 
 #### Literal `@path` completion
 
@@ -340,12 +280,10 @@ model receives the absolute path exactly as inserted.
 
 ### Canonical agent view
 
-`agent.js` renders every native structured agent (an adapter other than
-`"pi"`, such as `llama`) and pi-backed sessions when `?agentui=1` switches
-them over. The legacy `pi.js` view remains the pi default; native agents have
-no legacy channel, so `app.js` subscribes them with `"agent_api":true` and
-routes `agent_resync` / `agent_event` / `agent_dialog_*` to this view without
-the query flag.
+`agent.js` renders every structured agent session; backend modules subclass it
+and register themselves (pi does, from `pi-view.js`). `app.js` subscribes a
+session through whichever transport its registered view speaks — the canonical
+one here — and routes `agent_resync` / `agent_event` / `agent_dialog_*` to it.
 
 `app.js` drives the view through the canonical `agent` command envelope:
 `prompt`, `steer` (busy + Ctrl/Cmd+Enter), `follow_up` (busy + Enter), `abort`,
@@ -513,9 +451,8 @@ the manifest — not the view — the place where a feature is described.
 
 The view therefore carries no backend vocabulary: names, titles, args, choices,
 node labels, and results all arrive from the adapter, and the only fixed words
-in `agent.js` are the four core slash commands and the `help` entry. `pi.js`
-keeps its own hardcoded command list because it speaks pi's dialect directly;
-the canonical view does not grow with a backend.
+in `agent.js` are the four core slash commands and the `help` entry; the view
+does not grow with a backend.
 
 #### Transcript rendering
 
@@ -575,8 +512,8 @@ inherits the factory.
 ### Composer images
 
 Both structured views attach images through `window.WebtermAttach`
-(`attach.js`), a single controller per composer shared by `pi.js` and
-`agent.js`. It owns paste (`paste` on the textarea, `clipboardData.files`) and
+(`attach.js`), a single controller per composer shared by every structured
+view (the base class and the pi subclass). It owns paste (`paste` on the textarea, `clipboardData.files`) and
 drag/drop onto the composer, and a thumbnail strip (`div.pi-attach-strip`) that
 sits above the textarea with one remove button per image. Images are held as
 canonical `{mime_type, data}` entries with raw base64; the pi view converts

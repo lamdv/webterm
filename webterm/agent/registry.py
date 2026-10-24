@@ -35,7 +35,7 @@ GENERIC_ADAPTER = NATIVE_CODEC.adapter
 #: classic script the shell loads to register itself with the shared agent
 #: view; an adapter without an entry here is rendered by the generic canonical
 #: view, which is what every native (canonical JSONL) backend uses.
-VIEWS: dict[str, str] = {PI_CODEC.adapter: "/pi.js"}
+VIEWS: dict[str, str] = {PI_CODEC.adapter: "/pi-view.js"}
 
 #: Human labels for adapters webterm has met.  Anything else is labelled with
 #: its adapter id, so a profile adds a named backend without a webterm release.

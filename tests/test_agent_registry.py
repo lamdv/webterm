@@ -51,7 +51,7 @@ class RegistryTests(unittest.TestCase):
                 "name": "pi",
                 "label": "pi",
                 "available": True,
-                "view": "/pi.js",
+                "view": "/pi-view.js",
                 "launcher": True,
             },
         )
@@ -60,7 +60,7 @@ class RegistryTests(unittest.TestCase):
         entries = _by_name(agent_adapters(_manager(False), _pi_profiles()))
         self.assertFalse(entries["pi"]["available"])
         # The view is shipped regardless; availability says whether it is used.
-        self.assertEqual(entries["pi"]["view"], "/pi.js")
+        self.assertEqual(entries["pi"]["view"], "/pi-view.js")
 
     def test_pi_needs_an_rpc_profile(self) -> None:
         profiles = _pi_profiles(rpc=False)
@@ -180,7 +180,7 @@ class ConfigScriptTests(unittest.IsolatedAsyncioTestCase):
                     "name": "pi",
                     "label": "pi",
                     "available": True,
-                    "view": "/pi.js",
+                    "view": "/pi-view.js",
                     "launcher": True,
                 },
                 {

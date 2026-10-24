@@ -19,7 +19,7 @@ class FindJSTests(unittest.TestCase):
         html = index.read_text(encoding="utf-8")
         self.assertIsNotNone(resolve_static("/find.js"))
         self.assertIn('/find.js', html)
-        self.assertLess(html.index("/find.js"), html.index("/pi.js"))
+        self.assertLess(html.index("/find.js"), html.index("/agent.js"))
         self.assertLess(html.index("/find.js"), html.index("/agent.js"))
 
     def test_find_smoke(self) -> None:

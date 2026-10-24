@@ -19,7 +19,7 @@ class PathCompleteJSTests(unittest.TestCase):
         html = index.read_text(encoding="utf-8")
         self.assertIsNotNone(resolve_static("/pathcomplete.js"))
         self.assertIn('/pathcomplete.js', html)
-        self.assertLess(html.index("/pathcomplete.js"), html.index("/pi.js"))
+        self.assertLess(html.index("/pathcomplete.js"), html.index("/agent.js"))
         self.assertLess(html.index("/pathcomplete.js"), html.index("/agent.js"))
 
     def test_path_complete_smoke(self) -> None:

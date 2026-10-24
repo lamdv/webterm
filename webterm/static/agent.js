@@ -1,8 +1,8 @@
 /* Canonical agent chat view.  Plain script, no build step: WebtermAgentView.
  *
  * This is the browser-side consumer of the shadow agent_* stream.  It is
- * deliberately separate from pi.js so the existing pi view remains the default
- * while the canonical model is validated.  Enable it with ?agentui=1.
+ * the shared base class every adapter view extends (see static/pi-view.js for
+ * the pi subclass and static/views.js for the registry).
  *
  * ``AgentView`` is the shared implementation and the base view of the adapter
  * registry.  A backend module subclasses it, overrides the extension points

@@ -511,15 +511,15 @@ own view:
 - Enabling `agent_api` after subscribing sends an `agent_resync` for each
   already-attached pi session, then continues live.
 
-The browser can opt in with `?agentui=1`. `agent.js` renders the canonical
-transcript, dialogs, and backwards history paging (`agent.get_history` through
-the envelope), and `app.js` drives it with `prompt`/`steer`/`follow_up`,
-`abort`, `dialog_response`, and `get_history`. The legacy pi view remains the
-default for pi sessions and keeps using `pi` / `pi_ui_response` / `pi_history`.
+The browser opts in for every structured session: `app.js` subscribes a
+session according to the transport its registered view speaks, so pi, native
+agents, and any backend module all use the canonical stream. The legacy raw
+envelope stays available for scripts and older clients, which is why the
+server keeps sending `pi_*` records unchanged.
 
 A native agent (`adapter` other than `"pi"`) has no legacy channel: it is
-subscribed with `agent_resync` and live `agent_event`s immediately, and the
-canonical view is its only renderer. `agent_api` therefore only gates pi's
+subscribed with `agent_resync` and live `agent_event`s immediately. `agent_api`
+therefore only gates pi's
 shadow stream.
 
 ### Codecs

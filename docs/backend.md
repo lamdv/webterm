@@ -129,7 +129,7 @@ view for the adapter: the browser then renders it with the generic canonical
 view, which every native (canonical JSONL) backend uses.
 
 ```json
-[{"name":"pi","label":"pi","available":true,"view":"/pi.js","launcher":true},
+[{"name":"pi","label":"pi","available":true,"view":"/pi-view.js","launcher":true},
  {"name":"llama","label":"llama-server","available":true,"view":null,"launcher":false},
  {"name":"mva","label":"mva","available":false,"view":null,"launcher":false}]
 ```
