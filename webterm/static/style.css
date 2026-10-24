@@ -2672,6 +2672,7 @@ h6.pi-md-heading {
 }
 
 .agent-tool-chevron {
+  flex: 0 0 auto;
   color: var(--text-dim);
   font-size: 10px;
   transition: transform 0.12s ease;
@@ -2686,19 +2687,28 @@ h6.pi-md-heading {
 }
 
 .agent-tool-hint {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--text-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .agent-tool-name {
+  flex: 0 0 auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: var(--accent);
 }
 
+.agent-tool.error > .agent-tool-head .agent-tool-name {
+  color: var(--danger);
+}
+
 .agent-tool-status {
+  flex: 0 0 auto;
   margin-left: auto;
   color: var(--text-dim);
   font-size: 11px;
