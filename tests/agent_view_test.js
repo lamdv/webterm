@@ -564,8 +564,11 @@ assert.strictEqual(
 
   const thinking = findThinking(streaming.element);
   assert.ok(thinking, "thinking block rendered");
+  assert.strictEqual(thinking.open, true, "thinking is expanded by default");
   thinking.querySelectorAll("summary")[0].dispatch("click");
-  assert.strictEqual(thinking.open, true, "clicking Thinking opens the block");
+  assert.strictEqual(thinking.open, false, "clicking Thinking folds it away");
+  thinking.querySelectorAll("summary")[0].dispatch("click");
+  assert.strictEqual(thinking.open, true, "clicking Thinking again expands it");
 
   streaming.handle({
     type: "agent_event",
@@ -1279,6 +1282,206 @@ assert.strictEqual(
     extraCommands,
     [{ type: "command", name: "extra-tool" }],
     "accepting an adapter entry sends its canonical command"
+  );
+
+  // A tool result that arrives as its own entry folds into the card of the
+  // call it answers: one place to read it, and the card keeps it after a
+  // reload (a snapshot carries no tool.* events to fill the card with).
+  const tools = window.WebtermAgent.create(
+    { id: "t-1", title: "tools" },
+    {
+      onPrompt: () => Promise.resolve(),
+      onAbort: () => Promise.resolve(),
+      onDialogResponse: () => Promise.resolve(),
+    }
+  );
+  tools.handle({
+    type: "agent_resync",
+    entries: [
+      { id: "u1", role: "user", content: [{ type: "text", text: "list the files" }] },
+      {
+        id: "a1",
+        role: "assistant",
+        content: [
+          { type: "text", text: "running it" },
+          { type: "tool_call", call_id: "c1", name: "bash", args: { command: "ls" } },
+        ],
+      },
+      {
+        id: "r1",
+        role: "tool",
+        tool_call_id: "c1",
+        tool_name: "bash",
+        content: [{ type: "text", text: "RESULT-TEXT" }],
+      },
+    ],
+    state: { streaming: false, settled: true },
+    capabilities: { prompt: true },
+    dialogs: [],
+    cursor: { seq: 3 },
+  });
+  const rendered = textOf(tools.element);
+  assert.strictEqual(
+    rendered.split("RESULT-TEXT").length - 1,
+    1,
+    "a tool result is shown once, in its card"
+  );
+  assert.strictEqual(
+    tools.element.querySelectorAll(".role-tool").length,
+    0,
+    "a folded tool result renders no message of its own"
+  );
+  assert.ok(
+    findByClass(tools.element, "agent-tool-output"),
+    "the card carries the result the snapshot no longer streams"
+  );
+
+  // The card is a disclosure: open by default, and a reader who folds it away
+  // keeps it folded while the call streams and while the entry is rebuilt.
+  const card = findByClass(tools.element, "agent-tool");
+  assert.strictEqual(card.tagName, "DETAILS", "a tool card is collapsible");
+  assert.strictEqual(card.open, true, "a tool card starts open");
+  assert.ok(
+    findByClass(card, "agent-tool-hint").textContent.includes("ls"),
+    "the summary line names the call"
+  );
+  assert.strictEqual(
+    findByClass(card, "agent-tool-status").textContent,
+    "done",
+    "the summary line reports the call's status"
+  );
+  card.querySelectorAll("summary")[0].dispatch("click");
+  assert.strictEqual(card.open, false, "clicking the summary folds the card");
+
+  // A result entry is rendered from its text, not from one node per block, so
+  // the next render must not patch it as if it had block nodes: that threw and
+  // froze the whole transcript, which is what stopped the stream after a tool
+  // call.
+  tools.handle({
+    type: "agent_event",
+    seq: 9,
+    event: {
+      event: "message.started",
+      message: { id: "m2", role: "assistant", content: [] },
+    },
+  });
+  tools.handle({
+    type: "agent_event",
+    seq: 9,
+    event: {
+      event: "message.delta",
+      message_id: "m2",
+      block_index: 0,
+      block_type: "text",
+      delta: "after the tool",
+    },
+  });
+  assert.ok(
+    textOf(tools.element).includes("after the tool"),
+    "streaming continues after a tool result"
+  );
+
+  // The same folding applies to a live turn: the card already holds the
+  // output the ``tool.*`` events streamed, so the result that arrives as its
+  // own message must not add a second copy.
+  tools.handle({
+    type: "agent_event",
+    seq: 10,
+    event: {
+      event: "message.finished",
+      message: {
+        id: "m2",
+        role: "assistant",
+        content: [
+          { type: "text", text: "after the tool" },
+          { type: "tool_call", call_id: "c2", name: "bash", args: { command: "ls" } },
+        ],
+      },
+    },
+  });
+  tools.handle({
+    type: "agent_event",
+    seq: 11,
+    event: { event: "tool.started", call_id: "c2", name: "bash", args: { command: "ls" } },
+  });
+  tools.handle({
+    type: "agent_event",
+    seq: 12,
+    event: { event: "tool.updated", call_id: "c2", delta: "LIVE-" },
+  });
+  tools.handle({
+    type: "agent_event",
+    seq: 13,
+    event: { event: "tool.finished", call_id: "c2", output: "LIVE-OUTPUT", is_error: false },
+  });
+  tools.handle({
+    type: "agent_event",
+    seq: 14,
+    event: {
+      event: "message.started",
+      message: {
+        id: "r-live",
+        role: "tool",
+        tool_call_id: "c2",
+        tool_name: "bash",
+        content: [{ type: "text", text: "LIVE-OUTPUT" }],
+      },
+    },
+  });
+  tools.handle({
+    type: "agent_event",
+    seq: 15,
+    event: {
+      event: "message.finished",
+      message: {
+        id: "r-live",
+        role: "tool",
+        tool_call_id: "c2",
+        tool_name: "bash",
+        content: [{ type: "text", text: "LIVE-OUTPUT" }],
+      },
+    },
+  });
+  assert.strictEqual(
+    textOf(tools.element).split("LIVE-OUTPUT").length - 1,
+    1,
+    "a live tool result is shown once, in its card"
+  );
+  assert.ok(
+    findByClass(tools.element, "agent-tool") === card,
+    "the folded card is patched in place rather than rebuilt"
+  );
+  assert.strictEqual(card.open, false, "a folded card stays folded while the call updates");
+
+  // A history page can start mid-turn, so a result with no card in the
+  // transcript still renders on its own rather than disappearing.
+  const orphan = window.WebtermAgent.create(
+    { id: "t-2", title: "orphan" },
+    {
+      onPrompt: () => Promise.resolve(),
+      onAbort: () => Promise.resolve(),
+      onDialogResponse: () => Promise.resolve(),
+    }
+  );
+  orphan.handle({
+    type: "agent_resync",
+    entries: [
+      {
+        id: "r2",
+        role: "tool",
+        tool_call_id: "c9",
+        tool_name: "bash",
+        content: [{ type: "text", text: "ORPHAN-RESULT" }],
+      },
+    ],
+    state: { streaming: false, settled: true },
+    capabilities: { prompt: true },
+    dialogs: [],
+    cursor: { seq: 2 },
+  });
+  assert.ok(
+    textOf(orphan.element).includes("ORPHAN-RESULT"),
+    "a result whose call is not in the transcript still renders"
   );
 
   console.log("agent view smoke test passed");

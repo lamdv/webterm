@@ -1607,17 +1607,11 @@
       return String(block.type || "unknown");
     }
 
+    /** What a block's rendered nodes depend on, for the kinds that are rebuilt
+     * wholesale.  A tool card is patched in place instead (``fillToolCard``),
+     * and a thinking block patches its text, so neither appears here. */
     function blockSignature(block) {
       if (!block || typeof block !== "object") return JSON.stringify(String(block || ""));
-      if (block.type === "tool_call") {
-        const status = state.toolState.get(block.call_id) || null;
-        return JSON.stringify([
-          block.name || "",
-          block.args && Object.keys(block.args).length ? block.args : null,
-          block.arguments_text || "",
-          status ? [status.done, status.isError, status.output] : null,
-        ]);
-      }
       return JSON.stringify(block);
     }
 
@@ -1640,29 +1634,125 @@
       ].join("\u0001");
     }
 
-    function renderToolCard(wrap, block) {
-      const card = el("div", "agent-tool");
-      const head = el("div", "agent-tool-head");
-      head.append(el("span", "agent-tool-name", block.name || "tool"));
-      const status = state.toolState.get(block.call_id);
-      if (status) {
-        const chip = el(
-          "span",
-          "agent-tool-status" + (status.isError ? " error" : status.done ? " ok" : ""),
-          status.done ? (status.isError ? "error" : "done") : "running…"
-        );
-        head.append(chip);
-      }
-      card.append(head);
+    /** How much of a tool call's arguments a collapsed card shows on its
+     * summary line before clipping. */
+    const TOOL_HINT_CHARS = 96;
+
+    /** The first line of some text, clipped to ``TOOL_HINT_CHARS``. */
+    function summaryLine(text) {
+      const line = String(text || "").split("\n")[0].trim();
+      return line.length > TOOL_HINT_CHARS
+        ? line.slice(0, TOOL_HINT_CHARS - 1) + "…"
+        : line;
+    }
+
+    /** What a collapsed card says about the call it stands for: the arguments
+     * as compact JSON, falling back to the arguments as they streamed, and to
+     * the first line of output.  No tool is known by name here, so a new tool
+     * is summarized as-is. */
+    function toolHint(block, status) {
+      const args = block.args && typeof block.args === "object" ? block.args : null;
+      let text = args && Object.keys(args).length ? JSON.stringify(args) : "";
+      if (!text && block.arguments_text) text = String(block.arguments_text);
+      if (!text && status && status.output) text = String(status.output);
+      return summaryLine(text);
+    }
+
+    /** The full arguments of a call: pretty JSON when they parsed, else the
+     * text the agent streamed. */
+    function toolArgs(block) {
       if (block.args && Object.keys(block.args).length) {
-        renderPre(card, JSON.stringify(block.args, null, 2), "agent-tool-args");
-      } else if (block.arguments_text) {
-        renderPre(card, block.arguments_text, "agent-tool-args");
+        return JSON.stringify(block.args, null, 2);
       }
-      if (status && status.output) {
-        renderPre(card, status.output, "agent-tool-output");
+      return String(block.arguments_text || "");
+    }
+
+    /** The status chip: a finished call is ``done`` or ``error``, a running one
+     * says so, and a call with no execution state yet has none. */
+    function toolChip(status) {
+      if (!status) return null;
+      if (!status.done) return { label: "running…", className: "agent-tool-status" };
+      return status.isError
+        ? { label: "error", className: "agent-tool-status error" }
+        : { label: "done", className: "agent-tool-status ok" };
+    }
+
+    /** Build one tool card: a summary line (name, hint, status) over the full
+     * arguments and output.  The card is a `<details>` so it folds down to its
+     * summary line; it starts open, since the output is what it is there for.
+     * Its mutable nodes live on the block record so updates patch it in place
+     * -- rebuilding on every streamed chunk would drop the reader's open flag
+     * and the output box's scroll position. */
+    function buildToolCard(record) {
+      const card = el("details", "agent-tool");
+      const head = el("summary", "agent-tool-head");
+      record.name = el("span", "agent-tool-name");
+      record.hint = el("span", "agent-tool-hint");
+      record.status = el("span", "agent-tool-status");
+      record.argsPre = el("pre", "agent-tool-args");
+      record.outputPre = el("pre", "agent-tool-output");
+      head.append(
+        el("span", "agent-tool-chevron", "▸"),
+        record.name,
+        record.hint,
+        record.status
+      );
+      card.append(head, record.argsPre, record.outputPre);
+      const saved = blockOpen.get(record.key);
+      record.open = saved === undefined ? true : Boolean(saved);
+      card.open = record.open;
+      card.addEventListener("toggle", () => {
+        record.open = Boolean(card.open);
+        blockOpen.set(record.key, record.open);
+      });
+      record.node.append(card);
+      return card;
+    }
+
+    /** Bring a tool card up to date in place (``block`` is a ``tool_call``). */
+    function fillToolCard(record, block) {
+      const status = state.toolState.get(block.call_id) || null;
+      const callId = String(block.call_id || "");
+      if (!record.card || record.callId !== callId) {
+        // First render, or this block now names another call: drop the old
+        // card and build one for the new call.
+        if (record.card) record.card.remove();
+        record.callId = callId;
+        record.card = buildToolCard(record);
       }
-      wrap.appendChild(card);
+      record.card.classList.toggle("error", Boolean(status && status.isError));
+      record.name.textContent = block.name || "tool";
+      const hint = toolHint(block, status);
+      record.hint.textContent = hint;
+      record.hint.hidden = !hint;
+      const chip = toolChip(status);
+      record.status.textContent = chip ? chip.label : "";
+      record.status.className = chip ? chip.className : "agent-tool-status";
+      record.status.hidden = !chip;
+      const args = toolArgs(block);
+      if (record.argsPre.textContent !== args) record.argsPre.textContent = args;
+      record.argsPre.hidden = !args;
+      const output = status && status.output ? String(status.output) : "";
+      const box = record.outputPre;
+      if (box.textContent !== output) {
+        // Replacing the text resets the box's scroll position, so carry it
+        // over and follow the tail while the reader has not scrolled up.
+        const previous = box.scrollTop;
+        const follow = box.scrollHeight - previous - box.clientHeight < 24;
+        box.textContent = output;
+        box.scrollTop = follow ? box.scrollHeight : previous;
+      }
+      box.hidden = !output;
+      // The reader's own choice wins over the card's default, and only a
+      // changed flag is applied: re-asserting it on every streamed chunk would
+      // undo a click whose `toggle` has not been recorded yet (the browser
+      // toggles the element before it fires the event).
+      const saved = blockOpen.get(record.key);
+      const open = saved === undefined ? true : Boolean(saved);
+      if (record.open !== open) {
+        record.open = open;
+        if (Boolean(record.card.open) !== open) record.card.open = open;
+      }
     }
 
     /** Bring one block's DOM up to date in place where the block type allows. */
@@ -1691,7 +1781,10 @@
           const details = el("details", "agent-thinking");
           const pre = el("pre", "agent-pre", text);
           details.append(el("summary", "", "Thinking"), pre);
-          details.open = blockOpen.get(record.key) === true;
+          const saved = blockOpen.get(record.key);
+          // Thinking is readable by default; a reader who folds it away keeps
+          // it folded across the rebuilds a streamed reply causes.
+          details.open = saved === undefined ? true : Boolean(saved);
           details.addEventListener("toggle", () => {
             blockOpen.set(record.key, Boolean(details.open));
           });
@@ -1707,11 +1800,7 @@
         return;
       }
       if (block.type === "tool_call") {
-        const signature = blockSignature(block);
-        if (record.sig === signature) return;
-        record.sig = signature;
-        wrap.innerHTML = "";
-        renderToolCard(wrap, block);
+        fillToolCard(record, block);
         return;
       }
       const signature = blockSignature(block);
@@ -1909,7 +1998,15 @@
       const key = entryKey(entry, index);
       const signature = structureSignature(entry, blocks, editing);
       let record = renderedEntries.get(key);
-      if (!record || record.signature !== signature) {
+      if (
+        !record ||
+        record.signature !== signature ||
+        // A tool result renders its text rather than one node per block, so
+        // its record carries no block nodes; patching either kind of entry
+        // needs one record per block or the render throws and the whole
+        // transcript stops updating.
+        record.blocks.length !== blocks.length
+      ) {
         record = buildEntry(entry, blocks, key, signature, isLive);
         renderedEntries.set(key, record);
       } else {
@@ -2142,6 +2239,56 @@
       widgetsBelowEl.hidden = !widgetsBelowEl.children.length;
     }
 
+    /** Which transcript entries are tool results that belong to a card.
+     *
+     * A canonical transcript may carry the result of a tool call either inside
+     * its ``tool_call`` block or as an entry of its own; the ``call_id`` join
+     * is what identifies it.  Only the card shows a result, so a matching
+     * entry folds away here: its text seeds the call's output (which is what a
+     * card reads, and what a reload would otherwise lose, since a snapshot
+     * carries no ``tool.*`` events), and the entry is not rendered again
+     * underneath.  An entry whose call is not in the transcript -- a history
+     * page can start in the middle of a turn -- has no card to fold into and
+     * still renders on its own.
+     */
+    function foldToolResults() {
+      const entries = state.live ? state.entries.concat([state.live]) : state.entries;
+      const calls = new Set();
+      for (const entry of entries) {
+        if (!entry || !Array.isArray(entry.content)) continue;
+        for (const block of entry.content) {
+          if (block && block.type === "tool_call" && block.call_id) {
+            calls.add(String(block.call_id));
+          }
+        }
+      }
+      const folded = new Set();
+      for (const entry of entries) {
+        if (!entry || entry.role !== "tool") continue;
+        const callId = String(entry.tool_call_id || "");
+        if (!callId || !calls.has(callId)) continue;
+        const output = textOfEntry(entry);
+        const status = state.toolState.get(callId);
+        if (!status) {
+          state.toolState.set(callId, {
+            name: entry.tool_name || "",
+            args: {},
+            output: output,
+            done: true,
+            isError: Boolean(entry.is_error),
+          });
+        } else if (!status.output) {
+          // A snapshot folds a finished call in; the live ``tool.*`` events
+          // have already filled a call that is still running.
+          status.output = output;
+          status.done = true;
+          status.isError = Boolean(entry.is_error);
+        }
+        folded.add(entry);
+      }
+      return folded;
+    }
+
     function render() {
       const atBottom = stickToBottom;
       const anchor = scrollAnchor;
@@ -2151,11 +2298,13 @@
       if (state.history.hasMore || state.history.loading || state.history.error) {
         nodes.push(historyNodeFor());
       }
+      const folded = foldToolResults();
       const kept = new Set();
       if (!state.entries.length && !state.live) {
         nodes.push(emptyNode);
       } else {
         state.entries.forEach((entry, index) => {
+          if (folded.has(entry)) return;
           nodes.push(renderEntry(entry, false, index));
           kept.add(entryKey(entry, index));
         });

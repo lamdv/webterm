@@ -2651,14 +2651,46 @@ h6.pi-md-heading {
   overflow: hidden;
 }
 
+.agent-tool.error {
+  border-color: var(--danger);
+}
+
 .agent-tool-head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
   font-size: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+/* The card draws its own chevron, so the native disclosure marker goes. */
+.agent-tool-head::-webkit-details-marker {
+  display: none;
+}
+
+.agent-tool-chevron {
+  color: var(--text-dim);
+  font-size: 10px;
+  transition: transform 0.12s ease;
+}
+
+.agent-tool[open] > .agent-tool-head {
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-tool[open] > .agent-tool-head .agent-tool-chevron {
+  transform: rotate(90deg);
+}
+
+.agent-tool-hint {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .agent-tool-name {

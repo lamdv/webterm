@@ -337,6 +337,8 @@ Content blocks: `text`, `thinking`, `tool_call`, `image`, `file`. A tool call
 block carries `call_id`, `name`, and `args`; `tool.*` events carry execution
 state for the same `call_id`. A persisted snapshot may fold the result into the
 block or keep a separate `tool_result` entry, but the `call_id` join is stable.
+A client renders one result, in the card: a separate result entry folds into the
+card of its `tool_call_id` instead of appearing as a second message.
 
 The `event` field, not `name`, holds the canonical event name. This leaves
 `name` free for a tool name in `tool.started`.

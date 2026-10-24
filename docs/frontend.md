@@ -300,11 +300,21 @@ shape-only: `status.updated` renders a keyed chip in the header,
 the view title, and `editor.prefill` fills an empty composer (never a draft).
 The `agent_resync` snapshot carries the replayable subset (`ui.status`,
 `ui.widgets`, `ui.title`), so a reconnect restores chips and widgets instead of
-losing them. It renders text, thinking, tool cards,
-images as placeholders, and user/assistant/tool entries. When the snapshot
-reports `has_more`, a **Load earlier messages** button fetches one backwards
-page with `agent.get_history` and prepends it without moving the reader; it
-disappears once the history is exhausted.
+losing them. It renders text, thinking, tool cards, images as placeholders,
+and user/assistant entries. A tool result that the adapter sends as an entry of
+its own (`role: "tool"` with a `tool_call_id`) is not shown as a second
+message: it folds into the card of the call it answers, filling that card's
+output -- which is also how a snapshot restores results, since `tool.*` events
+are not replayed. A result whose call is absent from the transcript (a history
+page can start mid-turn) keeps its own entry. A tool card is a disclosure: its
+summary line carries the tool name, a clipped hint at the arguments and a
+status chip, its body the full arguments and output, and a folded card stays
+folded while the call streams (the reader's choice is remembered per block, and
+find reopens it). Thinking blocks expand by default too, so a reply is readable
+without clicking. When the snapshot reports `has_more`, a **Load earlier
+messages** button fetches one backwards page with `agent.get_history` and
+prepends it without moving the reader; it disappears once the history is
+exhausted.
 
 A controls row above the transcript is capability-driven. When
 `models.list` is advertised it fills a model picker from `list_models` and
